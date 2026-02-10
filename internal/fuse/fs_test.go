@@ -2,6 +2,7 @@ package fuse_test
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"testing"
 
@@ -21,6 +22,7 @@ func TestFS_Lookup(t *testing.T) {
 	fs := &rfuse.RepliFS{
 		Cache:    cache,
 		Backends: map[string]backend.Backend{},
+		Selector: vfs.NewRandomSelector(nil),
 	}
 	root, err := fs.Root()
 	assert.NoError(t, err)
@@ -39,6 +41,7 @@ func TestFS_ReadDirAll(t *testing.T) {
 	fs := &rfuse.RepliFS{
 		Cache:    cache,
 		Backends: map[string]backend.Backend{},
+		Selector: vfs.NewRandomSelector(nil),
 	}
 	root, _ := fs.Root()
 	dir := root.(*rfuse.Dir)
@@ -56,6 +59,7 @@ func TestFS_Create(t *testing.T) {
 		Cache:             vfs.NewCache(),
 		Backends:          map[string]backend.Backend{"b1": b1, "b2": b2},
 		ReplicationFactor: 1,
+		Selector:          vfs.NewRandomSelector(nil),
 	}
 	
 	root, _ := fs.Root()
@@ -87,6 +91,7 @@ func TestFS_Mkdir(t *testing.T) {
 		Cache:             vfs.NewCache(),
 		Backends:          map[string]backend.Backend{"b1": b1},
 		ReplicationFactor: 1,
+		Selector:          vfs.NewRandomSelector(nil),
 	}
 	
 	root, _ := fs.Root()
@@ -111,6 +116,7 @@ func TestFile_Read(t *testing.T) {
 	fs := &rfuse.RepliFS{
 		Cache:    cache,
 		Backends: map[string]backend.Backend{"b1": b1},
+		Selector: vfs.NewRandomSelector(nil),
 	}
 	
 	root, _ := fs.Root()
@@ -144,6 +150,7 @@ func TestFile_Write(t *testing.T) {
 	fs := &rfuse.RepliFS{
 		Cache:    cache,
 		Backends: map[string]backend.Backend{"b1": b1},
+		Selector: vfs.NewRandomSelector(nil),
 	}
 	
 	root, _ := fs.Root()
@@ -166,4 +173,59 @@ func TestFile_Write(t *testing.T) {
 	err = fileHandle.Write(context.Background(), writeReq, writeResp)
 	assert.NoError(t, err)
 	assert.Equal(t, 5, writeResp.Size)
+}
+
+func TestFile_Read_Failover(t *testing.T) {
+	b1 := &test.MockBackend{NameVal: "b1"}
+	b2 := &test.MockBackend{NameVal: "b2"}
+	mockFile1 := &test.MockFile{}
+	mockFile2 := &test.MockFile{}
+
+	cache := vfs.NewCache()
+	// The order of Upsert calls matters for backend list order in simple implementation.
+	// Since Backends is a slice in Metadata, first one appended is first one used by Open (usually).
+	cache.Upsert("failover.txt", vfs.Metadata{Name: "failover.txt", Path: "failover.txt", Backends: []string{"b1", "b2"}}, "b1")
+	// Updating with b2
+	cache.Upsert("failover.txt", vfs.Metadata{Name: "failover.txt", Path: "failover.txt", Backends: []string{"b1", "b2"}}, "b2")
+
+	fs := &rfuse.RepliFS{
+		Cache:    cache,
+		Backends: map[string]backend.Backend{"b1": b1, "b2": b2},
+		Selector: vfs.NewRandomSelector(nil),
+	}
+	
+	root, _ := fs.Root()
+	dir := root.(*rfuse.Dir)
+	node, _ := dir.Lookup(context.Background(), "failover.txt")
+	file := node.(*rfuse.File)
+
+	// Open selects b1 (first in list)
+	b1.On("OpenFile", "failover.txt", os.O_RDONLY, mock.Anything).Return(mockFile1, nil)
+	
+	h, err := file.Open(context.Background(), &fuse.OpenRequest{Flags: fuse.OpenReadOnly}, &fuse.OpenResponse{})
+	assert.NoError(t, err)
+	
+	fileHandle := h.(*rfuse.FileHandle)
+	
+	// First read on b1 fails
+	mockFile1.On("ReadAt", mock.Anything, int64(0)).Return(0, fmt.Errorf("connection lost"))
+	mockFile1.On("Close").Return(nil)
+
+	// Failover logic should trigger:
+	// 1. Close b1.
+	// 2. Open b2.
+	// 3. Read from b2.
+	b2.On("OpenFile", "failover.txt", os.O_RDONLY, mock.Anything).Return(mockFile2, nil)
+	mockFile2.On("ReadAt", mock.Anything, int64(0)).Return(5, nil)
+
+	readReq := &fuse.ReadRequest{Size: 5, Offset: 0}
+	readResp := &fuse.ReadResponse{}
+	err = fileHandle.Read(context.Background(), readReq, readResp)
+	assert.NoError(t, err)
+	assert.Len(t, readResp.Data, 5)
+	
+	b1.AssertExpectations(t)
+	b2.AssertExpectations(t)
+	mockFile1.AssertExpectations(t)
+	mockFile2.AssertExpectations(t)
 }

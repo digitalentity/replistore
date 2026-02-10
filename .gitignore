@@ -15,7 +15,7 @@
 # vendor/
 
 # RepliStore specific
-replistore
+/replistore
 config.yaml
 .idea/
 .vscode/

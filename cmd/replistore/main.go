@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"bazil.org/fuse"
 	"bazil.org/fuse/fs"
@@ -44,6 +45,10 @@ func main() {
 		logrus.Fatal("No backends connected")
 	}
 
+	// Initialize Health Monitor
+	monitor := backend.NewHealthMonitor(backends)
+	monitor.Start(10 * time.Second)
+
 	// Warmup Cache
 	cache := vfs.NewCache()
 	logrus.Info("Warming up metadata cache...")
@@ -66,6 +71,7 @@ func main() {
 		Cache:             cache,
 		Backends:          backends,
 		ReplicationFactor: cfg.ReplicationFactor,
+		Selector:          vfs.NewRandomSelector(monitor),
 	}
 
 	// Handle signals for graceful unmount

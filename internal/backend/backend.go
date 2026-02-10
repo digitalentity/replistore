@@ -27,6 +27,7 @@ type File interface {
 
 type Backend interface {
 	GetName() string
+	Ping() error
 	ReadDir(path string) ([]FileInfo, error)
 	Stat(path string) (FileInfo, error)
 	Walk(ctx context.Context, path string, fn func(path string, info FileInfo) error) error
@@ -61,6 +62,14 @@ func NewSMBBackend(name, addr, share, user, pass, domain string) *SMBBackend {
 
 func (b *SMBBackend) GetName() string {
 	return b.Name
+}
+
+func (b *SMBBackend) Ping() error {
+	if b.share == nil {
+		return fmt.Errorf("not connected")
+	}
+	_, err := b.share.Stat(".")
+	return err
 }
 
 func (b *SMBBackend) Connect() error {
@@ -108,17 +117,20 @@ func (b *SMBBackend) Close() {
 	}
 }
 
+func toSMBPath(path string) string {
+	s := strings.ReplaceAll(path, "/", "\\")
+	if s == "" {
+		return "."
+	}
+	return s
+}
+
 func (b *SMBBackend) ReadDir(path string) ([]FileInfo, error) {
 	if b.share == nil {
 		return nil, fmt.Errorf("not connected")
 	}
 
-	// Normalize path for SMB (backslash)
-	smbPath := strings.ReplaceAll(path, "/", "\\")
-	if smbPath == "" {
-		smbPath = "."
-	}
-
+	smbPath := toSMBPath(path)
 	entries, err := b.share.ReadDir(smbPath)
 	if err != nil {
 		return nil, err
@@ -138,7 +150,7 @@ func (b *SMBBackend) ReadDir(path string) ([]FileInfo, error) {
 }
 
 func (b *SMBBackend) Stat(path string) (FileInfo, error) {
-	smbPath := strings.ReplaceAll(path, "/", "\\")
+	smbPath := toSMBPath(path)
 	fi, err := b.share.Stat(smbPath)
 	if err != nil {
 		return FileInfo{}, err
@@ -153,17 +165,17 @@ func (b *SMBBackend) Stat(path string) (FileInfo, error) {
 }
 
 func (b *SMBBackend) OpenFile(path string, flag int, perm os.FileMode) (File, error) {
-	smbPath := strings.ReplaceAll(path, "/", "\\")
+	smbPath := toSMBPath(path)
 	return b.share.OpenFile(smbPath, flag, perm)
 }
 
 func (b *SMBBackend) Mkdir(path string, perm os.FileMode) error {
-	smbPath := strings.ReplaceAll(path, "/", "\\")
+	smbPath := toSMBPath(path)
 	return b.share.Mkdir(smbPath, perm)
 }
 
 func (b *SMBBackend) Remove(path string) error {
-	smbPath := strings.ReplaceAll(path, "/", "\\")
+	smbPath := toSMBPath(path)
 	return b.share.Remove(smbPath)
 }
 

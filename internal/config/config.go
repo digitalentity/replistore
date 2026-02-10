@@ -23,15 +23,15 @@ type Config struct {
 }
 
 func LoadConfig(path string) (*Config, error) {
-	f, err := os.Open(path)
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
+
+	expandedData := os.ExpandEnv(string(data))
 
 	var cfg Config
-	decoder := yaml.NewDecoder(f)
-	if err := decoder.Decode(&cfg); err != nil {
+	if err := yaml.Unmarshal([]byte(expandedData), &cfg); err != nil {
 		return nil, err
 	}
 

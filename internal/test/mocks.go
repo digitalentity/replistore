@@ -17,6 +17,11 @@ func (m *MockBackend) GetName() string {
 	return m.NameVal
 }
 
+func (m *MockBackend) Ping() error {
+	args := m.Called()
+	return args.Error(0)
+}
+
 func (m *MockBackend) ReadDir(path string) ([]backend.FileInfo, error) {
 	args := m.Called(path)
 	return args.Get(0).([]backend.FileInfo), args.Error(1)
