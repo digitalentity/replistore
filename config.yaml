@@ -1,0 +1,14 @@
+mount_point: "/tmp/replistore_mount"
+replication_factor: 2
+cache_refresh_interval: "5m"
+backends:
+  - name: "nas-01"
+    address: "127.0.0.1:445"
+    share: "share1"
+    user: "user"
+    password: "password"
+  - name: "nas-02"
+    address: "127.0.0.1:445"
+    share: "share2"
+    user: "user"
+    password: "password"
