@@ -6,16 +6,33 @@ The Repair Manager is responsible for ensuring data durability by maintaining th
 
 The `RepairManager` runs as a background process that periodically "scrubs" the filesystem to find and fix degraded files.
 
+## Distributed Locking & Coordination
+
+When RepliStore is running in a cluster, the Repair Manager coordinates with other nodes to ensure efficient and safe operations.
+
+### Global Repair Lock
+To avoid redundant NAS traffic and repair collisions, the `RepairManager` attempts to acquire a **Global Repair Lock** (`.replistore/repair.lock`) at the start of every scrub cycle.
+- Only one node in the cluster can hold this lock at a time.
+- If a node fails to acquire the global lock, it silently skips the current repair cycle.
+- This provides an implicit "leader election" for maintenance tasks.
+
+### Path-Level Locking
+Even when holding the global repair lock, the manager acquires a **Distributed Lock** for every individual file path before starting the repair.
+- This ensures that repairs do not conflict with concurrent **Delete** or **Write** operations from other nodes.
+- It prevents the "undelete" race condition.
+
 ## Workflow
 
-1.  **Find Degraded Files:** The manager calls `vfs.Cache.FindDegraded(RF)`. This returns a list of all non-directory nodes that have fewer than $RF$ backends in their metadata.
-2.  **Identify Source:** For each degraded file, it selects one of the existing healthy replicas to act as the source.
-3.  **Identify Targets:** It uses the `vfs.BackendSelector` to find healthy backends that do **not** currently have a replica of the file.
-4.  **Perform Copy:**
-    - It opens the source file for reading.
-    - It creates the destination file(s) on the target backend(s).
-    - It streams the data from source to target.
-5.  **Update Metadata:** Once the copy is successful, the target backend is added to the file's `Backends` list in the `vfs.Cache`.
+1.  **Acquire Global Lock:** Attempt to lock `.replistore/repair.lock` via the cluster. If acquisition fails, the current scrub cycle is skipped.
+2.  **Find Degraded Files:** The manager calls `vfs.Cache.FindDegraded(RF)`.
+3.  **For each file:**
+    - **Acquire Path Lock:** Acquire a distributed lock for the specific file path.
+    - **Identify Source:** Select one healthy replica.
+    - **Identify Targets:** Find healthy backends missing the replica.
+    - **Perform Copy:** Stream the data from source to target.
+    - **Update Metadata:** Register the new replica in the `vfs.Cache`.
+    - **Release Path Lock.**
+4.  **Release Global Lock.**
 
 ## Configuration
 
@@ -31,10 +48,15 @@ The Repair Manager is controlled by the following configuration parameters:
 
 ```mermaid
 graph TD
-    Start[Start Scrub] --> Find[Find Degraded Files]
-    Find -- For each file --> Source[Select Source Replica]
+    Start[Start Scrub] --> LockGlobal[Acquire Global Repair Lock]
+    LockGlobal -- Success --> Find[Find Degraded Files]
+    LockGlobal -- Failure --> Skip[Skip Cycle]
+    Find -- For each file --> LockPath[Acquire Path Lock]
+    LockPath --> Source[Select Source Replica]
     Source --> Target[Select Target Backend]
     Target --> Copy[Copy Data]
     Copy --> Update[Update VFS Metadata]
-    Update --> End[Next File]
+    Update --> ReleasePath[Release Path Lock]
+    ReleasePath --> End[Next File]
+    End --> ReleaseGlobal[Release Global Lock]
 ```

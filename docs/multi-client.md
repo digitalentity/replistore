@@ -54,8 +54,10 @@ While *writes* are strictly consistent via the DLM, the in-memory **Metadata Cac
 ### 2. Network Latency
 The P2P locking adds a small amount of latency to write operations (one round-trip to peers). For high-performance workloads, ensure low-latency connectivity between RepliStore instances.
 
-### 3. Repair Efficiency
-While the DLM prevents "undelete" races, running the `RepairManager` on every node is still redundant. In a large cluster, it is recommended to enable repairs on only a subset of nodes (or use leader election when available) to reduce background network traffic.
+### 3. Repair Efficiency (Implicit Leader Election)
+RepliStore automatically ensures that only one node in the cluster performs background repairs at any given time.
+- **Global Repair Lock:** The `RepairManager` must acquire a cluster-wide lock on `.replistore/repair.lock` before starting a scrub.
+- This prevents redundant background network traffic and ensures that the cluster coordinates its maintenance tasks without manual configuration.
 
 ### 4. Split-Brain Behavior
 RepliStore requires a **majority** to acquire a lock.
