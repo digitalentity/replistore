@@ -1,66 +1,43 @@
-# Implementation Plan: Atomic Multi-Backend Rename
+# Implementation Plan: Persistent Lock-File DLM
 
-This plan outlines the steps to implement `Rename` support in RepliStore, allowing files and directories to be moved or renamed across the unified namespace.
+This plan outlines a new Distributed Lock Manager (DLM) using persistent marker files and atomic creation (`O_EXCL`) to work around limitations in the current SMB library.
 
 ## 1. Objectives
-- Implement the `Rename` syscall in the FUSE frontend.
-- Extend the `Backend` interface to support file/directory renaming.
-- Update the `vfs.Cache` to handle atomic node moves between parent directories.
-- Maintain consistency across multiple backends using a quorum-based approach.
+- Implement distributed locking without external dependencies.
+- Ensure atomicity using SMB `FILE_CREATE` (via `os.O_CREATE | os.O_EXCL`).
+- Provide safety through quorum-based lock ownership.
 
 ## 2. Technical Requirements
 
-### 2.1. Backend Layer Updates (`internal/backend/backend.go`)
-- **Add `Rename(oldPath, newPath string) error` to `Backend` interface.**
-- **Implement `Rename` in `SMBBackend`:** Wrap `smb2.Share.Rename(old, new)`.
+### 2.1. Atomic Locking
+- **Lock File:** `.replistore/locks/<sha256(path)>.lock`
+- **Acquisition:** Use `OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0644)`.
+- **Exclusivity:** If the file exists, `O_EXCL` ensures the SMB server returns an error, preventing multiple instances from claiming the same lock file.
 
-### 2.2. VFS Layer Updates (`internal/vfs/cache.go`)
-- **Implement `Cache.Rename(oldPath, newPath string) error`:**
-    - This method must atomically move a `Node` from its current parent's `Children` map to the new parent's map.
-    - It must update the `Path` and `Name` fields of the moved node and all its descendants (for directory renames).
-    - Use fine-grained locking or a global cache lock to ensure atomicity.
+### 2.2. Lock Ownership & Heartbeats
+- **Owner ID:** Each RepliStore instance generates a unique UUID on startup.
+- **Lock Content:** The lock file contains the `OwnerID` and a `Timestamp`.
+- **Heartbeat:** The instance holding the lock must periodically update the `Timestamp` in the lock file (e.g., every 10 seconds).
 
-### 2.3. FUSE Layer Updates (`internal/fuse/fs.go`)
-- **Implement `fs.NodeRenamer` on the `Dir` type.**
-- **Rename Logic:**
-    1. Identify the source node and its current backends.
-    2. Identify the target parent path.
-    3. **Ensure Target Path:** For each backend involved in the rename, ensure all parent directories for the destination path exist (equivalent to `mkdir -p`).
-    4. Perform parallel `Rename` calls on all backends where the node exists.
-    5. **Quorum Check:**
-        - If successful renames >= `WriteQuorum`:
-            - Update the `vfs.Cache`.
-            - For any backends that failed the rename: remove them from the node's `Backends` list (marking the file as degraded at the new path).
-        - If successful renames < `WriteQuorum`:
-            - Attempt a "Best Effort Rollback" (rename back the successful ones).
-            - Return an error (e.g., `EIO`) to the OS.
+### 2.3. Quorum Rule
+- **Lock Quorum ($LQ$):** A strict majority of all configured backends ($LQ = \lfloor N/2 \rfloor + 1$).
+- **Success:** An instance owns the lock if it successfully creates (or already owns and has updated) the lock file on a quorum of backends.
+
+### 2.4. Recovery (Stale Lock Cleanup)
+- **Stale Threshold:** A lock is considered "stale" if its `Timestamp` is older than 30 seconds.
+- **Cleanup Logic:** If an instance encounters an existing lock file, it reads the content. If the lock is stale, it attempts to `Remove()` it and then re-acquire it using `O_EXCL`.
 
 ## 3. Implementation Steps
 
-1.  **Backend Support:**
-    - Update `backend.Backend` and `backend.SMBBackend`.
-    - Update `test.MockBackend` for testing.
+1.  **VFS Lock Manager:**
+    - Implement `internal/vfs/lock.go` with `Acquire`, `Heartbeat`, and `Release` logic.
+    - Handle the "Stale Lock" detection by reading file contents from backends.
+2.  **FUSE Integration:**
+    - Wrap mutation methods with lock acquisition.
+    - Ensure the lock is released or heartbeated during long operations.
+3.  **Repair Manager:**
+    - Add a background task to clean up globally stale locks.
 
-2.  **VFS Move Logic:**
-    - Implement `Cache.Rename` with proper recursive path updates for directory moves.
-
-3.  **FUSE Directory implementation:**
-    - Implement `Rename(ctx, req, newDirNode)` on `Dir`.
-    - Handle both file-to-file and dir-to-dir renames.
-    - Implement the parallel fan-out and quorum logic.
-
-4.  **Verification & Testing:**
-    - **Unit Tests:** Verify `Cache.Rename` handles tree updates correctly.
-    - **Integration Tests:** 
-        - Rename a file within the same directory.
-        - Move a file between different directories.
-        - Rename a directory containing multiple files.
-        - Verify quorum behavior (successful move with one failing backend).
-
-## 4. Multi-Client & Safety Considerations
-- **Local Atomicity:** The VFS cache will be consistent for the local instance.
-- **Distributed Risk:** Without the proposed `Distributed Lock Manager (DLM)`, a rename operation is susceptible to races if another instance is simultaneously writing to or renaming the same file.
-- **Repair Manager:** The `RepairManager` must be careful not to "undelete" a file from its old path while a rename is in progress. (A global lock would solve this; for now, we rely on the fact that `Rename` is relatively fast).
-
-## 5. Limitations
-- **Cross-Backend Rename:** Since RepliStore aggregates independent shares, a "Rename" only works if the backends for the source and destination are compatible. (In the current design, this is always true as we maintain the same backend names across the unified tree).
+## 4. Risks & Mitigations
+- **Clock Skew:** Rely on relative time intervals and conservative stale thresholds (30s) to mitigate minor drifts between instance clocks and NAS timestamps.
+- **I/O Overhead:** Each lock check requires a `Stat` or `Read`. Mitigation: Use heartbeats only for long-held locks or frequent writes to the same path.
