@@ -38,6 +38,36 @@ func (s *RandomSelector) SelectForRead(meta Metadata) string {
 	return healthyBackends[s.r.Intn(len(healthyBackends))]
 }
 
+type FirstSelector struct {
+	monitor *backend.HealthMonitor
+}
+
+func NewFirstSelector(monitor *backend.HealthMonitor) *FirstSelector {
+	return &FirstSelector{monitor: monitor}
+}
+
+func (s *FirstSelector) SelectForRead(meta Metadata) string {
+	for _, b := range meta.Backends {
+		if s.monitor == nil || s.monitor.IsHealthy(b) {
+			return b
+		}
+	}
+	return ""
+}
+
+func (s *FirstSelector) SelectForWrite(count int, allBackends []string) []string {
+	var res []string
+	for _, b := range allBackends {
+		if s.monitor == nil || s.monitor.IsHealthy(b) {
+			res = append(res, b)
+			if len(res) == count {
+				break
+			}
+		}
+	}
+	return res
+}
+
 func (s *RandomSelector) SelectForWrite(count int, allBackends []string) []string {
 	if count <= 0 || len(allBackends) == 0 {
 		return nil

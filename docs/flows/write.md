@@ -13,11 +13,12 @@ When a new file is created:
 ### 2. Writing Data
 When an application writes to an open file:
 1.  **Fan-out:** The incoming data buffer is sent to ALL open backend handles in parallel.
-2.  **Synchronization:** RepliStore waits for all writes to complete using an `errgroup`.
-3.  **Strict Consistency:**
-    - If **any** write fails, the whole operation returns an error to the application.
-    - This ensures that the application is aware that one or more replicas may be out of sync.
-4.  **Cache Update:** On success, the file size in the metadata cache is updated.
+2.  **Quorum Check:** RepliStore waits for all writes to complete and counts the successes.
+3.  **Quorum-Based Consistency:**
+    - If the number of successful writes meets the `write_quorum`, the operation returns success to the application.
+    - If a write fails on a specific backend, that backend is removed from the `FileHandle` and the file's metadata cache to avoid further I/O to that replica.
+    - If the number of successful writes is less than `write_quorum`, the operation fails and returns an error.
+4.  **Cache Update:** On success, the file size and the backend list in the metadata cache are updated.
 
 ```mermaid
 sequenceDiagram
@@ -39,7 +40,7 @@ sequenceDiagram
 
 ## Handling Partial Failures
 If a write fails on Backend A but succeeds on Backend B:
-- The `Write` call returns an error.
-- The metadata cache remains consistent with the largest successfully written offset.
-- Future reads will attempt to fetch data from any healthy replica.
+- If Backend B's success meets the `write_quorum`, the `Write` call returns success.
+- Backend A is removed from the file's replica list in the metadata cache.
+- The file is now considered "Degraded" but available for reads from healthy replicas.
 - *Note: A background "repair" or "scrub" task is a planned improvement to handle these divergent replicas.*

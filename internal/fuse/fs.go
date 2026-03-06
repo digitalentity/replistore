@@ -20,6 +20,7 @@ type RepliFS struct {
 	Cache             *vfs.Cache
 	Backends          map[string]backend.Backend
 	ReplicationFactor int
+	WriteQuorum       int
 	Selector          vfs.BackendSelector
 }
 
@@ -108,21 +109,31 @@ func (d *Dir) Create(ctx context.Context, req *fuse.CreateRequest, resp *fuse.Cr
 	}
 
 	// Perform I/O outside of VFS lock to prevent deadlock
-	var openErr error
-	for _, bName := range selectedBackends {
-		b := d.fs.Backends[bName]
-		sf, err := b.OpenFile(path, os.O_CREATE|os.O_RDWR, req.Mode)
-		if err != nil {
-			openErr = err
-			break
-		}
-		h.backends[bName] = sf
-	}
+	var mu sync.Mutex
+	var successfulBackends []string
+	g, _ := errgroup.WithContext(ctx)
 
-	if openErr != nil {
+	for _, bName := range selectedBackends {
+		bName := bName // capture for goroutine
+		g.Go(func() error {
+			b := d.fs.Backends[bName]
+			sf, err := b.OpenFile(path, os.O_CREATE|os.O_RDWR, req.Mode)
+			if err != nil {
+				logrus.Warnf("Failed to create file %s on backend %s: %v", path, bName, err)
+				return nil // Don't fail the whole operation yet
+			}
+			mu.Lock()
+			h.backends[bName] = sf
+			successfulBackends = append(successfulBackends, bName)
+			mu.Unlock()
+			return nil
+		})
+	}
+	g.Wait()
+
+	if len(successfulBackends) < d.fs.WriteQuorum {
 		h.Close(ctx, nil)
-		// Cleanup partial creates? For now just fail.
-		return nil, nil, openErr
+		return nil, nil, fmt.Errorf("could not reach write quorum: %d/%d", len(successfulBackends), d.fs.WriteQuorum)
 	}
 
 	// Re-acquire lock to update VFS
@@ -133,7 +144,6 @@ func (d *Dir) Create(ctx context.Context, req *fuse.CreateRequest, resp *fuse.Cr
 	if _, ok := d.node.Children[req.Name]; ok {
 		// Conflict!
 		h.Close(ctx, nil)
-		// Ideally we should delete the files we created on backends...
 		return nil, nil, syscall.EEXIST
 	}
 
@@ -141,7 +151,7 @@ func (d *Dir) Create(ctx context.Context, req *fuse.CreateRequest, resp *fuse.Cr
 		Name:     req.Name,
 		Path:     path,
 		Mode:     req.Mode,
-		Backends: selectedBackends,
+		Backends: successfulBackends,
 	}
 	
 	child := &vfs.Node{
@@ -408,21 +418,59 @@ func (h *FileHandle) Write(ctx context.Context, req *fuse.WriteRequest, resp *fu
 	}
 	h.mu.Unlock()
 
-	g, _ := errgroup.WithContext(ctx)
+	var mu sync.Mutex
+	var successes int
+	var failures []string
+	var lastErr error
+
+	var wg sync.WaitGroup
 	for name, sf := range backends {
-		g.Go(func() error {
+		wg.Add(1)
+		go func(name string, sf backend.File) {
+			defer wg.Done()
 			_, err := sf.WriteAt(req.Data, req.Offset)
+			mu.Lock()
+			defer mu.Unlock()
 			if err != nil {
-				return fmt.Errorf("backend %s: %w", name, err)
+				logrus.Warnf("Write failed on backend %s: %v", name, err)
+				failures = append(failures, name)
+				lastErr = err
+			} else {
+				successes++
 			}
-			return nil
-		})
+		}(name, sf)
+	}
+	wg.Wait()
+
+	if successes < h.file.fs.WriteQuorum {
+		return fmt.Errorf("could not reach write quorum: %d/%d (last error: %v)", successes, h.file.fs.WriteQuorum, lastErr)
 	}
 
-	if err := g.Wait(); err != nil {
-		// STRICT consistency: If any replica failed, return error.
-		// This signals the application that the write was not fully replicated.
-		return err
+	// Remove failed backends from the handle and from VFS metadata
+	if len(failures) > 0 {
+		h.mu.Lock()
+		for _, name := range failures {
+			h.backends[name].Close()
+			delete(h.backends, name)
+		}
+		h.mu.Unlock()
+
+		h.file.node.Mu.Lock()
+		newBackends := make([]string, 0, len(h.file.node.Meta.Backends))
+		for _, bName := range h.file.node.Meta.Backends {
+			failed := false
+			for _, fName := range failures {
+				if bName == fName {
+					failed = true
+					break
+				}
+			}
+			if !failed {
+				newBackends = append(newBackends, bName)
+			}
+		}
+		h.file.node.Meta.Backends = newBackends
+		h.file.node.Mu.Unlock()
 	}
 
 	resp.Size = len(req.Data)

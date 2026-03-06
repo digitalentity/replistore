@@ -37,5 +37,5 @@ Manages connections to remote SMB shares. It uses `github.com/hirochachacha/go-s
 - **Authoritative Source:** Remote SMB shares are the ultimate source of truth.
 - **In-Memory Metadata:** For high performance, directory listings and lookups are served from an in-memory cache populated during startup.
 - **Statelessness:** No local database is required; the system reconstructs its state from the backends.
-- **Strict Write Consistency:** Writes are fanned out to all mapped backends. If any write fails, the entire operation is considered failed to avoid divergent replicas.
+- **Quorum-Based Write Consistency:** Writes and creates are fanned out to all mapped backends and succeed if a configurable `write_quorum` acknowledges the operation. This provides a balance between reliability and availability.
 - **Read Resilience:** Reads can fail over to alternative replicas if the primary choice is unavailable.

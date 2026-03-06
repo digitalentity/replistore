@@ -11,6 +11,10 @@ mount_point: "/mnt/replistore"
 # Number of copies for each file.
 replication_factor: 2
 
+# Number of backends that must acknowledge a write for it to be considered successful.
+# Defaults to replication_factor if not specified.
+write_quorum: 1
+
 # How often to re-scan the backends to detect external changes.
 cache_refresh_interval: "5m"
 
@@ -37,6 +41,12 @@ The absolute path on your local system where the RepliStore virtual filesystem w
 
 ### `replication_factor` (int)
 The number of backends a new file should be written to. If the number of available backends is less than this value, RepliStore will use all available backends.
+
+### `write_quorum` (int)
+The number of backends that must acknowledge a successful write or create operation.
+- **Default:** If omitted, `write_quorum` is set to `replication_factor`.
+- **Constraint:** Must be greater than 0 and less than or equal to `replication_factor`.
+- **Use Case:** A value lower than `replication_factor` (e.g., $WQ=2, RF=3$) allows writes to succeed even if some backends are temporarily down or slow.
 
 ### `cache_refresh_interval` (duration string)
 The interval between periodic scans of the backends. For example: `10s`, `5m`, `1h`.

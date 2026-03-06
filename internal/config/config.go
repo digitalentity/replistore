@@ -18,6 +18,7 @@ type BackendConfig struct {
 type Config struct {
 	MountPoint           string          `yaml:"mount_point"`
 	ReplicationFactor    int             `yaml:"replication_factor"`
+	WriteQuorum          int             `yaml:"write_quorum"`
 	CacheRefreshInterval string          `yaml:"cache_refresh_interval"`
 	Backends             []BackendConfig `yaml:"backends"`
 }
@@ -37,6 +38,10 @@ func LoadConfig(path string) (*Config, error) {
 
 	if cfg.ReplicationFactor <= 0 {
 		cfg.ReplicationFactor = 1
+	}
+
+	if cfg.WriteQuorum <= 0 || cfg.WriteQuorum > cfg.ReplicationFactor {
+		cfg.WriteQuorum = cfg.ReplicationFactor
 	}
 
 	return &cfg, nil

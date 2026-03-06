@@ -26,7 +26,7 @@ func main() {
 		logrus.Fatalf("Failed to load config: %v", err)
 	}
 
-	logrus.Infof("Starting RepliStore with %d backends (RF=%d)", len(cfg.Backends), cfg.ReplicationFactor)
+	logrus.Infof("Starting RepliStore with %d backends (RF=%d, WQ=%d)", len(cfg.Backends), cfg.ReplicationFactor, cfg.WriteQuorum)
 
 	// Initialize backends
 	backends := make(map[string]backend.Backend)
@@ -85,6 +85,7 @@ func main() {
 		Cache:             cache,
 		Backends:          backends,
 		ReplicationFactor: cfg.ReplicationFactor,
+		WriteQuorum:       cfg.WriteQuorum,
 		Selector:          vfs.NewRandomSelector(monitor),
 	}
 

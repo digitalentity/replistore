@@ -4,18 +4,7 @@ This document outlines a roadmap for evolving RepliStore from a functional proto
 
 ## 1. High Availability & Resilience
 
-### 1.1. Quorum-Based Consistency
-**Current Issue:**
-- **Files:** For any given file, RepliStore selects a subset of backends based on the `replication_factor` (RF). Currently, a write must succeed on **all** of these selected replicas. If even one of the replicas is slow or fails, the entire write returns an error, reducing write availability.
-- **Directories:** Currently, `Mkdir` operations are propagated to **all** connected backends in the pool to maintain a consistent unified tree structure for metadata scanning.
-
-**Proposal:**
-- Implement a `write_quorum` configuration (e.g., $W=2$ for $RF=3$).
-- **File Writes:** Allow a write to succeed if at least $W$ out of $RF$ selected replicas acknowledge the write. 
-- **Directory Operations:** Evaluate if `Mkdir` should also support a quorum (e.g., success if it reaches a majority of the backend pool) to improve availability for directory creation.
-- **Metadata Tagging:** Mark files that did not reach full $RF$ as "Degraded" in the metadata cache to prioritize them for background repairs.
-
-### 1.2. Active Read Failover (Enhanced)
+### 1.1. Active Read Failover (Enhanced)
 **Current Issue:** Read failover is reactive (triggered by an error).
 
 **Proposal:**
@@ -86,7 +75,12 @@ This document outlines a roadmap for evolving RepliStore from a functional proto
 
 ## 5. Recently Completed
 
-### 5.1. Background Metadata Synchronization
+### 5.1. Quorum-Based Consistency
+- **Implemented:** Support for `write_quorum` in configuration and filesystem operations.
+- **Functionality:** File creation and data writes succeed if a quorum of replicas acknowledge the operation. Failed backends are automatically removed from the file's metadata to ensure consistency with the surviving replicas.
+- **Verification:** Added `TestFile_Write_Quorum` to verify behavior during partial backend failures.
+
+### 5.2. Background Metadata Synchronization
 - **Implemented:** A continuous background scan using the `cache_refresh_interval`.
 - **Functionality:** Reconciles the cache by detecting new files, modifications, and deletions.
 - **Verification:** Unit tests added for node pruning and reconciliation logic.
