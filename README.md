@@ -10,6 +10,16 @@ RepliStore is a distributed, FUSE-based replicated storage system written in Go.
 - **Metadata Pre-Caching:** Aggressive startup scanning and in-memory caching for near-instant directory listings and file lookups.
 - **Stateless Design:** No local database required; the remote SMB shares remain the ultimate source of truth.
 
+## Documentation
+
+For detailed information about RepliStore's design, architecture, and operation, please refer to the [**RepliStore Documentation**](docs/index.md).
+
+- [Architecture Overview](docs/architecture.md)
+- [Component Details](docs/components/)
+- [Operational Flows](docs/flows/)
+- [Configuration Guide](docs/configuration.md)
+- [Testing Guide](docs/testing.md)
+
 ## Architecture
 
 RepliStore consists of three primary layers:
