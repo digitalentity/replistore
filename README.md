@@ -6,6 +6,7 @@ RepliStore is a distributed, FUSE-based replicated storage system written in Go.
 
 - **SMB2/3 Native Connectivity:** Directly manages connections to remote shares without requiring OS-level mounting.
 - **FUSE Interface:** Provides a standard filesystem interface to the operating system.
+- **Peer-to-Peer (P2P) Distributed Locking:** Robust cross-node consistency using mDNS discovery and a masterless quorum algorithm.
 - **File-Level Replication:** Configurable replication factor (RF) ensuring data redundancy across multiple backends.
 - **Quorum-Based Write Consistency:** Configurable write quorum (WQ) to ensure that file writes and creations are acknowledged by a minimum number of backends.
 - **Background Repair:** Automatic background worker that detects and restores degraded files (files with missing replicas).
@@ -26,10 +27,11 @@ For detailed information about RepliStore's design, architecture, and operation,
 
 ## Architecture
 
-RepliStore consists of three primary layers:
+RepliStore consists of four primary layers:
 1. **Frontend (FUSE):** Translates OS syscalls into VFS operations.
 2. **Virtual File System (VFS):** Manages the unified namespace, replication logic, and metadata cache.
-3. **Backend (SMB):** Handles raw I/O and connectivity to the storage providers.
+3. **Cluster (P2P):** Handles node discovery and distributed locking across multiple instances.
+4. **Backend (SMB):** Handles raw I/O and connectivity to the storage providers.
 
 ## Getting Started
 
@@ -64,6 +66,9 @@ Create a `config.yaml` file (see example below):
 mount_point: "/mnt/replistore"
 replication_factor: 2
 cache_refresh_interval: "5m"
+
+# Optional: Enable P2P Cluster
+listen_addr: ":5050"
 
 backends:
   - name: "nas-01"
