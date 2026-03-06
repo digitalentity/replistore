@@ -16,6 +16,7 @@ RepliStore is a distributed, FUSE-based replicated storage system written in Go.
 
 For detailed information about RepliStore's design, architecture, and operation, please refer to the [**RepliStore Documentation**](docs/index.md).
 
+- [Usage Guide: Use Cases & Tradeoffs](docs/usage.md)
 - [Architecture Overview](docs/architecture.md)
 - [Component Details](docs/components/)
 - [Operational Flows](docs/flows/)
