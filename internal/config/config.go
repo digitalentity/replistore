@@ -50,5 +50,9 @@ func LoadConfig(path string) (*Config, error) {
 		cfg.RepairConcurrency = 2
 	}
 
+	if cfg.RepairInterval == "" {
+		cfg.RepairInterval = "1h"
+	}
+
 	return &cfg, nil
 }

@@ -16,7 +16,15 @@ During startup, `Cache.Warmup` performs a parallel recursive scan (`Walk`) of al
 
 ### Consistency
 - **External Changes:** RepliStore performs periodic background synchronization (controlled by `cache_refresh_interval`). During each sync, it re-scans the backends to discover new files, modifications, and deletions. This ensures the in-memory cache eventually reconciles with the state of the SMB shares.
-- **Internal Changes:** Operations performed through RepliStore (Create, Write, Mkdir, Remove) immediately update the metadata cache, ensuring strict consistency for its own operations.
+- **Internal Changes:** Operations performed through RepliStore (Create, Write, Mkdir, Remove, Rename) immediately update the metadata cache, ensuring strict consistency for its own operations.
+
+## Namespace Operations
+
+### `Rename`
+The `Cache.Rename` method provides atomic tree-level moves within the in-memory metadata.
+- **Atomicity:** It uses a global cache-level lock (`Cache.Mu`) to ensure that a move is consistent for all concurrent readers and writers.
+- **Recursive Update:** For directory moves, it recursively updates the `Path` property of all descendant nodes to reflect their new location.
+- **Parent Management:** It automatically creates intermediate directory nodes at the destination if they are missing from the cache.
 
 ## Backend Selection
 

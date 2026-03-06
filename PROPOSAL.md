@@ -57,9 +57,11 @@ This document outlines a roadmap for evolving RepliStore from a functional proto
 
 ## 5. Connectivity & Reliability
 
-### 5.1. HealthMonitor Timeouts
-**Current Issue:** `Ping()` calls to backends are synchronous and may block for long periods if a network connection is hanging.
-**Proposal:** Add context support with a strict timeout to the `Backend.Ping()` interface to ensure the monitor remains responsive.
+### 5.1. HealthMonitor Enhancements
+**Current Issue:** `Ping()` calls to backends are synchronous and performed serially. A single slow or hanging backend can block the health check for all other backends.
+**Proposal:** 
+- Add context support with a strict timeout to the `Backend.Ping()` interface.
+- Parallelize health checks so that multiple backends can be monitored concurrently.
 
 ### 5.2. `O_APPEND` Support
 **Current Issue:** Log-style writes using `O_APPEND` are not handled, as `WriteAt` is the primary interface used.
@@ -87,9 +89,25 @@ This document outlines a roadmap for evolving RepliStore from a functional proto
 **Current Issue:** "Last-writer-wins" (based on `mtime`) is insufficient for resolving complex distributed conflicts.
 **Proposal:** Store versioning metadata (e.g., vector clocks or generation IDs) alongside files using SMB Alternative Data Streams (ADS). This enables deterministic detection and resolution of divergent replicas.
 
-## 7. Operational & Observability
+## 7. Reliability & Data Recovery
 
-### 6.1. Metrics Export (Prometheus)
+### 7.1. Quorum-Based `Remove`
+**Current Issue:** The `Remove` operation currently fails if any backend returns an error, which can prevent file deletion if one backend is temporarily unavailable.
+**Proposal:** Implement quorum-based `Remove`. The operation should succeed if at least `write_quorum` backends acknowledge the deletion. Remaining replicas can be cleaned up later by the `RepairManager`.
+
+### 7.2. Repair Manager Optimizations
+**Current Issue:** `RepairManager` copies data sequentially to each target backend and does not explicitly ensure the target parent path exists.
+**Proposal:**
+- **Read Once, Write Many:** Optimize the repair process by reading a chunk of data from the source once and writing it to all target backends in parallel.
+- **Safe Directory Creation:** Ensure the destination parent directory exists on the target backend (using `MkdirAll`) before starting the copy.
+
+### 7.3. Metadata Accuracy
+**Current Issue:** File modification times (`ModTime`) are not updated in the VFS cache during `Write` operations, leading to stale metadata.
+**Proposal:** Update the `ModTime` in the cache node whenever a successful write (meeting quorum) occurs.
+
+## 8. Operational & Observability
+
+### 8.1. Metrics Export (Prometheus)
 **Proposal:**
 - Export metrics for:
     - Operation latency (Read/Write/Metadata).
@@ -97,35 +115,35 @@ This document outlines a roadmap for evolving RepliStore from a functional proto
     - Backend health and latency.
     - Replication health (number of degraded files).
 
-### 6.2. Secure Secret Management
+### 8.2. Secure Secret Management
 **Proposal:**
 - Integrate with external secret providers (e.g., HashiCorp Vault) or system keyrings instead of relying on environment variables or plain text configuration.
 
 ---
 
-## 7. Recently Completed
+## 9. Recently Completed
 
-### 7.1. Fsync Support
+### 9.1. Fsync Support
 - **Implemented:** `Flush` and `Fsync` support in the FUSE layer.
 - **Functionality:** Synchronizes data to all open backend handles. Successfully syncs if `write_quorum` is met. Automatically removes replicas that fail the sync operation.
 - **Verification:** Added `TestFile_Fsync` to verify fan-out and quorum behavior.
 
-### 7.2. Quorum-Based Consistency
+### 9.2. Quorum-Based Consistency
 - **Implemented:** Support for `write_quorum` in configuration and filesystem operations.
 - **Functionality:** File creation and data writes succeed if a quorum of replicas acknowledge the operation. Failed backends are automatically removed from the file's metadata to ensure consistency with the surviving replicas.
 - **Verification:** Added `TestFile_Write_Quorum` to verify behavior during partial backend failures.
 
-### 7.3. Background Repair (Anti-Entropy)
+### 9.3. Background Repair (Anti-Entropy)
 - **Implemented:** Background `RepairManager` that identifies degraded files and restores replicas.
 - **Functionality:** Periodically scans the metadata cache for files with fewer than `replication_factor` backends and automatically copies data from healthy replicas to missing ones. Supports concurrency control.
 - **Verification:** Added `TestRepairManager_RepairNode` and `TestCache_FindDegraded`.
 
-### 7.4. Background Metadata Synchronization
+### 9.4. Background Metadata Synchronization
 - **Implemented:** A continuous background scan using the `cache_refresh_interval`.
 - **Functionality:** Reconciles the cache by detecting new files, modifications, and deletions.
 - **Verification:** Unit tests added for node pruning and reconciliation logic.
 
-### 7.5. Atomic Multi-Backend Rename
+### 9.5. Atomic Multi-Backend Rename
 - **Implemented:** `Rename` support in the FUSE layer and VFS cache.
 - **Functionality:** Moves files and directories across the unified namespace. Ensures target parent directories exist on backends. Successfully renames if `write_quorum` is reached. Atomically updates the metadata cache and all child paths for directory moves.
 - **Verification:** Added `internal/fuse/rename_test.go` with cross-directory and quorum failure scenarios.
