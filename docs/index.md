@@ -5,6 +5,7 @@ Welcome to the RepliStore documentation. This project provides a distributed, FU
 ## Contents
 
 - [**Usage Guide**](usage.md) - Suitable use cases, performance characteristics, and architectural tradeoffs.
+- [**Multi-Client Deployment**](multi-client.md) - Using multiple RepliStore mounts against the same backends.
 - [**Architecture Overview**](architecture.md) - High-level system design and component interaction.
 - [**Components**](components/)
     - [FUSE Frontend](components/fuse.md) - Translating OS syscalls to VFS operations.
