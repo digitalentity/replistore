@@ -92,3 +92,22 @@ func TestCache_Reconcile(t *testing.T) {
 	_, ok = cache.Get("dir")
 	assert.False(t, ok)
 }
+
+func TestCache_FindDegraded(t *testing.T) {
+	cache := vfs.NewCache()
+
+	// 1. File on 1 backend (RF=3) -> degraded
+	cache.Upsert("degraded.txt", vfs.Metadata{Name: "degraded.txt", IsDir: false}, "b1")
+
+	// 2. File on 3 backends (RF=3) -> healthy
+	cache.Upsert("healthy.txt", vfs.Metadata{Name: "healthy.txt", IsDir: false}, "b1")
+	cache.Upsert("healthy.txt", vfs.Metadata{Name: "healthy.txt", IsDir: false}, "b2")
+	cache.Upsert("healthy.txt", vfs.Metadata{Name: "healthy.txt", IsDir: false}, "b3")
+
+	// 3. Directory -> should not be reported as degraded
+	cache.Upsert("dir", vfs.Metadata{Name: "dir", IsDir: true}, "b1")
+
+	degraded := cache.FindDegraded(3)
+	assert.Len(t, degraded, 1)
+	assert.Equal(t, "degraded.txt", degraded[0].Meta.Name)
+}

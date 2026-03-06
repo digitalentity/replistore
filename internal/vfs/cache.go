@@ -244,4 +244,26 @@ func (c *Cache) Warmup(ctx context.Context, backends []backend.Backend) {
 		}(b)
 	}
 	wg.Wait()
-}
+	}
+
+	// FindDegraded returns all file nodes that have fewer backends than the required replication factor.
+	func (c *Cache) FindDegraded(rf int) []*Node {
+	var degraded []*Node
+	c.walk(c.Root, func(n *Node) {
+		n.Mu.RLock()
+		if !n.Meta.IsDir && len(n.Meta.Backends) > 0 && len(n.Meta.Backends) < rf {
+			degraded = append(degraded, n)
+		}
+		n.Mu.RUnlock()
+	})
+	return degraded
+	}
+
+	func (c *Cache) walk(node *Node, fn func(*Node)) {
+	fn(node)
+	node.Mu.RLock()
+	defer node.Mu.RUnlock()
+	for _, child := range node.Children {
+		c.walk(child, fn)
+	}
+	}

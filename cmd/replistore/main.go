@@ -89,6 +89,20 @@ func main() {
 		Selector:          vfs.NewRandomSelector(monitor),
 	}
 
+	// Initialize and start Repair Manager
+	repairInterval, err := time.ParseDuration(cfg.RepairInterval)
+	if err != nil && cfg.RepairInterval != "" {
+		logrus.Warnf("Invalid repair_interval '%s', defaulting to 1h: %v", cfg.RepairInterval, err)
+		repairInterval = 1 * time.Hour
+	} else if cfg.RepairInterval == "" {
+		repairInterval = 1 * time.Hour
+	}
+	repairManager := rfuse.NewRepairManager(replFS, repairInterval, cfg.RepairConcurrency)
+	repairManager.Start(ctx)
+	if repairInterval > 0 {
+		logrus.Infof("Background repair manager started (interval: %v, concurrency: %d)", repairInterval, cfg.RepairConcurrency)
+	}
+
 	// Handle signals for graceful unmount
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)

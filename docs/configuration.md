@@ -18,6 +18,14 @@ write_quorum: 1
 # How often to re-scan the backends to detect external changes.
 cache_refresh_interval: "5m"
 
+# How often to check for degraded files and repair them.
+# Defaults to 1h.
+repair_interval: "1h"
+
+# Maximum number of concurrent repair operations.
+# Defaults to 2.
+repair_concurrency: 2
+
 # List of SMB backend shares.
 backends:
   - name: "nas-01"
@@ -50,6 +58,12 @@ The number of backends that must acknowledge a successful write or create operat
 
 ### `cache_refresh_interval` (duration string)
 The interval between periodic scans of the backends. For example: `10s`, `5m`, `1h`.
+
+### `repair_interval` (duration string)
+How often the background repair worker scans for degraded files (files with fewer than `replication_factor` replicas) and attempts to restore them.
+
+### `repair_concurrency` (int)
+Maximum number of files being repaired simultaneously.
 
 ### `backends` (list)
 A list of backend configurations. Each backend must have a unique `name`.

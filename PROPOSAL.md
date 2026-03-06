@@ -11,14 +11,8 @@ This document outlines a roadmap for evolving RepliStore from a functional proto
 - Use the `HealthMonitor` results to proactively avoid selecting known unhealthy backends for initial read attempts.
 - Implement parallel "hedged" reads: if a backend is slow (exceeds a latency threshold), issue a concurrent read to another replica and take the first successful response.
 
-### 1.3. Background Repair (Anti-Entropy)
-**Current Issue:** Once replicas diverge (due to partial write failure or backend downtime), there is no mechanism to re-synchronize them.
-
-**Proposal:**
-- Implement a background "scrub" worker that periodically compares replicas of a file (size, mtime, and optionally checksums).
-- Automatically copy data from a healthy replica to a missing or outdated one to restore the full `replication_factor`.
-
 ## 2. Metadata & Performance
+
 
 ### 2.1. Lazy / Progressive Warmup
 **Current Issue:** The system waits for a full metadata scan of all backends before mounting the FUSE filesystem, which can take minutes for large datasets.
@@ -80,7 +74,12 @@ This document outlines a roadmap for evolving RepliStore from a functional proto
 - **Functionality:** File creation and data writes succeed if a quorum of replicas acknowledge the operation. Failed backends are automatically removed from the file's metadata to ensure consistency with the surviving replicas.
 - **Verification:** Added `TestFile_Write_Quorum` to verify behavior during partial backend failures.
 
-### 5.2. Background Metadata Synchronization
+### 5.2. Background Repair (Anti-Entropy)
+- **Implemented:** Background `RepairManager` that identifies degraded files and restores replicas.
+- **Functionality:** Periodically scans the metadata cache for files with fewer than `replication_factor` backends and automatically copies data from healthy replicas to missing ones. Supports concurrency control.
+- **Verification:** Added `TestRepairManager_RepairNode` and `TestCache_FindDegraded`.
+
+### 5.3. Background Metadata Synchronization
 - **Implemented:** A continuous background scan using the `cache_refresh_interval`.
 - **Functionality:** Reconciles the cache by detecting new files, modifications, and deletions.
 - **Verification:** Unit tests added for node pruning and reconciliation logic.

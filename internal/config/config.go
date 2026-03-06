@@ -20,6 +20,8 @@ type Config struct {
 	ReplicationFactor    int             `yaml:"replication_factor"`
 	WriteQuorum          int             `yaml:"write_quorum"`
 	CacheRefreshInterval string          `yaml:"cache_refresh_interval"`
+	RepairInterval       string          `yaml:"repair_interval"`
+	RepairConcurrency    int             `yaml:"repair_concurrency"`
 	Backends             []BackendConfig `yaml:"backends"`
 }
 
@@ -42,6 +44,10 @@ func LoadConfig(path string) (*Config, error) {
 
 	if cfg.WriteQuorum <= 0 || cfg.WriteQuorum > cfg.ReplicationFactor {
 		cfg.WriteQuorum = cfg.ReplicationFactor
+	}
+
+	if cfg.RepairConcurrency <= 0 {
+		cfg.RepairConcurrency = 2
 	}
 
 	return &cfg, nil
