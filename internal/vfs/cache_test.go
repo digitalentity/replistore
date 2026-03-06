@@ -64,3 +64,31 @@ func TestCache_UpsertUpdates(t *testing.T) {
 	assert.Equal(t, meta2.ModTime, node.Meta.ModTime)
 	assert.ElementsMatch(t, []string{"backend1", "backend2"}, node.Meta.Backends)
 }
+
+func TestCache_Reconcile(t *testing.T) {
+	cache := vfs.NewCache()
+	meta := vfs.Metadata{Name: "file.txt", IsDir: false}
+
+	// 1. Setup: file on b1 and b2
+	cache.Upsert("dir/file.txt", meta, "b1")
+	cache.Upsert("dir/file.txt", meta, "b2")
+
+	// 2. Reconcile b1 with file MISSING
+	seenOnB1 := make(map[string]bool)
+	cache.Reconcile("b1", seenOnB1)
+
+	// Result: file should still be there because b2 has it
+	node, ok := cache.Get("dir/file.txt")
+	assert.True(t, ok)
+	assert.ElementsMatch(t, []string{"b2"}, node.Meta.Backends)
+
+	// 3. Reconcile b2 with file MISSING
+	seenOnB2 := make(map[string]bool)
+	cache.Reconcile("b2", seenOnB2)
+
+	// Result: file and empty directory should be pruned
+	_, ok = cache.Get("dir/file.txt")
+	assert.False(t, ok)
+	_, ok = cache.Get("dir")
+	assert.False(t, ok)
+}

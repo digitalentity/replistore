@@ -15,8 +15,8 @@ During startup, `Cache.Warmup` performs a parallel recursive scan (`Walk`) of al
 - The `Backends` list in the metadata stores all locations for that file.
 
 ### Consistency
-- **External Changes:** Since metadata is cached in-memory, changes made directly on the SMB shares (bypassing RepliStore) are only discovered during the next full scan or periodic refresh.
-- **Internal Changes:** Operations performed through RepliStore (Create, Write, Mkdir, Remove) immediately update the metadata cache.
+- **External Changes:** RepliStore performs periodic background synchronization (controlled by `cache_refresh_interval`). During each sync, it re-scans the backends to discover new files, modifications, and deletions. This ensures the in-memory cache eventually reconciles with the state of the SMB shares.
+- **Internal Changes:** Operations performed through RepliStore (Create, Write, Mkdir, Remove) immediately update the metadata cache, ensuring strict consistency for its own operations.
 
 ## Backend Selection
 

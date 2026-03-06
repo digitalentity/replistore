@@ -96,10 +96,84 @@ func (c *Cache) Upsert(path string, meta Metadata, backendName string) {
 				next.Meta.ModTime = meta.ModTime
 			}
 		}
-		
+
 		parent := curr
 		curr = next
 		parent.Mu.Unlock()
+	}
+}
+
+// StartSync starts the background synchronization loop.
+func (c *Cache) StartSync(ctx context.Context, backends []backend.Backend, interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				c.syncAll(ctx, backends)
+			}
+		}
+	}()
+}
+
+func (c *Cache) syncAll(ctx context.Context, backends []backend.Backend) {
+	for _, b := range backends {
+		logrus.Debugf("Background syncing backend: %s", b.GetName())
+		seenPaths := make(map[string]bool)
+		err := b.Walk(ctx, "", func(path string, info backend.FileInfo) error {
+			seenPaths[path] = true
+			c.Upsert(path, Metadata{
+				Name:    info.Name,
+				Size:    info.Size,
+				Mode:    info.Mode,
+				ModTime: info.ModTime,
+				IsDir:   info.IsDir,
+			}, b.GetName())
+			return nil
+		})
+		if err != nil {
+			logrus.Errorf("Background sync error on %s: %v", b.GetName(), err)
+			continue
+		}
+		c.Reconcile(b.GetName(), seenPaths)
+	}
+}
+
+func (c *Cache) Reconcile(backendName string, seenPaths map[string]bool) {
+	c.sweep(c.Root, "", backendName, seenPaths)
+}
+
+func (c *Cache) sweep(node *Node, path string, backendName string, seenPaths map[string]bool) {
+	node.Mu.Lock()
+	defer node.Mu.Unlock()
+
+	for name, child := range node.Children {
+		childPath := name
+		if path != "" {
+			childPath = path + "/" + name
+		}
+
+		c.sweep(child, childPath, backendName, seenPaths)
+
+		child.Mu.Lock()
+		// If this node was NOT seen on this backend, remove this backend from its metadata
+		if !seenPaths[childPath] {
+			newBackends := make([]string, 0, len(child.Meta.Backends))
+			for _, b := range child.Meta.Backends {
+				if b != backendName {
+					newBackends = append(newBackends, b)
+				}
+			}
+			child.Meta.Backends = newBackends
+		}
+
+		// Prune node if it no longer has any backends and no children
+		if len(child.Meta.Backends) == 0 && len(child.Children) == 0 {
+			delete(node.Children, name)
+		}
+		child.Mu.Unlock()
 	}
 }
 

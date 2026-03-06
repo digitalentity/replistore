@@ -15,6 +15,10 @@ When RepliStore starts, it goes through a "warmup" phase to build its internal m
     - If a file exists on multiple backends, it is recorded as a single entry with multiple backend locations.
 5.  **FUSE Mounting:**
     - Once the initial scan of all backends completes, the FUSE filesystem is mounted at the specified `mount_point`.
+6.  **Background Synchronization:**
+    - After the initial warmup, a background synchronization loop starts (based on `cache_refresh_interval`).
+    - It re-scans backends to reconcile the in-memory cache with any external changes, including additions, modifications, and deletions.
+7.  **Serve Requests:**
     - The system begins serving user requests.
 
 ```mermaid

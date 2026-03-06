@@ -49,11 +49,25 @@ func main() {
 	monitor := backend.NewHealthMonitor(backends)
 	monitor.Start(10 * time.Second)
 
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
 	// Warmup Cache
 	cache := vfs.NewCache()
 	logrus.Info("Warming up metadata cache...")
-	cache.Warmup(context.Background(), backendList)
+	cache.Warmup(ctx, backendList)
 	logrus.Info("Metadata cache warmed up")
+
+	// Start background sync
+	refreshInterval, err := time.ParseDuration(cfg.CacheRefreshInterval)
+	if err != nil {
+		logrus.Warnf("Invalid cache_refresh_interval '%s', defaulting to 5m: %v", cfg.CacheRefreshInterval, err)
+		refreshInterval = 5 * time.Minute
+	}
+	if refreshInterval > 0 {
+		cache.StartSync(ctx, backendList, refreshInterval)
+		logrus.Infof("Background metadata sync started (interval: %v)", refreshInterval)
+	}
 
 	// Mount FUSE
 	c, err := fuse.Mount(
@@ -80,6 +94,7 @@ func main() {
 	go func() {
 		<-sigChan
 		logrus.Info("Unmounting...")
+		cancel()
 		fuse.Unmount(cfg.MountPoint)
 		os.Exit(0)
 	}()
