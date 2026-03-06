@@ -131,25 +131,131 @@ func (c *Cache) StartSync(ctx context.Context, backends []backend.Backend, inter
 }
 
 func (c *Cache) syncAll(ctx context.Context, backends []backend.Backend) {
+	type fileState struct {
+		meta     Metadata
+		backends []string
+	}
+	globalState := make(map[string]*fileState)
+	var stateMu sync.Mutex
+
+	var wg sync.WaitGroup
 	for _, b := range backends {
-		logrus.Debugf("Background syncing backend: %s", b.GetName())
-		seenPaths := make(map[string]bool)
-		err := b.Walk(ctx, "", func(path string, info backend.FileInfo) error {
-			seenPaths[path] = true
-			c.Upsert(path, Metadata{
-				Name:    info.Name,
-				Size:    info.Size,
-				Mode:    info.Mode,
-				ModTime: info.ModTime,
-				IsDir:   info.IsDir,
-			}, b.GetName())
-			return nil
-		})
-		if err != nil {
-			logrus.Errorf("Background sync error on %s: %v", b.GetName(), err)
-			continue
+		wg.Add(1)
+		go func(b backend.Backend) {
+			defer wg.Done()
+			logrus.Debugf("Background syncing backend: %s", b.GetName())
+			seenPaths := make(map[string]bool)
+			err := b.Walk(ctx, "", func(path string, info backend.FileInfo) error {
+				seenPaths[path] = true
+				meta := Metadata{
+					Name:    info.Name,
+					Size:    info.Size,
+					Mode:    info.Mode,
+					ModTime: info.ModTime,
+					IsDir:   info.IsDir,
+				}
+
+				stateMu.Lock()
+				defer stateMu.Unlock()
+
+				s, ok := globalState[path]
+				if !ok {
+					globalState[path] = &fileState{
+						meta:     meta,
+						backends: []string{b.GetName()},
+					}
+					return nil
+				}
+
+				isNewer := meta.ModTime.After(s.meta.ModTime)
+				isSameTime := meta.ModTime.Equal(s.meta.ModTime)
+				isLarger := meta.Size > s.meta.Size
+				isSameSize := meta.Size == s.meta.Size
+
+				if isNewer || (isSameTime && isLarger) {
+					s.meta = meta
+					s.backends = []string{b.GetName()}
+				} else if isSameTime && isSameSize {
+					s.backends = append(s.backends, b.GetName())
+				}
+				return nil
+			})
+			if err != nil {
+				logrus.Errorf("Background sync error on %s: %v", b.GetName(), err)
+				return
+			}
+			c.Reconcile(b.GetName(), seenPaths)
+		}(b)
+	}
+	wg.Wait()
+
+	// Update cache with global winners
+	for path, s := range globalState {
+		// Since we already calculated the winners, we can use a simplified Upsert or the existing one.
+		// To avoid resetting backends unnecessarily in Upsert, let's use a version that accepts multiple backends.
+		c.UpsertMulti(path, s.meta, s.backends)
+	}
+}
+
+func (c *Cache) UpsertMulti(path string, meta Metadata, backends []string) {
+	c.Mu.Lock()
+	defer c.Mu.Unlock()
+
+	parts := splitPath(path)
+	curr := c.Root
+
+	for i, part := range parts {
+		curr.Mu.Lock()
+		next, ok := curr.Children[part]
+		if !ok {
+			isLast := i == len(parts)-1
+			newMeta := Metadata{
+				Name:  part,
+				Path:  strings.Join(parts[:i+1], "/"),
+				IsDir: true,
+				Mode:  os.ModeDir | 0755,
+			}
+			if isLast {
+				newMeta = meta
+				newMeta.Path = path
+			}
+			next = &Node{
+				Meta:     newMeta,
+				Children: make(map[string]*Node),
+			}
+			curr.Children[part] = next
 		}
-		c.Reconcile(b.GetName(), seenPaths)
+
+		if i == len(parts)-1 {
+			isNewer := meta.ModTime.After(next.Meta.ModTime)
+			isSameTime := meta.ModTime.Equal(next.Meta.ModTime)
+			isLarger := meta.Size > next.Meta.Size
+			isSameSize := meta.Size == next.Meta.Size
+
+			if isNewer || (isSameTime && isLarger) {
+				next.Meta.Size = meta.Size
+				next.Meta.ModTime = meta.ModTime
+				next.Meta.Backends = backends
+			} else if isSameTime && isSameSize {
+				// Merge backends
+				bm := make(map[string]bool)
+				for _, b := range next.Meta.Backends {
+					bm[b] = true
+				}
+				for _, b := range backends {
+					bm[b] = true
+				}
+				newBackends := make([]string, 0, len(bm))
+				for b := range bm {
+					newBackends = append(newBackends, b)
+				}
+				next.Meta.Backends = newBackends
+			}
+		}
+
+		parent := curr
+		curr = next
+		parent.Mu.Unlock()
 	}
 }
 
