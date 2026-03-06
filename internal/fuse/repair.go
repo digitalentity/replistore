@@ -93,8 +93,6 @@ func (m *RepairManager) repairNode(ctx context.Context, node *vfs.Node) error {
 	// 1. Identify source
 	var sourceName string
 	for bName := range currentBackends {
-		// Just pick first one we have. 
-		// Future improvement: pick healthiest/fastest
 		sourceName = bName
 		break
 	}
@@ -103,6 +101,28 @@ func (m *RepairManager) repairNode(ctx context.Context, node *vfs.Node) error {
 	if sourceName == "" {
 		return io.ErrUnexpectedEOF
 	}
+
+	// Distributed Locking to prevent conflicts with concurrent deletes/writes
+	lock, err := m.fs.acquireLock(ctx, path)
+	if err != nil {
+		return err
+	}
+	if lock != nil {
+		defer lock.Release()
+	}
+
+	// Double check if still degraded after acquiring lock
+	node.Mu.Lock()
+	if len(node.Meta.Backends) >= m.fs.ReplicationFactor {
+		node.Mu.Unlock()
+		return nil
+	}
+	// Re-sync currentBackends in case they changed
+	currentBackends = make(map[string]bool)
+	for _, b := range node.Meta.Backends {
+		currentBackends[b] = true
+	}
+	node.Mu.Unlock()
 
 	// 2. Identify targets
 	var targets []string

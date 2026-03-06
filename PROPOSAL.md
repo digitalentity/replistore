@@ -151,4 +151,5 @@ This document outlines a roadmap for evolving RepliStore from a functional proto
     - **Quorum-Based Locking:** Acquires path-level locks by gathering votes from a majority of active peers.
     - **Lamport Logical Clocks:** Ensures deterministic ordering of simultaneous requests.
     - **Lease-Based Fencing:** Locks are granted as TTL leases; background renewal and validation loops prevent stale nodes from corrupting data.
-- **Verification:** Verified cluster formation and lock coordination between instances.
+    - **Full Coordination:** All metadata operations (`Create`, `Mkdir`, `Rename`, `Remove`) and the **Background Repair Manager** now acquire distributed locks, eliminating "undelete" races and concurrent modification conflicts in multi-client clusters.
+- **Verification:** Verified cluster formation, lock coordination, and prevention of undelete races between instances.

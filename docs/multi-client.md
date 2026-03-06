@@ -30,10 +30,14 @@ Ensure all nodes are on the same local network to allow mDNS discovery and RPC c
 ### 1. Write Collision Prevention
 Multiple nodes can no longer write to the same file simultaneously. The DLM ensures that only one node holds the "Write Lease" for a specific path, providing strict consistency for cross-node operations.
 
-### 2. Atomic Directory Operations
-Operations like `Rename` or `Mkdir` are coordinated across the cluster, preventing race conditions that could lead to inconsistent metadata on different nodes.
+### 2. Atomic Directory Operations & Deletes
+Operations like `Rename`, `Mkdir`, and `Remove` (delete) are coordinated across the cluster. This prevents race conditions where two nodes might attempt to modify or delete the same directory structure simultaneously.
 
-### 3. Fencing and Node Recovery
+### 3. Repair Coordination (Undelete Race Prevention)
+The background **Repair Manager** also utilizes the DLM. Before repairing a degraded file, it must acquire a distributed lock. 
+- This prevents the "undelete" race: if Node A is deleting a file, Node B's Repair Manager will fail to acquire the lock and will not attempt to "restore" the file replicas that Node A is currently removing.
+
+### 4. Fencing and Node Recovery
 Locks are granted as **Leases** with a short Time-To-Live (TTL).
 - If a node crashes, its locks naturally expire and are reclaimed by the cluster.
 - **Fencing Tokens:** If a node's network is slow and its lease expires, it will automatically abort pending backend writes, preventing it from corrupting files written by a new owner.
@@ -50,7 +54,10 @@ While *writes* are strictly consistent via the DLM, the in-memory **Metadata Cac
 ### 2. Network Latency
 The P2P locking adds a small amount of latency to write operations (one round-trip to peers). For high-performance workloads, ensure low-latency connectivity between RepliStore instances.
 
-### 3. Split-Brain Behavior
+### 3. Repair Efficiency
+While the DLM prevents "undelete" races, running the `RepairManager` on every node is still redundant. In a large cluster, it is recommended to enable repairs on only a subset of nodes (or use leader election when available) to reduce background network traffic.
+
+### 4. Split-Brain Behavior
 RepliStore requires a **majority** to acquire a lock.
 - If you have 3 nodes and a network partition splits them 1 vs 2, the partition with 2 nodes will continue to operate, while the single node will become read-only (failing to acquire write locks).
 - If you have only 2 nodes, both must be up to reach a quorum ($Q=2$).
