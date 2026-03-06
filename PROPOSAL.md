@@ -51,9 +51,33 @@ This document outlines a roadmap for evolving RepliStore from a functional proto
 - Implement a local disk-based cache for frequently accessed small files or file blocks.
 - This would significantly improve performance for "hot" data while keeping the SMB shares as the authoritative source.
 
-## 4. Operational & Observability
+## 4. FUSE Protocol & Compatibility
 
-### 4.1. Metrics Export (Prometheus)
+### 4.1. `Fsync` Support
+**Current Issue:** RepliStore does not implement `Fsync`. Data is written to the remote SMB share, but the OS is not notified when the data is safely persisted to disk on the remote server.
+**Proposal:** Implement `fs.HandleFlusher` and `fs.HandleFsyncer` to propagate flush/sync calls to all backends. This is critical for data safety and consistency (e.g., database writes).
+
+### 4.2. `Setattr` (Chmod/Chown/Utimes)
+**Current Issue:** Standard filesystem operations like changing permissions or timestamps are not currently supported.
+**Proposal:** Implement `Setattr` on `Dir` and `File` nodes to forward attribute changes to all replicas.
+
+### 4.3. Symlink and Readlink
+**Current Issue:** Symbolic links are currently not supported.
+**Proposal:** Implement `Symlink` and `Readlink` support to allow creating and following links across the unified filesystem.
+
+## 5. Connectivity & Reliability
+
+### 5.1. HealthMonitor Timeouts
+**Current Issue:** `Ping()` calls to backends are synchronous and may block for long periods if a network connection is hanging.
+**Proposal:** Add context support with a strict timeout to the `Backend.Ping()` interface to ensure the monitor remains responsive.
+
+### 5.2. `O_APPEND` Support
+**Current Issue:** Log-style writes using `O_APPEND` are not handled, as `WriteAt` is the primary interface used.
+**Proposal:** Extend the `FileHandle` to handle the `Append` flag by querying the current file size from the cache before performing parallel writes.
+
+## 6. Operational & Observability
+
+### 6.1. Metrics Export (Prometheus)
 **Proposal:**
 - Export metrics for:
     - Operation latency (Read/Write/Metadata).
@@ -61,25 +85,30 @@ This document outlines a roadmap for evolving RepliStore from a functional proto
     - Backend health and latency.
     - Replication health (number of degraded files).
 
-### 4.2. Secure Secret Management
+### 6.2. Secure Secret Management
 **Proposal:**
 - Integrate with external secret providers (e.g., HashiCorp Vault) or system keyrings instead of relying on environment variables or plain text configuration.
 
 ---
 
-## 5. Recently Completed
+## 7. Recently Completed
 
-### 5.1. Quorum-Based Consistency
+### 7.1. Fsync Support
+- **Implemented:** `Flush` and `Fsync` support in the FUSE layer.
+- **Functionality:** Synchronizes data to all open backend handles. Successfully syncs if `write_quorum` is met. Automatically removes replicas that fail the sync operation.
+- **Verification:** Added `TestFile_Fsync` to verify fan-out and quorum behavior.
+
+### 7.2. Quorum-Based Consistency
 - **Implemented:** Support for `write_quorum` in configuration and filesystem operations.
 - **Functionality:** File creation and data writes succeed if a quorum of replicas acknowledge the operation. Failed backends are automatically removed from the file's metadata to ensure consistency with the surviving replicas.
 - **Verification:** Added `TestFile_Write_Quorum` to verify behavior during partial backend failures.
 
-### 5.2. Background Repair (Anti-Entropy)
+### 7.3. Background Repair (Anti-Entropy)
 - **Implemented:** Background `RepairManager` that identifies degraded files and restores replicas.
 - **Functionality:** Periodically scans the metadata cache for files with fewer than `replication_factor` backends and automatically copies data from healthy replicas to missing ones. Supports concurrency control.
 - **Verification:** Added `TestRepairManager_RepairNode` and `TestCache_FindDegraded`.
 
-### 5.3. Background Metadata Synchronization
+### 7.4. Background Metadata Synchronization
 - **Implemented:** A continuous background scan using the `cache_refresh_interval`.
 - **Functionality:** Reconciles the cache by detecting new files, modifications, and deletions.
 - **Verification:** Unit tests added for node pruning and reconciliation logic.

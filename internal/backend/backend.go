@@ -22,6 +22,7 @@ type FileInfo struct {
 type File interface {
 	ReadAt(b []byte, off int64) (int, error)
 	WriteAt(b []byte, off int64) (int, error)
+	Sync() error
 	Close() error
 }
 

@@ -21,10 +21,12 @@ Implements `fs.Node`. It represents a file in the VFS.
 - `Open`: Opens the file handles for reading or writing.
 
 ### `FileHandle`
-Implements `fs.Handle`, `fs.HandleReader`, `fs.HandleWriter`, and `fs.HandleFlusher`.
+Implements `fs.Handle`, `fs.HandleReader`, `fs.HandleWriter`, `fs.HandleFlusher`, and `fs.HandleFsyncer`.
 - `Read`: Reads data from one of the replicas with automatic failover to others if an error occurs.
 - `Write`: Writes data to all replicas in parallel.
-- `Close`: Closes all open handles on the backends.
+- `Flush`: Called on `close()`. Triggers a synchronization of all open backend handles.
+- `Fsync`: Explicitly synchronizes data to the backends.
+- `Release`: Called when the handle is no longer needed. Closes all open handles on the backends.
 
 ## Concurrency Control
 The FUSE layer uses the `vfs.Node.Mu` (a `sync.RWMutex`) to protect metadata. For I/O operations (network calls to backends), it carefully releases locks to prevent blocking the entire filesystem while waiting for network responses.

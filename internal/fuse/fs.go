@@ -132,7 +132,7 @@ func (d *Dir) Create(ctx context.Context, req *fuse.CreateRequest, resp *fuse.Cr
 	g.Wait()
 
 	if len(successfulBackends) < d.fs.WriteQuorum {
-		h.Close(ctx, nil)
+		h.Release(ctx, nil)
 		return nil, nil, fmt.Errorf("could not reach write quorum: %d/%d", len(successfulBackends), d.fs.WriteQuorum)
 	}
 
@@ -143,7 +143,7 @@ func (d *Dir) Create(ctx context.Context, req *fuse.CreateRequest, resp *fuse.Cr
 	// Check if someone else created it while we were doing I/O
 	if _, ok := d.node.Children[req.Name]; ok {
 		// Conflict!
-		h.Close(ctx, nil)
+		h.Release(ctx, nil)
 		return nil, nil, syscall.EEXIST
 	}
 
@@ -279,6 +279,13 @@ func (f *File) Attr(ctx context.Context, a *fuse.Attr) error {
 	return nil
 }
 
+func (f *File) Fsync(ctx context.Context, req *fuse.FsyncRequest) error {
+	// Node fsync is tricky without a handle.
+	// For now, we rely on Handle.Fsync which is what most apps use.
+	// We can implement a "sync on all backends" in the future if needed.
+	return nil
+}
+
 func (f *File) Open(ctx context.Context, req *fuse.OpenRequest, resp *fuse.OpenResponse) (fs.Handle, error) {
 	f.node.Mu.RLock()
 	backends := make([]string, len(f.node.Meta.Backends))
@@ -313,7 +320,7 @@ func (f *File) Open(ctx context.Context, req *fuse.OpenRequest, resp *fuse.OpenR
 			b := f.fs.Backends[bName]
 			sf, err := b.OpenFile(path, int(req.Flags), 0)
 			if err != nil {
-				h.Close(ctx, nil)
+				h.Release(ctx, nil)
 				return nil, err
 			}
 			h.backends[bName] = sf
@@ -448,29 +455,7 @@ func (h *FileHandle) Write(ctx context.Context, req *fuse.WriteRequest, resp *fu
 
 	// Remove failed backends from the handle and from VFS metadata
 	if len(failures) > 0 {
-		h.mu.Lock()
-		for _, name := range failures {
-			h.backends[name].Close()
-			delete(h.backends, name)
-		}
-		h.mu.Unlock()
-
-		h.file.node.Mu.Lock()
-		newBackends := make([]string, 0, len(h.file.node.Meta.Backends))
-		for _, bName := range h.file.node.Meta.Backends {
-			failed := false
-			for _, fName := range failures {
-				if bName == fName {
-					failed = true
-					break
-				}
-			}
-			if !failed {
-				newBackends = append(newBackends, bName)
-			}
-		}
-		h.file.node.Meta.Backends = newBackends
-		h.file.node.Mu.Unlock()
+		h.cleanupFailedBackends(failures)
 	}
 
 	resp.Size = len(req.Data)
@@ -486,10 +471,93 @@ func (h *FileHandle) Write(ctx context.Context, req *fuse.WriteRequest, resp *fu
 	return nil
 }
 
-func (h *FileHandle) Close(ctx context.Context, req *fuse.FlushRequest) error {
+func (h *FileHandle) cleanupFailedBackends(failures []string) {
+	h.mu.Lock()
+	for _, name := range failures {
+		if sf, ok := h.backends[name]; ok {
+			sf.Close()
+			delete(h.backends, name)
+		}
+	}
+	h.mu.Unlock()
+
+	h.file.node.Mu.Lock()
+	newBackends := make([]string, 0, len(h.file.node.Meta.Backends))
+	for _, bName := range h.file.node.Meta.Backends {
+		failed := false
+		for _, fName := range failures {
+			if bName == fName {
+				failed = true
+				break
+			}
+		}
+		if !failed {
+			newBackends = append(newBackends, bName)
+		}
+	}
+	h.file.node.Meta.Backends = newBackends
+	h.file.node.Mu.Unlock()
+}
+
+func (h *FileHandle) Flush(ctx context.Context, req *fuse.FlushRequest) error {
+	return h.syncBackends(ctx)
+}
+
+func (h *FileHandle) Fsync(ctx context.Context, req *fuse.FsyncRequest) error {
+	return h.syncBackends(ctx)
+}
+
+func (h *FileHandle) syncBackends(ctx context.Context) error {
+	h.mu.Lock()
+	backends := make(map[string]backend.File, len(h.backends))
+	for k, v := range h.backends {
+		backends[k] = v
+	}
+	h.mu.Unlock()
+
+	if len(backends) == 0 {
+		return nil
+	}
+
+	var mu sync.Mutex
+	var successes int
+	var failures []string
+	var lastErr error
+
+	var wg sync.WaitGroup
+	for name, sf := range backends {
+		wg.Add(1)
+		go func(name string, sf backend.File) {
+			defer wg.Done()
+			err := sf.Sync()
+			mu.Lock()
+			defer mu.Unlock()
+			if err != nil {
+				logrus.Warnf("Sync failed on backend %s: %v", name, err)
+				failures = append(failures, name)
+				lastErr = err
+			} else {
+				successes++
+			}
+		}(name, sf)
+	}
+	wg.Wait()
+
+	if successes < h.file.fs.WriteQuorum {
+		return fmt.Errorf("could not reach write quorum during sync: %d/%d (last error: %v)", successes, h.file.fs.WriteQuorum, lastErr)
+	}
+
+	if len(failures) > 0 {
+		h.cleanupFailedBackends(failures)
+	}
+
+	return nil
+}
+
+func (h *FileHandle) Release(ctx context.Context, req *fuse.ReleaseRequest) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	
+
 	for _, sf := range h.backends {
 		sf.Close()
 	}

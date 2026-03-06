@@ -69,6 +69,11 @@ func (m *MockFile) WriteAt(b []byte, off int64) (int, error) {
 	return args.Int(0), args.Error(1)
 }
 
+func (m *MockFile) Sync() error {
+	args := m.Called()
+	return args.Error(0)
+}
+
 func (m *MockFile) Close() error {
 	args := m.Called()
 	return args.Error(0)

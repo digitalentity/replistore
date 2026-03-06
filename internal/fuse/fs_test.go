@@ -153,7 +153,7 @@ func TestFile_Read_Failover(t *testing.T) {
 	mockFile1.On("Close").Return(nil)
 
 	// Failover logic should trigger:
-	// 1. Close b1.
+	// 1. Release b1.
 	// 2. Open b2.
 	// 3. Read from b2.
 	b2.On("OpenFile", "failover.txt", os.O_RDONLY, mock.Anything).Return(mockFile2, nil)
@@ -219,6 +219,56 @@ func TestFile_Write_Quorum(t *testing.T) {
 	assert.Equal(t, 5, writeResp.Size)
 
 	// Metadata should be updated to only contain b1
+	file.node.Mu.RLock()
+	assert.Equal(t, []string{"b1"}, file.node.Meta.Backends)
+	file.node.Mu.RUnlock()
+
+	b1.AssertExpectations(t)
+	b2.AssertExpectations(t)
+	mockFile1.AssertExpectations(t)
+	mockFile2.AssertExpectations(t)
+}
+
+func TestFile_Fsync(t *testing.T) {
+	b1 := &test.MockBackend{NameVal: "b1"}
+	b2 := &test.MockBackend{NameVal: "b2"}
+	mockFile1 := &test.MockFile{}
+	mockFile2 := &test.MockFile{}
+
+	cache := vfs.NewCache()
+	cache.Upsert("sync.txt", vfs.Metadata{Name: "sync.txt", Path: "sync.txt", Backends: []string{"b1", "b2"}}, "b1")
+	cache.Upsert("sync.txt", vfs.Metadata{Name: "sync.txt", Path: "sync.txt", Backends: []string{"b1", "b2"}}, "b2")
+
+	fs := &RepliFS{
+		Cache:             cache,
+		Backends:          map[string]backend.Backend{"b1": b1, "b2": b2},
+		ReplicationFactor: 2,
+		WriteQuorum:       1,
+		Selector:          vfs.NewFirstSelector(nil),
+	}
+
+	root, _ := fs.Root()
+	dir := root.(*Dir)
+	node, _ := dir.Lookup(context.Background(), "sync.txt")
+	file := node.(*File)
+
+	b1.On("OpenFile", "sync.txt", mock.Anything, mock.Anything).Return(mockFile1, nil)
+	b2.On("OpenFile", "sync.txt", mock.Anything, mock.Anything).Return(mockFile2, nil)
+
+	h, _ := file.Open(context.Background(), &fuse.OpenRequest{Flags: fuse.OpenReadWrite}, &fuse.OpenResponse{})
+	fileHandle := h.(*FileHandle)
+
+	// b1 sync succeeds, b2 sync fails
+	mockFile1.On("Sync").Return(nil)
+	mockFile2.On("Sync").Return(fmt.Errorf("sync error"))
+	mockFile2.On("Close").Return(nil)
+
+	err := fileHandle.Fsync(context.Background(), &fuse.FsyncRequest{})
+
+	// Should succeed because quorum (1) was reached
+	assert.NoError(t, err)
+
+	// Metadata should be updated to only contain b1 because b2 failed sync
 	file.node.Mu.RLock()
 	assert.Equal(t, []string{"b1"}, file.node.Meta.Backends)
 	file.node.Mu.RUnlock()
