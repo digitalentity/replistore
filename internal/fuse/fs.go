@@ -11,6 +11,7 @@ import (
 	"bazil.org/fuse"
 	"bazil.org/fuse/fs"
 	"github.com/digitalentity/replistore/internal/backend"
+	"github.com/digitalentity/replistore/internal/cluster"
 	"github.com/digitalentity/replistore/internal/vfs"
 	"github.com/sirupsen/logrus"
 	"golang.org/x/sync/errgroup"
@@ -22,10 +23,23 @@ type RepliFS struct {
 	ReplicationFactor int
 	WriteQuorum       int
 	Selector          vfs.BackendSelector
+	LockManager       *cluster.LockManager
+	Discovery         *cluster.Discovery
 }
 
 func (f *RepliFS) Root() (fs.Node, error) {
 	return &Dir{fs: f, node: f.Cache.Root}, nil
+}
+
+func (f *RepliFS) acquireLock(ctx context.Context, path string) (*vfs.DistributedLock, error) {
+	if f.LockManager == nil || f.Discovery == nil {
+		return nil, nil // Locking disabled or not configured
+	}
+	lock := vfs.NewDistributedLock(path, f.LockManager, f.Discovery)
+	if err := lock.Acquire(ctx); err != nil {
+		return nil, err
+	}
+	return lock, nil
 }
 
 type Dir struct {
@@ -88,6 +102,17 @@ func (d *Dir) Create(ctx context.Context, req *fuse.CreateRequest, resp *fuse.Cr
 	parentPath := d.node.Meta.Path
 	d.node.Mu.Unlock()
 
+	path := parentPath + "/" + req.Name
+	if parentPath == "" {
+		path = req.Name
+	}
+
+	// Distributed Locking
+	lock, err := d.fs.acquireLock(ctx, path)
+	if err != nil {
+		return nil, nil, err
+	}
+
 	allBackendNames := make([]string, 0, len(d.fs.Backends))
 	for name := range d.fs.Backends {
 		allBackendNames = append(allBackendNames, name)
@@ -96,16 +121,15 @@ func (d *Dir) Create(ctx context.Context, req *fuse.CreateRequest, resp *fuse.Cr
 	selectedBackends := d.fs.Selector.SelectForWrite(d.fs.ReplicationFactor, allBackendNames)
 
 	if len(selectedBackends) == 0 {
+		if lock != nil {
+			lock.Release()
+		}
 		return nil, nil, syscall.EIO
-	}
-
-	path := parentPath + "/" + req.Name
-	if parentPath == "" {
-		path = req.Name
 	}
 
 	h := &FileHandle{
 		backends: make(map[string]backend.File),
+		lock:     lock,
 	}
 
 	// Perform I/O outside of VFS lock to prevent deadlock
@@ -178,6 +202,15 @@ func (d *Dir) Mkdir(ctx context.Context, req *fuse.MkdirRequest) (fs.Node, error
 		path = req.Name
 	}
 
+	// Distributed Locking
+	lock, err := d.fs.acquireLock(ctx, path)
+	if err != nil {
+		return nil, err
+	}
+	if lock != nil {
+		defer lock.Release()
+	}
+
 	// Directories are created on ALL backends to maintain tree structure
 	var mu sync.Mutex
 	var createdOn []string
@@ -240,6 +273,15 @@ func (d *Dir) Remove(ctx context.Context, req *fuse.RemoveRequest) error {
 	copy(backends, child.Meta.Backends)
 	child.Mu.Unlock()
 
+	// Distributed Locking
+	lock, err := d.fs.acquireLock(ctx, path)
+	if err != nil {
+		return err
+	}
+	if lock != nil {
+		defer lock.Release()
+	}
+
 	g, _ := errgroup.WithContext(ctx)
 	for _, bName := range backends {
 		b := d.fs.Backends[bName]
@@ -291,6 +333,23 @@ func (d *Dir) Rename(ctx context.Context, req *fuse.RenameRequest, newDir fs.Nod
 	newPath := targetParentPath + "/" + req.NewName
 	if targetParentPath == "" {
 		newPath = req.NewName
+	}
+
+	// Distributed Locking for BOTH paths
+	oldLock, err := d.fs.acquireLock(ctx, oldPath)
+	if err != nil {
+		return err
+	}
+	if oldLock != nil {
+		defer oldLock.Release()
+	}
+
+	newLock, err := d.fs.acquireLock(ctx, newPath)
+	if err != nil {
+		return err
+	}
+	if newLock != nil {
+		defer newLock.Release()
 	}
 
 	var mu sync.Mutex
@@ -404,6 +463,15 @@ func (f *File) Open(ctx context.Context, req *fuse.OpenRequest, resp *fuse.OpenR
 		backends: make(map[string]backend.File),
 	}
 
+	// Distributed Locking for writes
+	if !req.Flags.IsReadOnly() {
+		lock, err := f.fs.acquireLock(ctx, path)
+		if err != nil {
+			return nil, err
+		}
+		h.lock = lock
+	}
+
 	// Unlock I/O: Open outside of lock (already done since we RUnlocked above)
 	
 	if req.Flags.IsReadOnly() {
@@ -436,6 +504,7 @@ type FileHandle struct {
 	file     *File
 	mu       sync.Mutex
 	backends map[string]backend.File
+	lock     *vfs.DistributedLock
 }
 
 func (h *FileHandle) Read(ctx context.Context, req *fuse.ReadRequest, resp *fuse.ReadResponse) error {
@@ -520,6 +589,10 @@ func (h *FileHandle) openFallbackBackend(ctx context.Context, tried map[string]b
 }
 
 func (h *FileHandle) Write(ctx context.Context, req *fuse.WriteRequest, resp *fuse.WriteResponse) error {
+	if h.lock != nil && !h.lock.IsValid() {
+		return syscall.EIO // Lock lost
+	}
+
 	h.mu.Lock()
 	backends := make(map[string]backend.File, len(h.backends))
 	for k, v := range h.backends {
@@ -610,6 +683,10 @@ func (h *FileHandle) Fsync(ctx context.Context, req *fuse.FsyncRequest) error {
 }
 
 func (h *FileHandle) syncBackends(ctx context.Context) error {
+	if h.lock != nil && !h.lock.IsValid() {
+		return syscall.EIO // Lock lost
+	}
+
 	h.mu.Lock()
 	backends := make(map[string]backend.File, len(h.backends))
 	for k, v := range h.backends {
@@ -664,5 +741,8 @@ func (h *FileHandle) Release(ctx context.Context, req *fuse.ReleaseRequest) erro
 		sf.Close()
 	}
 	h.backends = nil
+	if h.lock != nil {
+		h.lock.Release()
+	}
 	return nil
 }

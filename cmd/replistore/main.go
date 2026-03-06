@@ -3,14 +3,17 @@ package main
 import (
 	"context"
 	"flag"
+	"net"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 
 	"bazil.org/fuse"
 	"bazil.org/fuse/fs"
 	"github.com/digitalentity/replistore/internal/backend"
+	"github.com/digitalentity/replistore/internal/cluster"
 	"github.com/digitalentity/replistore/internal/config"
 	rfuse "github.com/digitalentity/replistore/internal/fuse"
 	"github.com/digitalentity/replistore/internal/vfs"
@@ -43,6 +46,32 @@ func main() {
 
 	if len(backends) == 0 {
 		logrus.Fatal("No backends connected")
+	}
+
+	// Initialize P2P Lock Manager and Discovery
+	var lockMgr *cluster.LockManager
+	var disco *cluster.Discovery
+
+	if cfg.ListenAddr != "" {
+		nodeID, _ := os.Hostname()
+		if nodeID == "" {
+			nodeID = "replistore-" + time.Now().Format("150405")
+		}
+
+		lockMgr = cluster.NewLockManager(nodeID)
+		actualAddr, err := lockMgr.Start(cfg.ListenAddr)
+		if err != nil {
+			logrus.Fatalf("Failed to start lock manager: %v", err)
+		}
+
+		_, portStr, _ := net.SplitHostPort(actualAddr)
+		port, _ := strconv.Atoi(portStr)
+
+		disco = cluster.NewDiscovery(nodeID, port)
+		if err := disco.Start(); err != nil {
+			logrus.Fatalf("Failed to start discovery: %v", err)
+		}
+		logrus.Infof("P2P Cluster discovery started. Node ID: %s, Port: %d", nodeID, port)
 	}
 
 	// Initialize Health Monitor
@@ -87,6 +116,8 @@ func main() {
 		ReplicationFactor: cfg.ReplicationFactor,
 		WriteQuorum:       cfg.WriteQuorum,
 		Selector:          vfs.NewRandomSelector(monitor),
+		LockManager:       lockMgr,
+		Discovery:         disco,
 	}
 
 	// Initialize and start Repair Manager
@@ -109,6 +140,12 @@ func main() {
 	go func() {
 		<-sigChan
 		logrus.Info("Unmounting...")
+		if disco != nil {
+			disco.Stop()
+		}
+		if lockMgr != nil {
+			lockMgr.Stop()
+		}
 		cancel()
 		fuse.Unmount(cfg.MountPoint)
 		os.Exit(0)

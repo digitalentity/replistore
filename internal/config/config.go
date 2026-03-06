@@ -22,6 +22,8 @@ type Config struct {
 	CacheRefreshInterval string          `yaml:"cache_refresh_interval"`
 	RepairInterval       string          `yaml:"repair_interval"`
 	RepairConcurrency    int             `yaml:"repair_concurrency"`
+	ListenAddr           string          `yaml:"listen_addr"`
+	AdvertiseAddr        string          `yaml:"advertise_addr"`
 	Backends             []BackendConfig `yaml:"backends"`
 }
 

@@ -11,11 +11,16 @@ require (
 )
 
 require (
+	github.com/cenkalti/backoff v2.2.1+incompatible // indirect
 	github.com/davecgh/go-spew v1.1.1 // indirect
 	github.com/geoffgarside/ber v1.1.0 // indirect
+	github.com/google/uuid v1.6.0 // indirect
+	github.com/grandcat/zeroconf v1.0.0 // indirect
+	github.com/miekg/dns v1.1.27 // indirect
 	github.com/pmezard/go-difflib v1.0.0 // indirect
 	github.com/stretchr/objx v0.5.2 // indirect
 	golang.org/x/crypto v0.0.0-20200728195943-123391ffb6de // indirect
+	golang.org/x/net v0.0.0-20200114155413-6afb5195e5aa // indirect
 	golang.org/x/sync v0.19.0 // indirect
 	golang.org/x/sys v0.13.0 // indirect
 )
