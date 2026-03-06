@@ -62,7 +62,7 @@ func TestCache_UpsertUpdates(t *testing.T) {
 	assert.True(t, ok)
 	assert.Equal(t, int64(200), node.Meta.Size)
 	assert.Equal(t, meta2.ModTime, node.Meta.ModTime)
-	assert.ElementsMatch(t, []string{"backend1", "backend2"}, node.Meta.Backends)
+	assert.ElementsMatch(t, []string{"backend2"}, node.Meta.Backends)
 }
 
 func TestCache_Reconcile(t *testing.T) {
@@ -110,4 +110,35 @@ func TestCache_FindDegraded(t *testing.T) {
 	degraded := cache.FindDegraded(3)
 	assert.Len(t, degraded, 1)
 	assert.Equal(t, "degraded.txt", degraded[0].Meta.Name)
+}
+
+func TestCache_UpsertLatestWins(t *testing.T) {
+	cache := vfs.NewCache()
+	now := time.Now()
+
+	// 1. Initial version on b1
+	cache.Upsert("file.txt", vfs.Metadata{Name: "file.txt", Size: 100, ModTime: now}, "b1")
+
+	// 2. Newer version on b2
+	cache.Upsert("file.txt", vfs.Metadata{Name: "file.txt", Size: 100, ModTime: now.Add(time.Hour)}, "b2")
+
+	node, _ := cache.Get("file.txt")
+	assert.Equal(t, []string{"b2"}, node.Meta.Backends)
+	assert.Equal(t, now.Add(time.Hour), node.Meta.ModTime)
+
+	// 3. Stale version on b3 (ignored)
+	cache.Upsert("file.txt", vfs.Metadata{Name: "file.txt", Size: 200, ModTime: now}, "b3")
+	node, _ = cache.Get("file.txt")
+	assert.Equal(t, []string{"b2"}, node.Meta.Backends)
+
+	// 4. Same version on b4 (added)
+	cache.Upsert("file.txt", vfs.Metadata{Name: "file.txt", Size: 100, ModTime: now.Add(time.Hour)}, "b4")
+	node, _ = cache.Get("file.txt")
+	assert.ElementsMatch(t, []string{"b2", "b4"}, node.Meta.Backends)
+
+	// 5. Larger size at same time wins (added)
+	cache.Upsert("file.txt", vfs.Metadata{Name: "file.txt", Size: 150, ModTime: now.Add(time.Hour)}, "b5")
+	node, _ = cache.Get("file.txt")
+	assert.Equal(t, []string{"b5"}, node.Meta.Backends)
+	assert.Equal(t, int64(150), node.Meta.Size)
 }

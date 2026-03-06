@@ -3,7 +3,7 @@
 This plan outlines the implementation of a background "scrub" worker that identifies and repairs degraded files (files with fewer replicas than the configured `replication_factor`).
 
 ## 1. Objective
-Automatically restore the full replication factor for files that were partially written due to backend failures or were discovered to be out of sync during background metadata scans.
+Automatically restore the full replication factor for files that were partially written due to backend failures or were discovered to be out of sync (stale replicas) during background metadata scans.
 
 ## 2. Architectural Changes
 
@@ -17,9 +17,10 @@ Automatically restore the full replication factor for files that were partially 
     - Selects a "source" backend (healthy and containing the file) and one or more "target" backends (healthy and missing the file).
     - Performs the data copy operation using `io.Copy` between backend handles.
 
-### 2.3. Configuration
-- Add `repair_interval` (default: 1h) to `config.Config`.
-- Add `repair_concurrency` (default: 2) to limit the impact on network bandwidth.
+### 2.4. Latest/Largest Wins Consistency
+- Modified `Cache.Upsert` to implement "latest/largest wins" logic.
+- If a backend reports a version with a newer `ModTime` or a larger `Size` (at the same time), it becomes the current winner.
+- Previously identified backends are dropped from the metadata list, marking them as stale and triggering background repair.
 
 ## 3. Implementation Steps
 

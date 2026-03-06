@@ -77,23 +77,35 @@ func (c *Cache) Upsert(path string, meta Metadata, backendName string) {
 		}
 		
 		if i == len(parts)-1 {
-			// Update backend list for the target node
-			found := false
-			for _, b := range next.Meta.Backends {
-				if b == backendName {
-					found = true
-					break
-				}
-			}
-			if !found {
-				next.Meta.Backends = append(next.Meta.Backends, backendName)
-			}
-			// Update size/mtime to the latest/largest
-			if meta.Size > next.Meta.Size {
+			isNewer := meta.ModTime.After(next.Meta.ModTime)
+			isSameTime := meta.ModTime.Equal(next.Meta.ModTime)
+			isLarger := meta.Size > next.Meta.Size
+			isSameSize := meta.Size == next.Meta.Size
+
+			if isNewer || (isSameTime && isLarger) {
+				// We found a better/newer version. 
+				// This backend becomes the sole winner for now.
 				next.Meta.Size = meta.Size
-			}
-			if meta.ModTime.After(next.Meta.ModTime) {
 				next.Meta.ModTime = meta.ModTime
+				next.Meta.Backends = []string{backendName}
+			} else if isSameTime && isSameSize {
+				// This backend matches the current best version.
+				found := false
+				for _, b := range next.Meta.Backends {
+					if b == backendName {
+						found = true
+						break
+					}
+				}
+				if !found {
+					next.Meta.Backends = append(next.Meta.Backends, backendName)
+				}
+			} else {
+				// This backend is stale. We don't add it to the list.
+				// If it was already there (e.g. from a previous sync),
+				// the winner-reset logic above would have already handled it if we encountered the winner first.
+				// However, if we encounter the stale one AFTER the winner in the same sync cycle,
+				// we just ignore it.
 			}
 		}
 
