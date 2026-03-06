@@ -52,4 +52,6 @@ A background worker that periodically scans the Metadata Cache for degraded file
 - **In-Memory Metadata:** For high performance, directory listings and lookups are served from an in-memory cache populated during startup.
 - **Statelessness:** No local database is required; the system reconstructs its state from the backends.
 - **Quorum-Based Write Consistency:** Writes and creates are fanned out to all mapped backends and succeed if a configurable `write_quorum` acknowledges the operation. This provides a balance between reliability and availability.
+- **I/O Resilience:** All backend and cluster RPC operations support `context.Context` for timeouts and cancellation, preventing kernel-level hangs in the FUSE filesystem.
+- **Standardized Concurrency:** Parallel operations (writes, repairs, background sync) are managed using `golang.org/x/sync/errgroup` to ensure robust error collection and resource management.
 - **Read Resilience:** Reads can fail over to alternative replicas if the primary choice is unavailable.

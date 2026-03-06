@@ -3,13 +3,12 @@ package vfs
 import (
 	"context"
 	"fmt"
-	"net"
-	"net/rpc"
 	"sync"
 	"time"
 
 	"github.com/digitalentity/replistore/internal/cluster"
 	"github.com/sirupsen/logrus"
+	"golang.org/x/sync/errgroup"
 )
 
 type DistributedLock struct {
@@ -55,65 +54,58 @@ func (l *DistributedLock) Acquire(ctx context.Context) error {
 		LamportTime: lamportTime,
 	}
 
-	type result struct {
-		peerID string
-		resp   cluster.LockResponse
-		err    error
-	}
-
-	results := make(chan result, n)
-	
-	// 1. Local Request
-	go func() {
-		var resp cluster.LockResponse
-		err := l.Manager.RequestLock(req, &resp)
-		results <- result{peerID: l.Manager.NodeID, resp: resp, err: err}
-	}()
-
-	// 2. Remote Requests
-	for _, p := range peers {
-		go func(p cluster.Peer) {
-			// net/rpc dial doesn't take context, so we dial with a short timeout
-			conn, err := net.DialTimeout("tcp", p.Address, 1*time.Second)
-			if err != nil {
-				results <- result{peerID: p.ID, err: err}
-				return
-			}
-			client := rpc.NewClient(conn)
-			defer client.Close()
-
-			var resp cluster.LockResponse
-			err = client.Call("LockManager.RequestLock", req, &resp)
-			results <- result{peerID: p.ID, resp: resp, err: err}
-		}(p)
-	}
-
+	var mu sync.Mutex
 	successes := 0
 	grantedPeers := make([]string, 0)
 	var fencingToken string
 
-	// Wait for quorum or timeout
-	timeout := time.After(2 * time.Second)
+	g, gCtx := errgroup.WithContext(ctx)
+	// Add timeout to the whole acquisition process
+	gCtx, cancel := context.WithTimeout(gCtx, 3*time.Second)
+	defer cancel()
 
-	for i := 0; i < n; i++ {
-		select {
-		case res := <-results:
-			if res.err == nil && res.resp.Status == cluster.LockOK {
-				successes++
-				grantedPeers = append(grantedPeers, res.peerID)
-				if fencingToken == "" {
-					fencingToken = res.resp.FencingToken
-				}
+	// 1. Local Request
+	g.Go(func() error {
+		var resp cluster.LockResponse
+		err := l.Manager.RequestLock(req, &resp)
+		if err == nil && resp.Status == cluster.LockOK {
+			mu.Lock()
+			successes++
+			grantedPeers = append(grantedPeers, l.Manager.NodeID)
+			if fencingToken == "" {
+				fencingToken = resp.FencingToken
 			}
-		case <-timeout:
-			break
-		case <-ctx.Done():
-			return ctx.Err()
+			mu.Unlock()
 		}
-		if successes >= quorum {
-			break
-		}
+		return nil
+	})
+
+	// 2. Remote Requests
+	for _, p := range peers {
+		p := p
+		g.Go(func() error {
+			client, err := cluster.DialWithContext(gCtx, "tcp", p.Address)
+			if err != nil {
+				return nil
+			}
+			defer client.Close()
+
+			var resp cluster.LockResponse
+			err = cluster.CallWithContext(gCtx, client, "LockManager.RequestLock", req, &resp)
+			if err == nil && resp.Status == cluster.LockOK {
+				mu.Lock()
+				successes++
+				grantedPeers = append(grantedPeers, p.ID)
+				if fencingToken == "" {
+					fencingToken = resp.FencingToken
+				}
+				mu.Unlock()
+			}
+			return nil
+		})
 	}
+
+	_ = g.Wait()
 
 	if successes >= quorum {
 		l.mu.Lock()
@@ -171,6 +163,8 @@ func (l *DistributedLock) startRenewal(peers []string) {
 func (l *DistributedLock) renew(peers []string) bool {
 	n := len(peers)
 	quorum := (n / 2) + 1
+	
+	var mu sync.Mutex
 	successes := 0
 
 	req := cluster.LockRenewal{
@@ -179,29 +173,30 @@ func (l *DistributedLock) renew(peers []string) bool {
 		FencingToken: l.FencingToken,
 	}
 
-	var wg sync.WaitGroup
-	var mu sync.Mutex
+	g, gCtx := errgroup.WithContext(context.Background())
+	// Renewal should have a strict timeout
+	gCtx, cancel := context.WithTimeout(gCtx, l.Manager.LeaseTTL/2)
+	defer cancel()
 	
 	for _, pID := range peers {
-		wg.Add(1)
-		go func(peerID string) {
-			defer wg.Done()
+		pID := pID
+		g.Go(func() error {
 			var status cluster.LockStatus
 			var err error
 
-			if peerID == l.Manager.NodeID {
+			if pID == l.Manager.NodeID {
 				err = l.Manager.RenewLock(req, &status)
 			} else {
-				p, ok := l.findPeer(peerID)
+				p, ok := l.findPeer(pID)
 				if !ok {
-					return
+					return nil
 				}
-				client, dialErr := rpc.Dial("tcp", p.Address)
+				client, dialErr := cluster.DialWithContext(gCtx, "tcp", p.Address)
 				if dialErr != nil {
-					return
+					return nil
 				}
 				defer client.Close()
-				err = client.Call("LockManager.RenewLock", req, &status)
+				err = cluster.CallWithContext(gCtx, client, "LockManager.RenewLock", req, &status)
 			}
 
 			if err == nil && status == cluster.LockOK {
@@ -209,10 +204,11 @@ func (l *DistributedLock) renew(peers []string) bool {
 				successes++
 				mu.Unlock()
 			}
-		}(pID)
+			return nil
+		})
 	}
 
-	wg.Wait()
+	_ = g.Wait()
 	return successes >= quorum
 }
 
@@ -223,25 +219,32 @@ func (l *DistributedLock) rollback(peers []string, token string) {
 		FencingToken: token,
 	}
 
+	g, gCtx := errgroup.WithContext(context.Background())
+	gCtx, cancel := context.WithTimeout(gCtx, 2*time.Second)
+	defer cancel()
+
 	for _, pID := range peers {
-		go func(peerID string) {
+		pID := pID
+		g.Go(func() error {
 			var status cluster.LockStatus
-			if peerID == l.Manager.NodeID {
-				l.Manager.ReleaseLock(req, &status)
+			if pID == l.Manager.NodeID {
+				_ = l.Manager.ReleaseLock(req, &status)
 			} else {
-				p, ok := l.findPeer(peerID)
+				p, ok := l.findPeer(pID)
 				if !ok {
-					return
+					return nil
 				}
-				client, err := rpc.Dial("tcp", p.Address)
+				client, err := cluster.DialWithContext(gCtx, "tcp", p.Address)
 				if err != nil {
-					return
+					return nil
 				}
 				defer client.Close()
-				client.Call("LockManager.ReleaseLock", req, &status)
+				_ = cluster.CallWithContext(gCtx, client, "LockManager.ReleaseLock", req, &status)
 			}
-		}(pID)
+			return nil
+		})
 	}
+	_ = g.Wait()
 }
 
 func (l *DistributedLock) findPeer(id string) (cluster.Peer, bool) {

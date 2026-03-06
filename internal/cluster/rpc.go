@@ -1,6 +1,7 @@
 package cluster
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"net/rpc"
@@ -205,4 +206,29 @@ func (m *LockManager) ReleaseLock(req LockRelease, resp *LockStatus) error {
 	m.grants.Delete(path)
 	*resp = LockOK
 	return nil
+}
+
+// --- RPC Helpers ---
+
+func DialWithContext(ctx context.Context, network, address string) (*rpc.Client, error) {
+	d := net.Dialer{}
+	conn, err := d.DialContext(ctx, network, address)
+	if err != nil {
+		return nil, err
+	}
+	return rpc.NewClient(conn), nil
+}
+
+func CallWithContext(ctx context.Context, client *rpc.Client, serviceMethod string, args interface{}, reply interface{}) error {
+	done := make(chan error, 1)
+	go func() {
+		done <- client.Call(serviceMethod, args, reply)
+	}()
+
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case err := <-done:
+		return err
+	}
 }

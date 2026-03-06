@@ -1,10 +1,12 @@
 package backend
 
 import (
+	"context"
 	"sync"
 	"time"
 
 	"github.com/sirupsen/logrus"
+	"golang.org/x/sync/errgroup"
 )
 
 type HealthMonitor struct {
@@ -21,35 +23,54 @@ func NewHealthMonitor(backends map[string]Backend) *HealthMonitor {
 	return &HealthMonitor{
 		backends: backends,
 		status:   status,
+		mu:       sync.RWMutex{},
 	}
 }
 
-func (m *HealthMonitor) Start(interval time.Duration) {
+func (m *HealthMonitor) Start(ctx context.Context, interval time.Duration) {
 	ticker := time.NewTicker(interval)
 	go func() {
-		for range ticker.C {
-			m.checkAll()
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				m.checkAll(ctx)
+			}
 		}
 	}()
 }
 
-func (m *HealthMonitor) checkAll() {
+func (m *HealthMonitor) checkAll(ctx context.Context) {
+	g, gCtx := errgroup.WithContext(ctx)
+	
 	for name, b := range m.backends {
-		err := b.Ping()
-		m.mu.Lock()
-		if err != nil {
-			if m.status[name] {
-				logrus.Warnf("Backend %s is DOWN: %v", name, err)
+		name, b := name, b
+		g.Go(func() error {
+			// Each ping gets its own sub-timeout
+			pingCtx, cancel := context.WithTimeout(gCtx, 2*time.Second)
+			defer cancel()
+			
+			err := b.Ping(pingCtx)
+			
+			m.mu.Lock()
+			if err != nil {
+				if m.status[name] {
+					logrus.Warnf("Backend %s is DOWN: %v", name, err)
+				}
+				m.status[name] = false
+			} else {
+				if !m.status[name] {
+					logrus.Infof("Backend %s is UP", name)
+				}
+				m.status[name] = true
 			}
-			m.status[name] = false
-		} else {
-			if !m.status[name] {
-				logrus.Infof("Backend %s is UP", name)
-			}
-			m.status[name] = true
-		}
-		m.mu.Unlock()
+			m.mu.Unlock()
+			return nil
+		})
 	}
+	_ = g.Wait()
 }
 
 func (m *HealthMonitor) IsHealthy(name string) bool {

@@ -15,13 +15,14 @@ When a new file is created:
 When an existing file is opened for writing or an application writes to an open file:
 1.  **Distributed Lock Acquisition:** If the file is opened with write intent (`O_RDWR` or `O_WRONLY`), RepliStore acquires a `DistributedLock` for the path.
 2.  **Lease Validation:** For every `Write` and `Sync` call, RepliStore verifies that the distributed lock lease is still valid.
-3.  **Fan-out:** The incoming data buffer is sent to ALL open backend handles in parallel.
+3.  **Parallel Fan-out:** The incoming data buffer is sent to ALL open backend handles in parallel using `golang.org/x/sync/errgroup`.
+    - This allows for efficient error aggregation and ensures that the operation respects the FUSE request's `context.Context`.
 4.  **Quorum Check:** RepliStore waits for all writes to complete and counts the successes.
-3.  **Quorum-Based Consistency:**
+5.  **Quorum-Based Consistency:**
     - If the number of successful writes meets the `write_quorum`, the operation returns success to the application.
     - If a write fails on a specific backend, that backend is removed from the `FileHandle` and the file's metadata cache to avoid further I/O to that replica.
     - If the number of successful writes is less than `write_quorum`, the operation fails and returns an error.
-4.  **Cache Update:** On success, the file size and the backend list in the metadata cache are updated.
+6.  **Cache Update:** On success, the file size and the backend list in the metadata cache are updated.
 
 ```mermaid
 sequenceDiagram

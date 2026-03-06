@@ -66,7 +66,7 @@ func TestDir_Create(t *testing.T) {
 	root, _ := fs.Root()
 	dir := root.(*Dir)
 
-	b1.On("OpenFile", "new.txt", os.O_CREATE|os.O_RDWR, os.FileMode(0644)).Return(mockFile, nil)
+	b1.On("OpenFile", mock.Anything, "new.txt", os.O_CREATE|os.O_RDWR, os.FileMode(0644)).Return(mockFile, nil)
 
 	req := &fuse.CreateRequest{Name: "new.txt", Mode: 0644}
 	resp := &fuse.CreateResponse{}
@@ -99,7 +99,7 @@ func TestFile_Write(t *testing.T) {
 	node, _ := dir.Lookup(context.Background(), "test.txt")
 	file := node.(*File)
 
-	b1.On("OpenFile", "test.txt", mock.Anything, mock.Anything).Return(mockFile, nil)
+	b1.On("OpenFile", mock.Anything, "test.txt", mock.Anything, mock.Anything).Return(mockFile, nil)
 	
 	h, err := file.Open(context.Background(), &fuse.OpenRequest{Flags: fuse.OpenReadWrite}, &fuse.OpenResponse{})
 	assert.NoError(t, err)
@@ -107,7 +107,7 @@ func TestFile_Write(t *testing.T) {
 	fileHandle := h.(*FileHandle)
 	
 	data := []byte("hello")
-	mockFile.On("WriteAt", data, int64(0)).Return(5, nil)
+	mockFile.On("WriteAt", mock.Anything, data, int64(0)).Return(5, nil)
 	
 	writeReq := &fuse.WriteRequest{Data: data, Offset: 0}
 	writeResp := &fuse.WriteResponse{}
@@ -123,10 +123,7 @@ func TestFile_Read_Failover(t *testing.T) {
 	mockFile2 := &test.MockFile{}
 
 	cache := vfs.NewCache()
-	// The order of Upsert calls matters for backend list order in simple implementation.
-	// Since Backends is a slice in Metadata, first one appended is first one used by Open (usually).
 	cache.Upsert("failover.txt", vfs.Metadata{Name: "failover.txt", Path: "failover.txt", Backends: []string{"b1", "b2"}}, "b1")
-	// Updating with b2
 	cache.Upsert("failover.txt", vfs.Metadata{Name: "failover.txt", Path: "failover.txt", Backends: []string{"b1", "b2"}}, "b2")
 
 	fs := &RepliFS{
@@ -140,24 +137,18 @@ func TestFile_Read_Failover(t *testing.T) {
 	node, _ := dir.Lookup(context.Background(), "failover.txt")
 	file := node.(*File)
 
-	// Open selects b1 (first in list)
-	b1.On("OpenFile", "failover.txt", os.O_RDONLY, mock.Anything).Return(mockFile1, nil)
+	b1.On("OpenFile", mock.Anything, "failover.txt", os.O_RDONLY, mock.Anything).Return(mockFile1, nil)
 	
 	h, err := file.Open(context.Background(), &fuse.OpenRequest{Flags: fuse.OpenReadOnly}, &fuse.OpenResponse{})
 	assert.NoError(t, err)
 	
 	fileHandle := h.(*FileHandle)
 	
-	// First read on b1 fails
-	mockFile1.On("ReadAt", mock.Anything, int64(0)).Return(0, fmt.Errorf("connection lost"))
+	mockFile1.On("ReadAt", mock.Anything, mock.Anything, int64(0)).Return(0, fmt.Errorf("connection lost"))
 	mockFile1.On("Close").Return(nil)
 
-	// Failover logic should trigger:
-	// 1. Release b1.
-	// 2. Open b2.
-	// 3. Read from b2.
-	b2.On("OpenFile", "failover.txt", os.O_RDONLY, mock.Anything).Return(mockFile2, nil)
-	mockFile2.On("ReadAt", mock.Anything, int64(0)).Return(5, nil)
+	b2.On("OpenFile", mock.Anything, "failover.txt", os.O_RDONLY, mock.Anything).Return(mockFile2, nil)
+	mockFile2.On("ReadAt", mock.Anything, mock.Anything, int64(0)).Return(5, nil)
 
 	readReq := &fuse.ReadRequest{Size: 5, Offset: 0}
 	readResp := &fuse.ReadResponse{}
@@ -178,7 +169,6 @@ func TestFile_Write_Quorum(t *testing.T) {
 	mockFile2 := &test.MockFile{}
 
 	cache := vfs.NewCache()
-	// Initial state: file exists on both b1 and b2
 	cache.Upsert("quorum.txt", vfs.Metadata{Name: "quorum.txt", Path: "quorum.txt", Backends: []string{"b1", "b2"}}, "b1")
 	cache.Upsert("quorum.txt", vfs.Metadata{Name: "quorum.txt", Path: "quorum.txt", Backends: []string{"b1", "b2"}}, "b2")
 
@@ -186,7 +176,7 @@ func TestFile_Write_Quorum(t *testing.T) {
 		Cache:             cache,
 		Backends:          map[string]backend.Backend{"b1": b1, "b2": b2},
 		ReplicationFactor: 2,
-		WriteQuorum:       1, // Quorum of 1 out of 2
+		WriteQuorum:       1,
 		Selector:          vfs.NewFirstSelector(nil),
 	}
 
@@ -195,9 +185,8 @@ func TestFile_Write_Quorum(t *testing.T) {
 	node, _ := dir.Lookup(context.Background(), "quorum.txt")
 	file := node.(*File)
 
-	// Open for writing opens BOTH backends
-	b1.On("OpenFile", "quorum.txt", mock.Anything, mock.Anything).Return(mockFile1, nil)
-	b2.On("OpenFile", "quorum.txt", mock.Anything, mock.Anything).Return(mockFile2, nil)
+	b1.On("OpenFile", mock.Anything, "quorum.txt", mock.Anything, mock.Anything).Return(mockFile1, nil)
+	b2.On("OpenFile", mock.Anything, "quorum.txt", mock.Anything, mock.Anything).Return(mockFile2, nil)
 
 	h, err := file.Open(context.Background(), &fuse.OpenRequest{Flags: fuse.OpenReadWrite}, &fuse.OpenResponse{})
 	assert.NoError(t, err)
@@ -205,20 +194,17 @@ func TestFile_Write_Quorum(t *testing.T) {
 	fileHandle := h.(*FileHandle)
 
 	data := []byte("hello")
-	// b1 succeeds, b2 fails
-	mockFile1.On("WriteAt", data, int64(0)).Return(5, nil)
-	mockFile2.On("WriteAt", data, int64(0)).Return(0, fmt.Errorf("disk full"))
+	mockFile1.On("WriteAt", mock.Anything, data, int64(0)).Return(5, nil)
+	mockFile2.On("WriteAt", mock.Anything, data, int64(0)).Return(0, fmt.Errorf("disk full"))
 	mockFile2.On("Close").Return(nil)
 
 	writeReq := &fuse.WriteRequest{Data: data, Offset: 0}
 	writeResp := &fuse.WriteResponse{}
 	err = fileHandle.Write(context.Background(), writeReq, writeResp)
 
-	// Should succeed because quorum (1) was reached
 	assert.NoError(t, err)
 	assert.Equal(t, 5, writeResp.Size)
 
-	// Metadata should be updated to only contain b1
 	file.node.Mu.RLock()
 	assert.Equal(t, []string{"b1"}, file.node.Meta.Backends)
 	file.node.Mu.RUnlock()
@@ -252,23 +238,20 @@ func TestFile_Fsync(t *testing.T) {
 	node, _ := dir.Lookup(context.Background(), "sync.txt")
 	file := node.(*File)
 
-	b1.On("OpenFile", "sync.txt", mock.Anything, mock.Anything).Return(mockFile1, nil)
-	b2.On("OpenFile", "sync.txt", mock.Anything, mock.Anything).Return(mockFile2, nil)
+	b1.On("OpenFile", mock.Anything, "sync.txt", mock.Anything, mock.Anything).Return(mockFile1, nil)
+	b2.On("OpenFile", mock.Anything, "sync.txt", mock.Anything, mock.Anything).Return(mockFile2, nil)
 
 	h, _ := file.Open(context.Background(), &fuse.OpenRequest{Flags: fuse.OpenReadWrite}, &fuse.OpenResponse{})
 	fileHandle := h.(*FileHandle)
 
-	// b1 sync succeeds, b2 sync fails
-	mockFile1.On("Sync").Return(nil)
-	mockFile2.On("Sync").Return(fmt.Errorf("sync error"))
+	mockFile1.On("Sync", mock.Anything).Return(nil)
+	mockFile2.On("Sync", mock.Anything).Return(fmt.Errorf("sync error"))
 	mockFile2.On("Close").Return(nil)
 
 	err := fileHandle.Fsync(context.Background(), &fuse.FsyncRequest{})
 
-	// Should succeed because quorum (1) was reached
 	assert.NoError(t, err)
 
-	// Metadata should be updated to only contain b1 because b2 failed sync
 	file.node.Mu.RLock()
 	assert.Equal(t, []string{"b1"}, file.node.Meta.Backends)
 	file.node.Mu.RUnlock()

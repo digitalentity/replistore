@@ -135,13 +135,13 @@ func (d *Dir) Create(ctx context.Context, req *fuse.CreateRequest, resp *fuse.Cr
 	// Perform I/O outside of VFS lock to prevent deadlock
 	var mu sync.Mutex
 	var successfulBackends []string
-	g, _ := errgroup.WithContext(ctx)
+	g, gCtx := errgroup.WithContext(ctx)
 
 	for _, bName := range selectedBackends {
 		bName := bName // capture for goroutine
 		g.Go(func() error {
 			b := d.fs.Backends[bName]
-			sf, err := b.OpenFile(path, os.O_CREATE|os.O_RDWR, req.Mode)
+			sf, err := b.OpenFile(gCtx, path, os.O_CREATE|os.O_RDWR, req.Mode)
 			if err != nil {
 				logrus.Warnf("Failed to create file %s on backend %s: %v", path, bName, err)
 				return nil // Don't fail the whole operation yet
@@ -153,10 +153,10 @@ func (d *Dir) Create(ctx context.Context, req *fuse.CreateRequest, resp *fuse.Cr
 			return nil
 		})
 	}
-	g.Wait()
+	_ = g.Wait() // Ignore errors as we count successes
 
 	if len(successfulBackends) < d.fs.WriteQuorum {
-		h.Release(ctx, nil)
+		_ = h.Release(ctx, nil)
 		return nil, nil, fmt.Errorf("could not reach write quorum: %d/%d", len(successfulBackends), d.fs.WriteQuorum)
 	}
 
@@ -167,7 +167,7 @@ func (d *Dir) Create(ctx context.Context, req *fuse.CreateRequest, resp *fuse.Cr
 	// Check if someone else created it while we were doing I/O
 	if _, ok := d.node.Children[req.Name]; ok {
 		// Conflict!
-		h.Release(ctx, nil)
+		_ = h.Release(ctx, nil)
 		return nil, nil, syscall.EEXIST
 	}
 
@@ -214,11 +214,12 @@ func (d *Dir) Mkdir(ctx context.Context, req *fuse.MkdirRequest) (fs.Node, error
 	// Directories are created on ALL backends to maintain tree structure
 	var mu sync.Mutex
 	var createdOn []string
-	g, _ := errgroup.WithContext(ctx)
+	g, gCtx := errgroup.WithContext(ctx)
 
 	for name, b := range d.fs.Backends {
+		name, b := name, b
 		g.Go(func() error {
-			err := b.Mkdir(path, req.Mode)
+			err := b.Mkdir(gCtx, path, req.Mode)
 			if err != nil {
 				logrus.Warnf("Failed to create directory %s on %s: %v", path, name, err)
 				return nil // Don't fail the whole operation if one backend fails
@@ -229,7 +230,7 @@ func (d *Dir) Mkdir(ctx context.Context, req *fuse.MkdirRequest) (fs.Node, error
 			return nil
 		})
 	}
-	g.Wait()
+	_ = g.Wait()
 
 	if len(createdOn) == 0 {
 		return nil, syscall.EIO
@@ -282,11 +283,12 @@ func (d *Dir) Remove(ctx context.Context, req *fuse.RemoveRequest) error {
 		defer lock.Release()
 	}
 
-	g, _ := errgroup.WithContext(ctx)
+	g, gCtx := errgroup.WithContext(ctx)
 	for _, bName := range backends {
+		bName := bName
 		b := d.fs.Backends[bName]
 		g.Go(func() error {
-			err := b.Remove(path)
+			err := b.Remove(gCtx, path)
 			if err != nil {
 				logrus.Errorf("Failed to remove %s from %s: %v", path, bName, err)
 				return err
@@ -357,19 +359,19 @@ func (d *Dir) Rename(ctx context.Context, req *fuse.RenameRequest, newDir fs.Nod
 	var failures []string
 	var lastErr error
 
-	g, _ := errgroup.WithContext(ctx)
+	g, gCtx := errgroup.WithContext(ctx)
 	for _, bName := range backends {
 		bName := bName
 		g.Go(func() error {
 			b := d.fs.Backends[bName]
 			
 			// Ensure destination parent path exists on this backend
-			if err := b.MkdirAll(targetParentPath, 0755); err != nil {
+			if err := b.MkdirAll(gCtx, targetParentPath, 0755); err != nil {
 				logrus.Warnf("Failed to ensure parent path %s on backend %s: %v", targetParentPath, bName, err)
 				// Continue anyway, maybe it exists
 			}
 
-			err := b.Rename(oldPath, newPath)
+			err := b.Rename(gCtx, oldPath, newPath)
 			mu.Lock()
 			defer mu.Unlock()
 			if err != nil {
@@ -382,13 +384,13 @@ func (d *Dir) Rename(ctx context.Context, req *fuse.RenameRequest, newDir fs.Nod
 			return nil
 		})
 	}
-	g.Wait()
+	_ = g.Wait()
 
 	if len(successful) < d.fs.WriteQuorum {
 		// Rollback successful ones
 		for _, bName := range successful {
 			b := d.fs.Backends[bName]
-			b.Rename(newPath, oldPath)
+			_ = b.Rename(ctx, newPath, oldPath)
 		}
 		if lastErr != nil {
 			return lastErr
@@ -480,7 +482,7 @@ func (f *File) Open(ctx context.Context, req *fuse.OpenRequest, resp *fuse.OpenR
 			return nil, syscall.EIO
 		}
 		b := f.fs.Backends[bName]
-		sf, err := b.OpenFile(path, os.O_RDONLY, 0)
+		sf, err := b.OpenFile(ctx, path, os.O_RDONLY, 0)
 		if err != nil {
 			return nil, err
 		}
@@ -488,9 +490,9 @@ func (f *File) Open(ctx context.Context, req *fuse.OpenRequest, resp *fuse.OpenR
 	} else {
 		for _, bName := range backends {
 			b := f.fs.Backends[bName]
-			sf, err := b.OpenFile(path, int(req.Flags), 0)
+			sf, err := b.OpenFile(ctx, path, int(req.Flags), 0)
 			if err != nil {
-				h.Release(ctx, nil)
+				_ = h.Release(ctx, nil)
 				return nil, err
 			}
 			h.backends[bName] = sf
@@ -533,7 +535,7 @@ func (h *FileHandle) Read(ctx context.Context, req *fuse.ReadRequest, resp *fuse
 			continue
 		}
 
-		n, err := sf.ReadAt(buf, req.Offset)
+		n, err := sf.ReadAt(ctx, buf, req.Offset)
 		if err != nil && err != io.EOF {
 			logrus.Warnf("Read failed on backend %s: %v. Retrying...", currentBackendName, err)
 
@@ -541,7 +543,7 @@ func (h *FileHandle) Read(ctx context.Context, req *fuse.ReadRequest, resp *fuse
 
 			h.mu.Lock()
 			// Close and remove the failed backend
-			sf.Close()
+			_ = sf.Close()
 			delete(h.backends, currentBackendName)
 			h.mu.Unlock()
 
@@ -574,7 +576,7 @@ func (h *FileHandle) openFallbackBackend(ctx context.Context, tried map[string]b
 		h.mu.Unlock()
 
 		b := h.file.fs.Backends[bName]
-		sf, err := b.OpenFile(path, os.O_RDONLY, 0)
+		sf, err := b.OpenFile(ctx, path, os.O_RDONLY, 0)
 		if err == nil {
 			h.mu.Lock()
 			h.backends[bName] = sf
@@ -605,12 +607,11 @@ func (h *FileHandle) Write(ctx context.Context, req *fuse.WriteRequest, resp *fu
 	var failures []string
 	var lastErr error
 
-	var wg sync.WaitGroup
+	g, gCtx := errgroup.WithContext(ctx)
 	for name, sf := range backends {
-		wg.Add(1)
-		go func(name string, sf backend.File) {
-			defer wg.Done()
-			_, err := sf.WriteAt(req.Data, req.Offset)
+		name, sf := name, sf
+		g.Go(func() error {
+			_, err := sf.WriteAt(gCtx, req.Data, req.Offset)
 			mu.Lock()
 			defer mu.Unlock()
 			if err != nil {
@@ -620,9 +621,10 @@ func (h *FileHandle) Write(ctx context.Context, req *fuse.WriteRequest, resp *fu
 			} else {
 				successes++
 			}
-		}(name, sf)
+			return nil
+		})
 	}
-	wg.Wait()
+	_ = g.Wait()
 
 	if successes < h.file.fs.WriteQuorum {
 		return fmt.Errorf("could not reach write quorum: %d/%d (last error: %v)", successes, h.file.fs.WriteQuorum, lastErr)
@@ -650,7 +652,7 @@ func (h *FileHandle) cleanupFailedBackends(failures []string) {
 	h.mu.Lock()
 	for _, name := range failures {
 		if sf, ok := h.backends[name]; ok {
-			sf.Close()
+			_ = sf.Close()
 			delete(h.backends, name)
 		}
 	}
@@ -703,12 +705,11 @@ func (h *FileHandle) syncBackends(ctx context.Context) error {
 	var failures []string
 	var lastErr error
 
-	var wg sync.WaitGroup
+	g, gCtx := errgroup.WithContext(ctx)
 	for name, sf := range backends {
-		wg.Add(1)
-		go func(name string, sf backend.File) {
-			defer wg.Done()
-			err := sf.Sync()
+		name, sf := name, sf
+		g.Go(func() error {
+			err := sf.Sync(gCtx)
 			mu.Lock()
 			defer mu.Unlock()
 			if err != nil {
@@ -718,9 +719,10 @@ func (h *FileHandle) syncBackends(ctx context.Context) error {
 			} else {
 				successes++
 			}
-		}(name, sf)
+			return nil
+		})
 	}
-	wg.Wait()
+	_ = g.Wait()
 
 	if successes < h.file.fs.WriteQuorum {
 		return fmt.Errorf("could not reach write quorum during sync: %d/%d (last error: %v)", successes, h.file.fs.WriteQuorum, lastErr)
@@ -738,7 +740,7 @@ func (h *FileHandle) Release(ctx context.Context, req *fuse.ReleaseRequest) erro
 	defer h.mu.Unlock()
 
 	for _, sf := range h.backends {
-		sf.Close()
+		_ = sf.Close()
 	}
 	h.backends = nil
 	if h.lock != nil {

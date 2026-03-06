@@ -4,12 +4,12 @@ import (
 	"context"
 	"io"
 	"os"
-	"sync"
 	"time"
 
 	"github.com/digitalentity/replistore/internal/backend"
 	"github.com/digitalentity/replistore/internal/vfs"
 	"github.com/sirupsen/logrus"
+	"golang.org/x/sync/errgroup"
 )
 
 type RepairManager struct {
@@ -33,6 +33,7 @@ func (m *RepairManager) Start(ctx context.Context) {
 
 	ticker := time.NewTicker(m.interval)
 	go func() {
+		defer ticker.Stop()
 		for {
 			select {
 			case <-ctx.Done():
@@ -67,26 +68,19 @@ func (m *RepairManager) performScrub(ctx context.Context) {
 
 	logrus.Infof("Found %d degraded files, starting repair...", len(degraded))
 
-	// Semaphore for concurrency control
-	sem := make(chan struct{}, m.concurrency)
-	var wg sync.WaitGroup
+	g, gCtx := errgroup.WithContext(ctx)
+	g.SetLimit(m.concurrency)
 
 	for _, node := range degraded {
-		select {
-		case <-ctx.Done():
-			return
-		case sem <- struct{}{}:
-			wg.Add(1)
-			go func(n *vfs.Node) {
-				defer wg.Done()
-				defer func() { <-sem }()
-				if err := m.repairNode(ctx, n); err != nil {
-					logrus.Errorf("Failed to repair %s: %v", n.Meta.Path, err)
-				}
-			}(node)
-		}
+		node := node
+		g.Go(func() error {
+			if err := m.repairNode(gCtx, node); err != nil {
+				logrus.Errorf("Failed to repair %s: %v", node.Meta.Path, err)
+			}
+			return nil // Don't fail the whole scrub on single file error
+		})
 	}
-	wg.Wait()
+	_ = g.Wait()
 	logrus.Info("Background repair scrub completed")
 }
 
@@ -164,7 +158,7 @@ func (m *RepairManager) repairNode(ctx context.Context, node *vfs.Node) error {
 
 	// 3. Perform copy
 	sourceBackend := m.fs.Backends[sourceName]
-	srcFile, err := sourceBackend.OpenFile(path, os.O_RDONLY, 0)
+	srcFile, err := sourceBackend.OpenFile(ctx, path, os.O_RDONLY, 0)
 	if err != nil {
 		return err
 	}
@@ -173,23 +167,20 @@ func (m *RepairManager) repairNode(ctx context.Context, node *vfs.Node) error {
 	// For each target, open and copy
 	for _, targetName := range targets {
 		targetBackend := m.fs.Backends[targetName]
-		// Need to ensure parent directory exists on target? 
-		// Usually yes, but RepliStore Mkdir creates on all backends.
 		
-		dstFile, err := targetBackend.OpenFile(path, os.O_CREATE|os.O_TRUNC|os.O_RDWR, node.Meta.Mode)
+		dstFile, err := targetBackend.OpenFile(ctx, path, os.O_CREATE|os.O_TRUNC|os.O_RDWR, node.Meta.Mode)
 		if err != nil {
 			logrus.Warnf("Repair failed for %s on target %s: %v", path, targetName, err)
 			continue
 		}
 
 		// Simple implementation: sequential copy for each target
-		// Optimization: read once, write many
-		if _, err := io.Copy(&offsetWriter{f: dstFile}, &offsetReader{f: srcFile}); err != nil {
-			dstFile.Close()
+		if _, err := io.Copy(&offsetWriter{ctx: ctx, f: dstFile}, &offsetReader{ctx: ctx, f: srcFile}); err != nil {
+			_ = dstFile.Close()
 			logrus.Warnf("Copy failed for %s to %s: %v", path, targetName, err)
 			continue
 		}
-		dstFile.Close()
+		_ = dstFile.Close()
 
 		// Update metadata
 		node.Mu.Lock()
@@ -212,23 +203,25 @@ func (m *RepairManager) repairNode(ctx context.Context, node *vfs.Node) error {
 
 // Helpers to adapt backend.File to io.Reader/Writer
 type offsetReader struct {
+	ctx    context.Context
 	f      backend.File
 	offset int64
 }
 
 func (r *offsetReader) Read(p []byte) (n int, err error) {
-	n, err = r.f.ReadAt(p, r.offset)
+	n, err = r.f.ReadAt(r.ctx, p, r.offset)
 	r.offset += int64(n)
 	return
 }
 
 type offsetWriter struct {
+	ctx    context.Context
 	f      backend.File
 	offset int64
 }
 
 func (w *offsetWriter) Write(p []byte) (n int, err error) {
-	n, err = w.f.WriteAt(p, w.offset)
+	n, err = w.f.WriteAt(w.ctx, p, w.offset)
 	w.offset += int64(n)
 	return
 }

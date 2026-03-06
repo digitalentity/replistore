@@ -37,18 +37,18 @@ func TestRepairManager_RepairNode(t *testing.T) {
 	node, _ := cache.Get("repair.txt")
 
 	// Expecting read from b1
-	b1.On("OpenFile", "repair.txt", os.O_RDONLY, mock.Anything).Return(mockFile1, nil)
+	b1.On("OpenFile", mock.Anything, "repair.txt", os.O_RDONLY, mock.Anything).Return(mockFile1, nil)
 	
 	data := []byte("repair data")
-	mockFile1.On("ReadAt", mock.Anything, int64(0)).Run(func(args mock.Arguments) {
-		buf := args.Get(0).([]byte)
+	mockFile1.On("ReadAt", mock.Anything, mock.Anything, int64(0)).Run(func(args mock.Arguments) {
+		buf := args.Get(1).([]byte)
 		copy(buf, data)
 	}).Return(len(data), io.EOF)
 	mockFile1.On("Close").Return(nil)
 
 	// Expecting write to b2
-	b2.On("OpenFile", "repair.txt", os.O_CREATE|os.O_TRUNC|os.O_RDWR, os.FileMode(0644)).Return(mockFile2, nil)
-	mockFile2.On("WriteAt", data, int64(0)).Return(len(data), nil)
+	b2.On("OpenFile", mock.Anything, "repair.txt", os.O_CREATE|os.O_TRUNC|os.O_RDWR, os.FileMode(0644)).Return(mockFile2, nil)
+	mockFile2.On("WriteAt", mock.Anything, data, int64(0)).Return(len(data), nil)
 	mockFile2.On("Close").Return(nil)
 
 	err := mgr.repairNode(context.Background(), node)
@@ -67,17 +67,17 @@ func TestOffsetReader_Read(t *testing.T) {
 	mockFile := &test.MockFile{}
 	data := []byte("hello world")
 	
-	mockFile.On("ReadAt", mock.Anything, int64(0)).Run(func(args mock.Arguments) {
-		buf := args.Get(0).([]byte)
+	mockFile.On("ReadAt", mock.Anything, mock.Anything, int64(0)).Run(func(args mock.Arguments) {
+		buf := args.Get(1).([]byte)
 		copy(buf, data[:5])
 	}).Return(5, nil)
 	
-	mockFile.On("ReadAt", mock.Anything, int64(5)).Run(func(args mock.Arguments) {
-		buf := args.Get(0).([]byte)
+	mockFile.On("ReadAt", mock.Anything, mock.Anything, int64(5)).Run(func(args mock.Arguments) {
+		buf := args.Get(1).([]byte)
 		copy(buf, data[5:])
 	}).Return(6, nil)
 
-	reader := &offsetReader{f: mockFile}
+	reader := &offsetReader{ctx: context.Background(), f: mockFile}
 	
 	p1 := make([]byte, 5)
 	n, err := reader.Read(p1)
@@ -95,10 +95,10 @@ func TestOffsetReader_Read(t *testing.T) {
 func TestOffsetWriter_Write(t *testing.T) {
 	mockFile := &test.MockFile{}
 	
-	mockFile.On("WriteAt", []byte("hello"), int64(0)).Return(5, nil)
-	mockFile.On("WriteAt", []byte(" world"), int64(5)).Return(6, nil)
+	mockFile.On("WriteAt", mock.Anything, []byte("hello"), int64(0)).Return(5, nil)
+	mockFile.On("WriteAt", mock.Anything, []byte(" world"), int64(5)).Return(6, nil)
 
-	writer := &offsetWriter{f: mockFile}
+	writer := &offsetWriter{ctx: context.Background(), f: mockFile}
 	
 	n, err := writer.Write([]byte("hello"))
 	assert.NoError(t, err)

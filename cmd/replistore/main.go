@@ -29,6 +29,9 @@ func main() {
 		logrus.Fatalf("Failed to load config: %v", err)
 	}
 
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
 	logrus.Infof("Starting RepliStore with %d backends (RF=%d, WQ=%d)", len(cfg.Backends), cfg.ReplicationFactor, cfg.WriteQuorum)
 
 	// Initialize backends
@@ -76,10 +79,7 @@ func main() {
 
 	// Initialize Health Monitor
 	monitor := backend.NewHealthMonitor(backends)
-	monitor.Start(10 * time.Second)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	monitor.Start(ctx, 10 * time.Second)
 
 	// Warmup Cache
 	cache := vfs.NewCache()

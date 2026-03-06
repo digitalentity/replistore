@@ -20,23 +20,23 @@ type FileInfo struct {
 }
 
 type File interface {
-	ReadAt(b []byte, off int64) (int, error)
-	WriteAt(b []byte, off int64) (int, error)
-	Sync() error
+	ReadAt(ctx context.Context, b []byte, off int64) (int, error)
+	WriteAt(ctx context.Context, b []byte, off int64) (int, error)
+	Sync(ctx context.Context) error
 	Close() error
 }
 
 type Backend interface {
 	GetName() string
-	Ping() error
-	ReadDir(path string) ([]FileInfo, error)
-	Stat(path string) (FileInfo, error)
+	Ping(ctx context.Context) error
+	ReadDir(ctx context.Context, path string) ([]FileInfo, error)
+	Stat(ctx context.Context, path string) (FileInfo, error)
 	Walk(ctx context.Context, path string, fn func(path string, info FileInfo) error) error
-	OpenFile(path string, flag int, perm os.FileMode) (File, error)
-	Mkdir(path string, perm os.FileMode) error
-	MkdirAll(path string, perm os.FileMode) error
-	Remove(path string) error
-	Rename(oldPath, newPath string) error
+	OpenFile(ctx context.Context, path string, flag int, perm os.FileMode) (File, error)
+	Mkdir(ctx context.Context, path string, perm os.FileMode) error
+	MkdirAll(ctx context.Context, path string, perm os.FileMode) error
+	Remove(ctx context.Context, path string) error
+	Rename(ctx context.Context, oldPath, newPath string) error
 }
 
 type SMBBackend struct {
@@ -67,9 +67,13 @@ func (b *SMBBackend) GetName() string {
 	return b.Name
 }
 
-func (b *SMBBackend) Ping() error {
+func (b *SMBBackend) Ping(ctx context.Context) error {
 	if b.share == nil {
 		return fmt.Errorf("not connected")
+	}
+	// go-smb2 doesn't support context directly, but we check if ctx is already cancelled
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 	_, err := b.share.Stat(".")
 	return err
@@ -128,9 +132,12 @@ func toSMBPath(path string) string {
 	return s
 }
 
-func (b *SMBBackend) ReadDir(path string) ([]FileInfo, error) {
+func (b *SMBBackend) ReadDir(ctx context.Context, path string) ([]FileInfo, error) {
 	if b.share == nil {
 		return nil, fmt.Errorf("not connected")
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
 
 	smbPath := toSMBPath(path)
@@ -152,7 +159,10 @@ func (b *SMBBackend) ReadDir(path string) ([]FileInfo, error) {
 	return results, nil
 }
 
-func (b *SMBBackend) Stat(path string) (FileInfo, error) {
+func (b *SMBBackend) Stat(ctx context.Context, path string) (FileInfo, error) {
+	if err := ctx.Err(); err != nil {
+		return FileInfo{}, err
+	}
 	smbPath := toSMBPath(path)
 	fi, err := b.share.Stat(smbPath)
 	if err != nil {
@@ -167,31 +177,50 @@ func (b *SMBBackend) Stat(path string) (FileInfo, error) {
 	}, nil
 }
 
-func (b *SMBBackend) OpenFile(path string, flag int, perm os.FileMode) (File, error) {
+func (b *SMBBackend) OpenFile(ctx context.Context, path string, flag int, perm os.FileMode) (File, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	smbPath := toSMBPath(path)
-	return b.share.OpenFile(smbPath, flag, perm)
+	f, err := b.share.OpenFile(smbPath, flag, perm)
+	if err != nil {
+		return nil, err
+	}
+	return &smbFile{f}, nil
 }
 
-func (b *SMBBackend) Mkdir(path string, perm os.FileMode) error {
+func (b *SMBBackend) Mkdir(ctx context.Context, path string, perm os.FileMode) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	smbPath := toSMBPath(path)
 	return b.share.Mkdir(smbPath, perm)
 }
 
-func (b *SMBBackend) MkdirAll(path string, perm os.FileMode) error {
+func (b *SMBBackend) MkdirAll(ctx context.Context, path string, perm os.FileMode) error {
 	if path == "" || path == "." {
 		return nil
+	}
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 	
 	smbPath := toSMBPath(path)
 	return b.share.MkdirAll(smbPath, perm)
 }
 
-func (b *SMBBackend) Remove(path string) error {
+func (b *SMBBackend) Remove(ctx context.Context, path string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	smbPath := toSMBPath(path)
 	return b.share.Remove(smbPath)
 }
 
-func (b *SMBBackend) Rename(oldPath, newPath string) error {
+func (b *SMBBackend) Rename(ctx context.Context, oldPath, newPath string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	oldSMBPath := toSMBPath(oldPath)
 	newSMBPath := toSMBPath(newPath)
 	return b.share.Rename(oldSMBPath, newSMBPath)
@@ -199,7 +228,7 @@ func (b *SMBBackend) Rename(oldPath, newPath string) error {
 
 // Walk performs a recursive scan of the backend and returns all files/folders
 func (b *SMBBackend) Walk(ctx context.Context, path string, fn func(path string, info FileInfo) error) error {
-	entries, err := b.ReadDir(path)
+	entries, err := b.ReadDir(ctx, path)
 	if err != nil {
 		return err
 	}
@@ -223,4 +252,29 @@ func (b *SMBBackend) Walk(ctx context.Context, path string, fn func(path string,
 		}
 	}
 	return nil
+}
+
+type smbFile struct {
+	*smb2.File
+}
+
+func (f *smbFile) ReadAt(ctx context.Context, b []byte, off int64) (int, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	return f.File.ReadAt(b, off)
+}
+
+func (f *smbFile) WriteAt(ctx context.Context, b []byte, off int64) (int, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	return f.File.WriteAt(b, off)
+}
+
+func (f *smbFile) Sync(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return f.File.Sync()
 }

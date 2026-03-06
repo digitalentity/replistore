@@ -10,6 +10,7 @@ import (
 	"github.com/digitalentity/replistore/internal/test"
 	"github.com/digitalentity/replistore/internal/vfs"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/mock"
 )
 
 func TestDir_Rename_Simple(t *testing.T) {
@@ -29,8 +30,8 @@ func TestDir_Rename_Simple(t *testing.T) {
 	rootNode, _ := fs.Root()
 	root := rootNode.(*Dir)
 
-	b1.On("MkdirAll", "", os.FileMode(0755)).Return(nil)
-	b1.On("Rename", "old.txt", "new.txt").Return(nil)
+	b1.On("MkdirAll", mock.Anything, "", os.FileMode(0755)).Return(nil)
+	b1.On("Rename", mock.Anything, "old.txt", "new.txt").Return(nil)
 
 	req := &fuse.RenameRequest{OldName: "old.txt", NewName: "new.txt"}
 	err := root.Rename(context.Background(), req, root)
@@ -71,8 +72,8 @@ func TestDir_Rename_CrossDir(t *testing.T) {
 	d2Node, _ := root.Lookup(context.Background(), "dir2")
 	d2 := d2Node.(*Dir)
 
-	b1.On("MkdirAll", "dir2", os.FileMode(0755)).Return(nil)
-	b1.On("Rename", "dir1/old.txt", "dir2/new.txt").Return(nil)
+	b1.On("MkdirAll", mock.Anything, "dir2", os.FileMode(0755)).Return(nil)
+	b1.On("Rename", mock.Anything, "dir1/old.txt", "dir2/new.txt").Return(nil)
 
 	req := &fuse.RenameRequest{OldName: "old.txt", NewName: "new.txt"}
 	err := d1.Rename(context.Background(), req, d2)
@@ -110,11 +111,11 @@ func TestDir_Rename_Quorum(t *testing.T) {
 	root := rootNode.(*Dir)
 
 	// b1 succeeds, b2 fails
-	b1.On("MkdirAll", "", os.FileMode(0755)).Return(nil)
-	b1.On("Rename", "old.txt", "new.txt").Return(nil)
+	b1.On("MkdirAll", mock.Anything, "", os.FileMode(0755)).Return(nil)
+	b1.On("Rename", mock.Anything, "old.txt", "new.txt").Return(nil)
 	
-	b2.On("MkdirAll", "", os.FileMode(0755)).Return(nil)
-	b2.On("Rename", "old.txt", "new.txt").Return(os.ErrPermission)
+	b2.On("MkdirAll", mock.Anything, "", os.FileMode(0755)).Return(nil)
+	b2.On("Rename", mock.Anything, "old.txt", "new.txt").Return(os.ErrPermission)
 
 	req := &fuse.RenameRequest{OldName: "old.txt", NewName: "new.txt"}
 	err := root.Rename(context.Background(), req, root)

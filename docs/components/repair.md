@@ -4,7 +4,7 @@ The Repair Manager is responsible for ensuring data durability by maintaining th
 
 ## Overview
 
-The `RepairManager` runs as a background process that periodically "scrubs" the filesystem to find and fix degraded files.
+The `RepairManager` runs as a background process that periodically "scrubs" the filesystem to find and fix degraded files. It uses a pool of worker goroutines managed by `golang.org/x/sync/errgroup` to perform repairs efficiently while respecting system-wide concurrency limits.
 
 ## Distributed Locking & Coordination
 
@@ -27,6 +27,7 @@ Even when holding the global repair lock, the manager acquires a **Distributed L
 2.  **Find Degraded Files:** The manager calls `vfs.Cache.FindDegraded(RF)`.
 3.  **For each file:**
     - **Acquire Path Lock:** Acquire a distributed lock for the specific file path.
+    - **Context Propagation:** Ensure all subsequent I/O operations (Select, Copy, Update) are tied to a `context.Context` to allow for graceful cancellation.
     - **Identify Source:** Select one healthy replica.
     - **Identify Targets:** Find healthy backends missing the replica.
     - **Perform Copy:** Stream the data from source to target.
@@ -38,7 +39,7 @@ Even when holding the global repair lock, the manager acquires a **Distributed L
 
 The Repair Manager is controlled by the following configuration parameters:
 - `repair_interval`: How often the background scrub runs (e.g., `"1h"`).
-- `repair_concurrency`: How many files can be repaired simultaneously.
+- `repair_concurrency`: How many files can be repaired simultaneously (implemented via `errgroup.SetLimit`).
 
 ## Limitations
 

@@ -9,6 +9,7 @@ import (
 
 	"github.com/digitalentity/replistore/internal/backend"
 	"github.com/sirupsen/logrus"
+	"golang.org/x/sync/errgroup"
 )
 
 type Metadata struct {
@@ -102,10 +103,6 @@ func (c *Cache) Upsert(path string, meta Metadata, backendName string) {
 				}
 			} else {
 				// This backend is stale. We don't add it to the list.
-				// If it was already there (e.g. from a previous sync),
-				// the winner-reset logic above would have already handled it if we encountered the winner first.
-				// However, if we encounter the stale one AFTER the winner in the same sync cycle,
-				// we just ignore it.
 			}
 		}
 
@@ -119,6 +116,7 @@ func (c *Cache) Upsert(path string, meta Metadata, backendName string) {
 func (c *Cache) StartSync(ctx context.Context, backends []backend.Backend, interval time.Duration) {
 	ticker := time.NewTicker(interval)
 	go func() {
+		defer ticker.Stop()
 		for {
 			select {
 			case <-ctx.Done():
@@ -138,14 +136,13 @@ func (c *Cache) syncAll(ctx context.Context, backends []backend.Backend) {
 	globalState := make(map[string]*fileState)
 	var stateMu sync.Mutex
 
-	var wg sync.WaitGroup
+	g, gCtx := errgroup.WithContext(ctx)
 	for _, b := range backends {
-		wg.Add(1)
-		go func(b backend.Backend) {
-			defer wg.Done()
+		b := b
+		g.Go(func() error {
 			logrus.Debugf("Background syncing backend: %s", b.GetName())
 			seenPaths := make(map[string]bool)
-			err := b.Walk(ctx, "", func(path string, info backend.FileInfo) error {
+			err := b.Walk(gCtx, "", func(path string, info backend.FileInfo) error {
 				seenPaths[path] = true
 				meta := Metadata{
 					Name:    info.Name,
@@ -182,17 +179,16 @@ func (c *Cache) syncAll(ctx context.Context, backends []backend.Backend) {
 			})
 			if err != nil {
 				logrus.Errorf("Background sync error on %s: %v", b.GetName(), err)
-				return
+				return nil // Don't fail other backends
 			}
 			c.Reconcile(b.GetName(), seenPaths)
-		}(b)
+			return nil
+		})
 	}
-	wg.Wait()
+	_ = g.Wait()
 
 	// Update cache with global winners
 	for path, s := range globalState {
-		// Since we already calculated the winners, we can use a simplified Upsert or the existing one.
-		// To avoid resetting backends unnecessarily in Upsert, let's use a version that accepts multiple backends.
 		c.UpsertMulti(path, s.meta, s.backends)
 	}
 }
@@ -442,34 +438,34 @@ func (c *Cache) Get(path string) (*Node, bool) {
 }
 
 func (c *Cache) Warmup(ctx context.Context, backends []backend.Backend) {
-	var wg sync.WaitGroup
+	g, gCtx := errgroup.WithContext(ctx)
 	for _, b := range backends {
-		wg.Add(1)
-		go func(smb backend.Backend) {
-			defer wg.Done()
-			logrus.Infof("Scanning backend: %s", smb.GetName())
-			err := smb.Walk(ctx, "", func(path string, info backend.FileInfo) error {
+		b := b
+		g.Go(func() error {
+			logrus.Infof("Scanning backend: %s", b.GetName())
+			err := b.Walk(gCtx, "", func(path string, info backend.FileInfo) error {
 				c.Upsert(path, Metadata{
 					Name:    info.Name,
 					Size:    info.Size,
 					Mode:    info.Mode,
 					ModTime: info.ModTime,
 					IsDir:   info.IsDir,
-				}, smb.GetName())
+				}, b.GetName())
 				return nil
 			})
 			if err != nil {
-				logrus.Errorf("Error scanning backend %s: %v", smb.GetName(), err)
+				logrus.Errorf("Error scanning backend %s: %v", b.GetName(), err)
 			} else {
-				logrus.Infof("Finished scanning backend: %s", smb.GetName())
+				logrus.Infof("Finished scanning backend: %s", b.GetName())
 			}
-		}(b)
+			return nil
+		})
 	}
-	wg.Wait()
-	}
+	_ = g.Wait()
+}
 
-	// FindDegraded returns all file nodes that have fewer backends than the required replication factor.
-	func (c *Cache) FindDegraded(rf int) []*Node {
+// FindDegraded returns all file nodes that have fewer backends than the required replication factor.
+func (c *Cache) FindDegraded(rf int) []*Node {
 	var degraded []*Node
 	c.walk(c.Root, func(n *Node) {
 		n.Mu.RLock()
@@ -479,13 +475,13 @@ func (c *Cache) Warmup(ctx context.Context, backends []backend.Backend) {
 		n.Mu.RUnlock()
 	})
 	return degraded
-	}
+}
 
-	func (c *Cache) walk(node *Node, fn func(*Node)) {
+func (c *Cache) walk(node *Node, fn func(*Node)) {
 	fn(node)
 	node.Mu.RLock()
 	defer node.Mu.RUnlock()
 	for _, child := range node.Children {
 		c.walk(child, fn)
 	}
-	}
+}
