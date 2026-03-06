@@ -4,10 +4,11 @@ RepliStore is a distributed, FUSE-based replicated storage system. It aggregates
 
 ## High-Level Overview
 
-RepliStore consists of three primary layers:
+RepliStore consists of four primary layers:
 1.  **Frontend (FUSE):** Translates OS syscalls into VFS operations.
 2.  **Virtual File System (VFS):** Manages the unified namespace, replication logic, and metadata cache.
-3.  **Backend (SMB):** Handles raw I/O and connectivity to the storage providers.
+3.  **Cluster (P2P):** Handles node discovery and distributed locking across multiple RepliStore instances.
+4.  **Backend (SMB):** Handles raw I/O and connectivity to the storage providers.
 
 ```mermaid
 graph TD
@@ -16,7 +17,9 @@ graph TD
     Frontend --> VFS[VFS Layer /internal/vfs]
     VFS --> Cache[(Metadata Cache)]
     VFS --> Backend[Backend Layer /internal/backend]
+    VFS --> Cluster[Cluster Layer /internal/cluster]
     VFS --> Repair[Repair Manager /internal/fuse/repair.go]
+    Cluster <--> Peer[Other RepliStore Nodes]
     Repair --> Backend
     Backend --> SMB1[SMB Share A]
     Backend --> SMB2[SMB Share B]
@@ -30,6 +33,12 @@ Responsible for handling FUSE requests and converting them into VFS operations. 
 
 ### VFS Layer
 The core of the system. It maintains an in-memory tree structure (Metadata Cache) of the unified filesystem. It also implements the replication logic (selecting backends for writes) and read failover.
+
+### Cluster Layer (DLM)
+The Distributed Lock Manager (DLM) ensures that only one node in the cluster can perform conflicting operations (like writing to the same file) at any given time.
+- **Discovery:** Uses Multicast DNS (mDNS) to automatically find other RepliStore nodes on the local network.
+- **Consensus:** Implements a masterless quorum-based mutual exclusion algorithm.
+- **Robustness:** Uses Lamport logical clocks for request ordering and TTL-based leases for automatic lock recovery after node failures.
 
 ### Backend Layer
 Manages connections to remote SMB shares. It uses `github.com/hirochachacha/go-smb2` for SMB2/3 communication. It also includes a health monitor that periodically pings backends to check their availability.

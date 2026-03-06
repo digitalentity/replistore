@@ -16,16 +16,25 @@ During startup, `Cache.Warmup` performs a parallel recursive scan (`Walk`) of al
 
 ### Consistency
 - **External Changes:** RepliStore performs periodic background synchronization (controlled by `cache_refresh_interval`). During each sync, it re-scans the backends to discover new files, modifications, and deletions. This ensures the in-memory cache eventually reconciles with the state of the SMB shares.
-- **Internal Changes:** Operations performed through RepliStore (Create, Write, Mkdir, Remove, Rename) immediately update the metadata cache, ensuring strict consistency for its own operations.
+### Internal Changes
+Operations performed through RepliStore (Create, Write, Mkdir, Remove, Rename) immediately update the metadata cache, ensuring strict consistency for its own operations.
+
+## Distributed Locking (DLM)
+
+When clustering is enabled, the VFS layer coordinates all metadata-modifying operations through the **Distributed Lock Manager**.
+
+- **Lock Acquisition:** Before any write or directory modification occurs, the VFS layer acquires a `DistributedLock` for the target path from a quorum of active peers.
+- **Lease Renewal:** A background loop periodically renews the lock lease (TTL) as long as the file is open for writing.
+- **Fencing:** Every `Write` and `Sync` call verifies that the lock's `IsValid()` flag is still true. If the lease expires due to network lag or peer failures, subsequent writes are aborted to prevent data corruption.
 
 ## Namespace Operations
 
 ### `Rename`
 The `Cache.Rename` method provides atomic tree-level moves within the in-memory metadata.
+- **Distributed Coordination:** Both the source and destination paths are locked across the cluster before the rename proceeds on the backends.
 - **Atomicity:** It uses a global cache-level lock (`Cache.Mu`) to ensure that a move is consistent for all concurrent readers and writers.
 - **Recursive Update:** For directory moves, it recursively updates the `Path` property of all descendant nodes to reflect their new location.
 - **Parent Management:** It automatically creates intermediate directory nodes at the destination if they are missing from the cache.
-
 ## Backend Selection
 
 The `BackendSelector` interface defines how backends are chosen for read and write operations.

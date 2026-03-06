@@ -26,6 +26,11 @@ repair_interval: "1h"
 # Defaults to 2.
 repair_concurrency: 2
 
+# P2P Cluster configuration (optional)
+# Enables distributed locking across multiple RepliStore instances.
+listen_addr: ":5050"
+advertise_addr: "192.168.1.50:5050"
+
 # List of SMB backend shares.
 backends:
   - name: "nas-01"
@@ -64,6 +69,12 @@ How often the background repair worker scans for degraded files (files with fewe
 
 ### `repair_concurrency` (int)
 Maximum number of files being repaired simultaneously.
+
+### `listen_addr` (string, optional)
+Enables the P2P Distributed Lock Manager (DLM) by specifying the address where the internal RPC server will listen (e.g., `:5050` or `127.0.0.1:5050`). If omitted, P2P features are disabled.
+
+### `advertise_addr` (string, optional)
+The IP and port announced to other nodes via mDNS. This is crucial if `listen_addr` uses a wildcard (e.g., `:5050`) or if the node is behind NAT.
 
 ### `backends` (list)
 A list of backend configurations. Each backend must have a unique `name`.
