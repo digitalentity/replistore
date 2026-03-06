@@ -69,11 +69,7 @@ This document outlines a roadmap for evolving RepliStore from a functional proto
 
 ## 6. Multi-Client & Distributed Coordination
 
-### 6.1. Distributed Locking (DLM)
-**Current Issue:** Simultaneous writes from multiple instances to the same file can lead to "split-brain" replicas and data loss.
-**Proposal:** Implement a Distributed Lock Manager (DLM) using a coordination service (e.g., etcd, Consul). Instances must acquire a path-level lock before performing `Create`, `Write`, or `Remove` operations.
-
-### 6.2. Change-Based Cache Invalidation (SMB Notify)
+### 6.1. Change-Based Cache Invalidation (SMB Notify)
 **Current Issue:** Metadata staleness between instances; full scans are expensive and slow.
 **Proposal:** Utilize the SMB `CHANGE_NOTIFY` feature to subscribe to directory changes on the backends. This allows instances to perform surgical, near-real-time cache updates instead of relying solely on periodic full scans.
 
@@ -147,3 +143,12 @@ This document outlines a roadmap for evolving RepliStore from a functional proto
 - **Implemented:** `Rename` support in the FUSE layer and VFS cache.
 - **Functionality:** Moves files and directories across the unified namespace. Ensures target parent directories exist on backends. Successfully renames if `write_quorum` is reached. Atomically updates the metadata cache and all child paths for directory moves.
 - **Verification:** Added `internal/fuse/rename_test.go` with cross-directory and quorum failure scenarios.
+
+### 9.6. P2P Distributed Lock Manager (DLM)
+- **Implemented:** Fully decentralized DLM using mDNS for discovery and a masterless quorum-based protocol.
+- **Functionality:** 
+    - **Zero-Conf Discovery:** Nodes find each other via Multicast DNS (`_replistore._tcp`).
+    - **Quorum-Based Locking:** Acquires path-level locks by gathering votes from a majority of active peers.
+    - **Lamport Logical Clocks:** Ensures deterministic ordering of simultaneous requests.
+    - **Lease-Based Fencing:** Locks are granted as TTL leases; background renewal and validation loops prevent stale nodes from corrupting data.
+- **Verification:** Verified cluster formation and lock coordination between instances.
