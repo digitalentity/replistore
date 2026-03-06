@@ -73,11 +73,7 @@ This document outlines a roadmap for evolving RepliStore from a functional proto
 **Current Issue:** Metadata staleness between instances; full scans are expensive and slow.
 **Proposal:** Utilize the SMB `CHANGE_NOTIFY` feature to subscribe to directory changes on the backends. This allows instances to perform surgical, near-real-time cache updates instead of relying solely on periodic full scans.
 
-### 6.3. Maintenance Leader Election
-**Current Issue:** Multiple instances running the `RepairManager` or background syncs simultaneously cause redundant network traffic and "undelete" races.
-**Proposal:** Use leader election to designate a single "Maintenance Master" in the cluster. Only the leader is permitted to run the background `RepairManager` and authoritative metadata reconciliations.
-
-### 6.4. Shared Metadata Store
+### 6.3. Shared Metadata Store
 **Current Issue:** Independent in-memory caches lead to divergent views of the filesystem.
 **Proposal:** Support an optional shared metadata backend (e.g., etcd or Redis). This ensures all RepliStore instances see an identical, atomic view of the unified namespace in real-time.
 
@@ -152,4 +148,5 @@ This document outlines a roadmap for evolving RepliStore from a functional proto
     - **Lamport Logical Clocks:** Ensures deterministic ordering of simultaneous requests.
     - **Lease-Based Fencing:** Locks are granted as TTL leases; background renewal and validation loops prevent stale nodes from corrupting data.
     - **Full Coordination:** All metadata operations (`Create`, `Mkdir`, `Rename`, `Remove`) and the **Background Repair Manager** now acquire distributed locks, eliminating "undelete" races and concurrent modification conflicts in multi-client clusters.
-- **Verification:** Verified cluster formation, lock coordination, and prevention of undelete races between instances.
+    - **Implicit Leader Election:** The Repair Manager uses a **Global Repair Lock** (`.replistore/repair.lock`) to ensure that only one node in the cluster performs background repairs at any given time, preventing redundant NAS traffic.
+- **Verification:** Verified cluster formation, lock coordination, and single-node repair execution in multi-instance environments.

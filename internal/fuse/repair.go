@@ -44,7 +44,20 @@ func (m *RepairManager) Start(ctx context.Context) {
 	}()
 }
 
+const GlobalRepairLockPath = ".replistore/repair.lock"
+
 func (m *RepairManager) performScrub(ctx context.Context) {
+	// Attempt to acquire the global repair lock.
+	// If it fails, another node is already performing repairs.
+	lock, err := m.fs.acquireLock(ctx, GlobalRepairLockPath)
+	if err != nil {
+		logrus.Debug("Another node is currently performing repairs, skipping this cycle")
+		return
+	}
+	if lock != nil {
+		defer lock.Release()
+	}
+
 	logrus.Info("Starting background repair scrub...")
 	degraded := m.fs.Cache.FindDegraded(m.fs.ReplicationFactor)
 	if len(degraded) == 0 {
