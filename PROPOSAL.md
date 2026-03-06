@@ -75,7 +75,29 @@ This document outlines a roadmap for evolving RepliStore from a functional proto
 **Current Issue:** Log-style writes using `O_APPEND` are not handled, as `WriteAt` is the primary interface used.
 **Proposal:** Extend the `FileHandle` to handle the `Append` flag by querying the current file size from the cache before performing parallel writes.
 
-## 6. Operational & Observability
+## 6. Multi-Client & Distributed Coordination
+
+### 6.1. Distributed Locking (DLM)
+**Current Issue:** Simultaneous writes from multiple instances to the same file can lead to "split-brain" replicas and data loss.
+**Proposal:** Implement a Distributed Lock Manager (DLM) using a coordination service (e.g., etcd, Consul). Instances must acquire a path-level lock before performing `Create`, `Write`, or `Remove` operations.
+
+### 6.2. Change-Based Cache Invalidation (SMB Notify)
+**Current Issue:** Metadata staleness between instances; full scans are expensive and slow.
+**Proposal:** Utilize the SMB `CHANGE_NOTIFY` feature to subscribe to directory changes on the backends. This allows instances to perform surgical, near-real-time cache updates instead of relying solely on periodic full scans.
+
+### 6.3. Maintenance Leader Election
+**Current Issue:** Multiple instances running the `RepairManager` or background syncs simultaneously cause redundant network traffic and "undelete" races.
+**Proposal:** Use leader election to designate a single "Maintenance Master" in the cluster. Only the leader is permitted to run the background `RepairManager` and authoritative metadata reconciliations.
+
+### 6.4. Shared Metadata Store
+**Current Issue:** Independent in-memory caches lead to divergent views of the filesystem.
+**Proposal:** Support an optional shared metadata backend (e.g., etcd or Redis). This ensures all RepliStore instances see an identical, atomic view of the unified namespace in real-time.
+
+### 6.5. Conflict Resolution with Versioning (Vector Clocks)
+**Current Issue:** "Last-writer-wins" (based on `mtime`) is insufficient for resolving complex distributed conflicts.
+**Proposal:** Store versioning metadata (e.g., vector clocks or generation IDs) alongside files using SMB Alternative Data Streams (ADS). This enables deterministic detection and resolution of divergent replicas.
+
+## 7. Operational & Observability
 
 ### 6.1. Metrics Export (Prometheus)
 **Proposal:**
