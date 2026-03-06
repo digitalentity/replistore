@@ -264,6 +264,108 @@ func (d *Dir) Remove(ctx context.Context, req *fuse.RemoveRequest) error {
 	return nil
 }
 
+func (d *Dir) Rename(ctx context.Context, req *fuse.RenameRequest, newDir fs.Node) error {
+	d.node.Mu.RLock()
+	sourceNode, ok := d.node.Children[req.OldName]
+	d.node.Mu.RUnlock()
+
+	if !ok {
+		return syscall.ENOENT
+	}
+
+	targetDir, ok := newDir.(*Dir)
+	if !ok {
+		return syscall.EINVAL
+	}
+
+	sourceNode.Mu.RLock()
+	oldPath := sourceNode.Meta.Path
+	backends := make([]string, len(sourceNode.Meta.Backends))
+	copy(backends, sourceNode.Meta.Backends)
+	sourceNode.Mu.RUnlock()
+
+	targetDir.node.Mu.RLock()
+	targetParentPath := targetDir.node.Meta.Path
+	targetDir.node.Mu.RUnlock()
+
+	newPath := targetParentPath + "/" + req.NewName
+	if targetParentPath == "" {
+		newPath = req.NewName
+	}
+
+	var mu sync.Mutex
+	var successful []string
+	var failures []string
+	var lastErr error
+
+	g, _ := errgroup.WithContext(ctx)
+	for _, bName := range backends {
+		bName := bName
+		g.Go(func() error {
+			b := d.fs.Backends[bName]
+			
+			// Ensure destination parent path exists on this backend
+			if err := b.MkdirAll(targetParentPath, 0755); err != nil {
+				logrus.Warnf("Failed to ensure parent path %s on backend %s: %v", targetParentPath, bName, err)
+				// Continue anyway, maybe it exists
+			}
+
+			err := b.Rename(oldPath, newPath)
+			mu.Lock()
+			defer mu.Unlock()
+			if err != nil {
+				logrus.Warnf("Failed to rename %s to %s on %s: %v", oldPath, newPath, bName, err)
+				failures = append(failures, bName)
+				lastErr = err
+			} else {
+				successful = append(successful, bName)
+			}
+			return nil
+		})
+	}
+	g.Wait()
+
+	if len(successful) < d.fs.WriteQuorum {
+		// Rollback successful ones
+		for _, bName := range successful {
+			b := d.fs.Backends[bName]
+			b.Rename(newPath, oldPath)
+		}
+		if lastErr != nil {
+			return lastErr
+		}
+		return syscall.EIO
+	}
+
+	// Update Cache
+	if !d.fs.Cache.Rename(oldPath, newPath) {
+		// This should not happen if our VFS logic is correct
+		return syscall.EIO
+	}
+
+	// If some backends failed, update the node's backend list
+	if len(failures) > 0 {
+		sourceNode.Mu.Lock()
+		newBackends := make([]string, 0, len(sourceNode.Meta.Backends))
+		for _, bName := range sourceNode.Meta.Backends {
+			failed := false
+			for _, fName := range failures {
+				if bName == fName {
+					failed = true
+					break
+				}
+			}
+			if !failed {
+				newBackends = append(newBackends, bName)
+			}
+		}
+		sourceNode.Meta.Backends = newBackends
+		sourceNode.Mu.Unlock()
+	}
+
+	return nil
+}
+
 type File struct {
 	fs   *RepliFS
 	node *vfs.Node

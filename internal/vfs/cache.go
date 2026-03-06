@@ -321,6 +321,110 @@ func split(s, sep string) []string {
 	return res
 }
 
+func (c *Cache) Rename(oldPath, newPath string) bool {
+	c.Mu.Lock()
+	defer c.Mu.Unlock()
+
+	oldParts := splitPath(oldPath)
+	newParts := splitPath(newPath)
+	if len(oldParts) == 0 || len(newParts) == 0 {
+		return false
+	}
+
+	// Find source node and its parent
+	sourceParentPath := strings.Join(oldParts[:len(oldParts)-1], "/")
+	sourceNodeName := oldParts[len(oldParts)-1]
+	sourceParent, ok := c.getWithLock(sourceParentPath)
+	if !ok {
+		return false
+	}
+
+	sourceParent.Mu.Lock()
+	node, ok := sourceParent.Children[sourceNodeName]
+	if !ok {
+		sourceParent.Mu.Unlock()
+		return false
+	}
+	delete(sourceParent.Children, sourceNodeName)
+	sourceParent.Mu.Unlock()
+
+	// Find/Create destination parent
+	destParentPath := strings.Join(newParts[:len(newParts)-1], "/")
+	destNodeName := newParts[len(newParts)-1]
+	
+	// Create destination parents if they don't exist
+	destParent := c.ensurePathWithLock(destParentPath)
+
+	destParent.Mu.Lock()
+	// Update node metadata
+	node.Mu.Lock()
+	node.Meta.Name = destNodeName
+	node.Meta.Path = newPath
+	if node.Meta.IsDir {
+		c.updatePaths(node, newPath)
+	}
+	node.Mu.Unlock()
+
+	destParent.Children[destNodeName] = node
+	destParent.Mu.Unlock()
+
+	return true
+}
+
+func (c *Cache) getWithLock(path string) (*Node, bool) {
+	parts := splitPath(path)
+	curr := c.Root
+
+	for _, part := range parts {
+		curr.Mu.RLock()
+		next, ok := curr.Children[part]
+		curr.Mu.RUnlock()
+		if !ok {
+			return nil, false
+		}
+		curr = next
+	}
+	return curr, true
+}
+
+func (c *Cache) ensurePathWithLock(path string) *Node {
+	parts := splitPath(path)
+	curr := c.Root
+
+	for i, part := range parts {
+		curr.Mu.Lock()
+		next, ok := curr.Children[part]
+		if !ok {
+			next = &Node{
+				Meta: Metadata{
+					Name:  part,
+					Path:  strings.Join(parts[:i+1], "/"),
+					IsDir: true,
+					Mode:  os.ModeDir | 0755,
+				},
+				Children: make(map[string]*Node),
+			}
+			curr.Children[part] = next
+		}
+		parent := curr
+		curr = next
+		parent.Mu.Unlock()
+	}
+	return curr
+}
+
+func (c *Cache) updatePaths(node *Node, newPath string) {
+	// Assumes node.Mu is locked or we are in a safe context
+	for name, child := range node.Children {
+		child.Mu.Lock()
+		child.Meta.Path = newPath + "/" + name
+		if child.Meta.IsDir {
+			c.updatePaths(child, child.Meta.Path)
+		}
+		child.Mu.Unlock()
+	}
+}
+
 func (c *Cache) Get(path string) (*Node, bool) {
 	parts := splitPath(path)
 	curr := c.Root

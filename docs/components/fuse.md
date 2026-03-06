@@ -14,6 +14,7 @@ Implements `fs.Node` and `fs.HandleReadDirAller`. It represents a directory in t
 - `Create`: Creates a new file by selecting $RF$ backends and opening them.
 - `Mkdir`: Creates a directory on all backends.
 - `Remove`: Deletes a file or directory from all backends.
+- `Rename`: Moves a file or directory to a new path. Ensures target parent directories are created on the backends before the move. Supports quorum-based consistency.
 
 ### `File`
 Implements `fs.Node`. It represents a file in the VFS.

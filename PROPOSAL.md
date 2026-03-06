@@ -38,13 +38,7 @@ This document outlines a roadmap for evolving RepliStore from a functional proto
 - Calculate and store a checksum (e.g., BLAKE3 or SHA-256) in the metadata cache when a file is written.
 - Verify the checksum on read. If a mismatch is detected, transparently fail over to another replica and log a corruption event.
 
-### 3.2. Atomic Multi-Backend Rename
-**Current Issue:** `Rename` is currently difficult to implement across multiple independent backends without leaving the system in a partial state if one backend rename fails.
-
-**Proposal:**
-- Implement a two-phase commit (2PC) or a "tombstone" approach for renames to ensure the unified view remains consistent across all replicas.
-
-### 3.3. Local Data Tiering (Read-Through Cache)
+### 3.2. Local Data Tiering (Read-Through Cache)
 **Current Issue:** Every `Read` involves a network round-trip to an SMB share.
 
 **Proposal:**
@@ -53,15 +47,11 @@ This document outlines a roadmap for evolving RepliStore from a functional proto
 
 ## 4. FUSE Protocol & Compatibility
 
-### 4.1. `Fsync` Support
-**Current Issue:** RepliStore does not implement `Fsync`. Data is written to the remote SMB share, but the OS is not notified when the data is safely persisted to disk on the remote server.
-**Proposal:** Implement `fs.HandleFlusher` and `fs.HandleFsyncer` to propagate flush/sync calls to all backends. This is critical for data safety and consistency (e.g., database writes).
-
-### 4.2. `Setattr` (Chmod/Chown/Utimes)
+### 4.1. `Setattr` (Chmod/Chown/Utimes)
 **Current Issue:** Standard filesystem operations like changing permissions or timestamps are not currently supported.
 **Proposal:** Implement `Setattr` on `Dir` and `File` nodes to forward attribute changes to all replicas.
 
-### 4.3. Symlink and Readlink
+### 4.2. Symlink and Readlink
 **Current Issue:** Symbolic links are currently not supported.
 **Proposal:** Implement `Symlink` and `Readlink` support to allow creating and following links across the unified filesystem.
 
@@ -134,3 +124,8 @@ This document outlines a roadmap for evolving RepliStore from a functional proto
 - **Implemented:** A continuous background scan using the `cache_refresh_interval`.
 - **Functionality:** Reconciles the cache by detecting new files, modifications, and deletions.
 - **Verification:** Unit tests added for node pruning and reconciliation logic.
+
+### 7.5. Atomic Multi-Backend Rename
+- **Implemented:** `Rename` support in the FUSE layer and VFS cache.
+- **Functionality:** Moves files and directories across the unified namespace. Ensures target parent directories exist on backends. Successfully renames if `write_quorum` is reached. Atomically updates the metadata cache and all child paths for directory moves.
+- **Verification:** Added `internal/fuse/rename_test.go` with cross-directory and quorum failure scenarios.

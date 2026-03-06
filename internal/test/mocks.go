@@ -50,8 +50,18 @@ func (m *MockBackend) Mkdir(path string, perm os.FileMode) error {
 	return args.Error(0)
 }
 
+func (m *MockBackend) MkdirAll(path string, perm os.FileMode) error {
+	args := m.Called(path, perm)
+	return args.Error(0)
+}
+
 func (m *MockBackend) Remove(path string) error {
 	args := m.Called(path)
+	return args.Error(0)
+}
+
+func (m *MockBackend) Rename(oldPath, newPath string) error {
+	args := m.Called(oldPath, newPath)
 	return args.Error(0)
 }
 

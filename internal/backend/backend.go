@@ -34,7 +34,9 @@ type Backend interface {
 	Walk(ctx context.Context, path string, fn func(path string, info FileInfo) error) error
 	OpenFile(path string, flag int, perm os.FileMode) (File, error)
 	Mkdir(path string, perm os.FileMode) error
+	MkdirAll(path string, perm os.FileMode) error
 	Remove(path string) error
+	Rename(oldPath, newPath string) error
 }
 
 type SMBBackend struct {
@@ -175,9 +177,24 @@ func (b *SMBBackend) Mkdir(path string, perm os.FileMode) error {
 	return b.share.Mkdir(smbPath, perm)
 }
 
+func (b *SMBBackend) MkdirAll(path string, perm os.FileMode) error {
+	if path == "" || path == "." {
+		return nil
+	}
+	
+	smbPath := toSMBPath(path)
+	return b.share.MkdirAll(smbPath, perm)
+}
+
 func (b *SMBBackend) Remove(path string) error {
 	smbPath := toSMBPath(path)
 	return b.share.Remove(smbPath)
+}
+
+func (b *SMBBackend) Rename(oldPath, newPath string) error {
+	oldSMBPath := toSMBPath(oldPath)
+	newSMBPath := toSMBPath(newPath)
+	return b.share.Rename(oldSMBPath, newSMBPath)
 }
 
 // Walk performs a recursive scan of the backend and returns all files/folders
