@@ -27,6 +27,11 @@ The default implementation which:
 - **For Reads:** Randomly selects one healthy backend that contains the requested file.
 - **For Writes:** Randomly selects $RF$ healthy backends for new file creation.
 
+### `FirstSelector`
+An alternative implementation that:
+- **For Reads:** Always picks the first healthy backend available in the metadata list.
+- **For Writes:** Picks the first $count$ healthy backends available in the configuration list.
+
 It uses a `HealthMonitor` to avoid selecting backends that are currently unreachable.
 
 ```mermaid

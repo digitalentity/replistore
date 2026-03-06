@@ -16,6 +16,8 @@ graph TD
     Frontend --> VFS[VFS Layer /internal/vfs]
     VFS --> Cache[(Metadata Cache)]
     VFS --> Backend[Backend Layer /internal/backend]
+    VFS --> Repair[Repair Manager /internal/fuse/repair.go]
+    Repair --> Backend
     Backend --> SMB1[SMB Share A]
     Backend --> SMB2[SMB Share B]
     Backend --> SMB3[SMB Share C]
@@ -31,6 +33,9 @@ The core of the system. It maintains an in-memory tree structure (Metadata Cache
 
 ### Backend Layer
 Manages connections to remote SMB shares. It uses `github.com/hirochachacha/go-smb2` for SMB2/3 communication. It also includes a health monitor that periodically pings backends to check their availability.
+
+### Repair Manager
+A background worker that periodically scans the Metadata Cache for degraded files (those with fewer than `replication_factor` replicas) and attempts to restore them by copying data from healthy replicas to available backends.
 
 ## Design Philosophy
 

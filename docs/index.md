@@ -9,6 +9,7 @@ Welcome to the RepliStore documentation. This project provides a distributed, FU
     - [FUSE Frontend](components/fuse.md) - Translating OS syscalls to VFS operations.
     - [VFS and Metadata Cache](components/vfs.md) - Unified namespace and metadata tracking.
     - [SMB Backend](components/backend.md) - Connecting to remote shares.
+    - [Repair Manager](components/repair.md) - Ensuring data durability through background repair.
 - [**Operational Flows**](flows/)
     - [Read Flow](flows/read.md) - How reads work with automatic failover.
     - [Write Flow](flows/write.md) - Parallel replication of data across backends.

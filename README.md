@@ -7,6 +7,8 @@ RepliStore is a distributed, FUSE-based replicated storage system written in Go.
 - **SMB2/3 Native Connectivity:** Directly manages connections to remote shares without requiring OS-level mounting.
 - **FUSE Interface:** Provides a standard filesystem interface to the operating system.
 - **File-Level Replication:** Configurable replication factor (RF) ensuring data redundancy across multiple backends.
+- **Quorum-Based Write Consistency:** Configurable write quorum (WQ) to ensure that file writes and creations are acknowledged by a minimum number of backends.
+- **Background Repair:** Automatic background worker that detects and restores degraded files (files with missing replicas).
 - **Metadata Pre-Caching:** Aggressive startup scanning and in-memory caching for near-instant directory listings and file lookups.
 - **Stateless Design:** No local database required; the remote SMB shares remain the ultimate source of truth.
 

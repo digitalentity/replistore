@@ -25,6 +25,9 @@ RepliStore uses `github.com/stretchr/testify/mock` to simulate backend behavior.
 ### `internal/fuse/fs_test.go`
 Tests the FUSE frontend operations (Lookup, Create, Mkdir, Read, Write, Remove). It mocks the backends and verifies that the correct VFS and backend calls are made.
 
+### `internal/fuse/repair_test.go`
+Tests the background repair manager, including identifying degraded files, selecting source/target replicas, and performing the data copy.
+
 ### `internal/vfs/cache_test.go`
 Tests the metadata cache logic, including upserting, retrieving, and merging metadata from multiple backends.
 

@@ -43,4 +43,4 @@ If a write fails on Backend A but succeeds on Backend B:
 - If Backend B's success meets the `write_quorum`, the `Write` call returns success.
 - Backend A is removed from the file's replica list in the metadata cache.
 - The file is now considered "Degraded" but available for reads from healthy replicas.
-- *Note: A background "repair" or "scrub" task is a planned improvement to handle these divergent replicas.*
+- The **Background Repair Manager** will eventually detect this degraded state and restore the missing replica to another available backend.
