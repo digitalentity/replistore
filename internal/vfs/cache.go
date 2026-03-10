@@ -23,9 +23,10 @@ type Metadata struct {
 }
 
 type Node struct {
-	Meta     Metadata
-	Children map[string]*Node
-	Mu       sync.RWMutex
+	Meta          Metadata
+	Children      map[string]*Node
+	FullyIndexed bool // true if this directory has been fully scanned from backends
+	Mu            sync.RWMutex
 }
 
 type Cache struct {
@@ -42,7 +43,8 @@ func NewCache() *Cache {
 				IsDir: true,
 				Mode:  os.ModeDir | 0755,
 			},
-			Children: make(map[string]*Node),
+			Children:     make(map[string]*Node),
+			FullyIndexed: false,
 		},
 	}
 }
@@ -71,8 +73,9 @@ func (c *Cache) Upsert(path string, meta Metadata, backendName string) {
 				newMeta.Path = path
 			}
 			next = &Node{
-				Meta:     newMeta,
-				Children: make(map[string]*Node),
+				Meta:          newMeta,
+				Children:      make(map[string]*Node),
+				FullyIndexed: false,
 			}
 			curr.Children[part] = next
 		}
@@ -191,6 +194,7 @@ func (c *Cache) syncAll(ctx context.Context, backends []backend.Backend) {
 	for path, s := range globalState {
 		c.UpsertMulti(path, s.meta, s.backends)
 	}
+	c.markAllIndexed(c.Root)
 }
 
 func (c *Cache) UpsertMulti(path string, meta Metadata, backends []string) {
@@ -216,8 +220,9 @@ func (c *Cache) UpsertMulti(path string, meta Metadata, backends []string) {
 				newMeta.Path = path
 			}
 			next = &Node{
-				Meta:     newMeta,
-				Children: make(map[string]*Node),
+				Meta:          newMeta,
+				Children:      make(map[string]*Node),
+				FullyIndexed: false,
 			}
 			curr.Children[part] = next
 		}
@@ -398,7 +403,8 @@ func (c *Cache) ensurePathWithLock(path string) *Node {
 					IsDir: true,
 					Mode:  os.ModeDir | 0755,
 				},
-				Children: make(map[string]*Node),
+				Children:     make(map[string]*Node),
+				FullyIndexed: false,
 			}
 			curr.Children[part] = next
 		}
@@ -407,6 +413,111 @@ func (c *Cache) ensurePathWithLock(path string) *Node {
 		parent.Mu.Unlock()
 	}
 	return curr
+}
+
+// FetchEntry performs a synchronous, parallel Stat call to backends for a missing path.
+func (c *Cache) FetchEntry(ctx context.Context, path string, backends []backend.Backend) (*Node, error) {
+	if path == "" || path == "/" {
+		return c.Root, nil
+	}
+
+	var stateMu sync.Mutex
+	var bestMeta Metadata
+	var bestBackends []string
+	var found bool
+
+	g, gCtx := errgroup.WithContext(ctx)
+	for _, b := range backends {
+		b := b
+		g.Go(func() error {
+			info, err := b.Stat(gCtx, path)
+			if err != nil {
+				return nil // backend doesn't have it or error
+			}
+
+			meta := Metadata{
+				Name:    info.Name,
+				Size:    info.Size,
+				Mode:    info.Mode,
+				ModTime: info.ModTime,
+				IsDir:   info.IsDir,
+				Path:    path,
+			}
+
+			stateMu.Lock()
+			defer stateMu.Unlock()
+
+			if !found {
+				bestMeta = meta
+				bestBackends = []string{b.GetName()}
+				found = true
+				return nil
+			}
+
+			isNewer := meta.ModTime.After(bestMeta.ModTime)
+			isSameTime := meta.ModTime.Equal(bestMeta.ModTime)
+			isLarger := meta.Size > bestMeta.Size
+			isSameSize := meta.Size == bestMeta.Size
+
+			if isNewer || (isSameTime && isLarger) {
+				bestMeta = meta
+				bestBackends = []string{b.GetName()}
+			} else if isSameTime && isSameSize {
+				bestBackends = append(bestBackends, b.GetName())
+			}
+			return nil
+		})
+	}
+	_ = g.Wait()
+
+	if !found {
+		return nil, os.ErrNotExist
+	}
+
+	c.UpsertMulti(path, bestMeta, bestBackends)
+	node, ok := c.Get(path)
+	if !ok {
+		return nil, os.ErrNotExist
+	}
+	return node, nil
+}
+
+// FetchDir performs a synchronous, parallel ReadDir call to backends for a partial directory.
+func (c *Cache) FetchDir(ctx context.Context, path string, backends []backend.Backend) error {
+	node, ok := c.Get(path)
+	if !ok || !node.Meta.IsDir {
+		return os.ErrNotExist
+	}
+
+	g, gCtx := errgroup.WithContext(ctx)
+	for _, b := range backends {
+		b := b
+		g.Go(func() error {
+			entries, err := b.ReadDir(gCtx, path)
+			if err != nil {
+				return nil
+			}
+			for _, info := range entries {
+				childPath := strings.TrimPrefix(path+"/"+info.Name, "/")
+				c.Upsert(childPath, Metadata{
+					Name:    info.Name,
+					Size:    info.Size,
+					Mode:    info.Mode,
+					ModTime: info.ModTime,
+					IsDir:   info.IsDir,
+				}, b.GetName())
+			}
+			return nil
+		})
+	}
+	if err := g.Wait(); err != nil {
+		return err
+	}
+
+	node.Mu.Lock()
+	node.FullyIndexed = true
+	node.Mu.Unlock()
+	return nil
 }
 
 func (c *Cache) updatePaths(node *Node, newPath string) {
@@ -451,6 +562,11 @@ func (c *Cache) Warmup(ctx context.Context, backends []backend.Backend) {
 					ModTime: info.ModTime,
 					IsDir:   info.IsDir,
 				}, b.GetName())
+
+				// If it's a directory, ensure it exists in the cache nodes we just walked
+				// and mark as FullyIndexed = false initially if we want, but since we are walking
+				// the whole tree, we can mark them FullyIndexed when the walk for THIS backend is done.
+				// Actually, we should mark as FullyIndexed only after WE ARE SURE we have the full view.
 				return nil
 			})
 			if err != nil {
@@ -462,6 +578,20 @@ func (c *Cache) Warmup(ctx context.Context, backends []backend.Backend) {
 		})
 	}
 	_ = g.Wait()
+
+	// Mark all directories as FullyIndexed once we finished the whole scan
+	c.markAllIndexed(c.Root)
+}
+
+func (c *Cache) markAllIndexed(node *Node) {
+	node.Mu.Lock()
+	if node.Meta.IsDir {
+		node.FullyIndexed = true
+	}
+	for _, child := range node.Children {
+		c.markAllIndexed(child)
+	}
+	node.Mu.Unlock()
 }
 
 // FindDegraded returns all file nodes that have fewer backends than the required replication factor.

@@ -13,16 +13,7 @@ This document outlines a roadmap for evolving RepliStore from a functional proto
 
 ## 2. Metadata & Performance
 
-
-### 2.1. Lazy / Progressive Warmup
-**Current Issue:** The system waits for a full metadata scan of all backends before mounting the FUSE filesystem, which can take minutes for large datasets.
-
-**Proposal:**
-- Mount the filesystem immediately.
-- Serve `Lookup` and `ReadDir` requests by falling back to a synchronous backend call if the metadata for that specific path is not yet cached.
-- Continue the full scan in the background to gradually populate the cache.
-
-### 2.2. Smart Backend Selection
+### 2.1. Smart Backend Selection
 **Current Issue:** `RandomSelector` does not consider backend state beyond binary health.
 
 **Proposal:**
@@ -57,13 +48,7 @@ This document outlines a roadmap for evolving RepliStore from a functional proto
 
 ## 5. Connectivity & Reliability
 
-### 5.1. HealthMonitor Enhancements
-**Current Issue:** `Ping()` calls to backends are synchronous and performed serially. A single slow or hanging backend can block the health check for all other backends.
-**Proposal:** 
-- Add context support with a strict timeout to the `Backend.Ping()` interface.
-- Parallelize health checks so that multiple backends can be monitored concurrently.
-
-### 5.2. `O_APPEND` Support
+### 5.1. `O_APPEND` Support
 **Current Issue:** Log-style writes using `O_APPEND` are not handled, as `WriteAt` is the primary interface used.
 **Proposal:** Extend the `FileHandle` to handle the `Append` flag by querying the current file size from the cache before performing parallel writes.
 
@@ -73,11 +58,11 @@ This document outlines a roadmap for evolving RepliStore from a functional proto
 **Current Issue:** Metadata staleness between instances; full scans are expensive and slow.
 **Proposal:** Utilize the SMB `CHANGE_NOTIFY` feature to subscribe to directory changes on the backends. This allows instances to perform surgical, near-real-time cache updates instead of relying solely on periodic full scans.
 
-### 6.3. Shared Metadata Store
+### 6.2. Shared Metadata Store
 **Current Issue:** Independent in-memory caches lead to divergent views of the filesystem.
 **Proposal:** Support an optional shared metadata backend (e.g., etcd or Redis). This ensures all RepliStore instances see an identical, atomic view of the unified namespace in real-time.
 
-### 6.5. Conflict Resolution with Versioning (Vector Clocks)
+### 6.3. Conflict Resolution with Versioning (Vector Clocks)
 **Current Issue:** "Last-writer-wins" (based on `mtime`) is insufficient for resolving complex distributed conflicts.
 **Proposal:** Store versioning metadata (e.g., vector clocks or generation IDs) alongside files using SMB Alternative Data Streams (ADS). This enables deterministic detection and resolution of divergent replicas.
 
@@ -93,9 +78,13 @@ This document outlines a roadmap for evolving RepliStore from a functional proto
 - **Read Once, Write Many:** Optimize the repair process by reading a chunk of data from the source once and writing it to all target backends in parallel.
 - **Safe Directory Creation:** Ensure the destination parent directory exists on the target backend (using `MkdirAll`) before starting the copy.
 
-### 7.3. Metadata Accuracy
-**Current Issue:** File modification times (`ModTime`) are not updated in the VFS cache during `Write` operations, leading to stale metadata.
-**Proposal:** Update the `ModTime` in the cache node whenever a successful write (meeting quorum) occurs.
+### 7.3. Quorum-Based `Mkdir`
+**Current Issue:** The `Mkdir` operation currently succeeds if even a single backend acknowledges the directory creation, ignoring the `write_quorum` setting. This can lead to metadata inconsistency where a directory exists in the cache but only on a minority of backends.
+**Proposal:** Update `Dir.Mkdir` to ensure that directory creation is successful on at least `write_quorum` backends. If the quorum is not reached, attempt to roll back the operation on backends where it succeeded.
+
+### 7.4. Backend Selection during `Create`
+**Current Issue:** `Dir.Create` uses all backends as potential candidates for `SelectForWrite`, but it doesn't explicitly filter out backends where the parent directory might not exist (e.g., if a previous `Mkdir` failed on some backends).
+**Proposal:** Improve target selection to ensure that files are only created on backends that already contain the parent directory structure.
 
 ## 8. Operational & Observability
 
@@ -117,36 +106,26 @@ This document outlines a roadmap for evolving RepliStore from a functional proto
 
 ### 9.1. Fsync Support
 - **Implemented:** `Flush` and `Fsync` support in the FUSE layer.
-- **Functionality:** Synchronizes data to all open backend handles. Successfully syncs if `write_quorum` is met. Automatically removes replicas that fail the sync operation.
-- **Verification:** Added `TestFile_Fsync` to verify fan-out and quorum behavior.
 
 ### 9.2. Quorum-Based Consistency
 - **Implemented:** Support for `write_quorum` in configuration and filesystem operations.
-- **Functionality:** File creation and data writes succeed if a quorum of replicas acknowledge the operation. Failed backends are automatically removed from the file's metadata to ensure consistency with the surviving replicas.
-- **Verification:** Added `TestFile_Write_Quorum` to verify behavior during partial backend failures.
 
 ### 9.3. Background Repair (Anti-Entropy)
 - **Implemented:** Background `RepairManager` that identifies degraded files and restores replicas.
-- **Functionality:** Periodically scans the metadata cache for files with fewer than `replication_factor` backends and automatically copies data from healthy replicas to missing ones. Supports concurrency control.
-- **Verification:** Added `TestRepairManager_RepairNode` and `TestCache_FindDegraded`.
 
 ### 9.4. Background Metadata Synchronization
 - **Implemented:** A continuous background scan using the `cache_refresh_interval`.
-- **Functionality:** Reconciles the cache by detecting new files, modifications, and deletions.
-- **Verification:** Unit tests added for node pruning and reconciliation logic.
 
 ### 9.5. Atomic Multi-Backend Rename
 - **Implemented:** `Rename` support in the FUSE layer and VFS cache.
-- **Functionality:** Moves files and directories across the unified namespace. Ensures target parent directories exist on backends. Successfully renames if `write_quorum` is reached. Atomically updates the metadata cache and all child paths for directory moves.
-- **Verification:** Added `internal/fuse/rename_test.go` with cross-directory and quorum failure scenarios.
 
 ### 9.6. P2P Distributed Lock Manager (DLM)
 - **Implemented:** Fully decentralized DLM using mDNS for discovery and a masterless quorum-based protocol.
-- **Functionality:** 
-    - **Zero-Conf Discovery:** Nodes find each other via Multicast DNS (`_replistore._tcp`).
-    - **Quorum-Based Locking:** Acquires path-level locks by gathering votes from a majority of active peers.
-    - **Lamport Logical Clocks:** Ensures deterministic ordering of simultaneous requests.
-    - **Lease-Based Fencing:** Locks are granted as TTL leases; background renewal and validation loops prevent stale nodes from corrupting data.
-    - **Full Coordination:** All metadata operations (`Create`, `Mkdir`, `Rename`, `Remove`) and the **Background Repair Manager** now acquire distributed locks, eliminating "undelete" races and concurrent modification conflicts in multi-client clusters.
-    - **Implicit Leader Election:** The Repair Manager uses a **Global Repair Lock** (`.replistore/repair.lock`) to ensure that only one node in the cluster performs background repairs at any given time, preventing redundant NAS traffic.
-- **Verification:** Verified cluster formation, lock coordination, and single-node repair execution in multi-instance environments.
+
+### 9.7. Lazy / Progressive Warmup
+- **Implemented:** Asynchronous metadata scanning and on-demand fetching.
+- **Functionality:** The FUSE filesystem mounts instantly while a full scan proceeds in the background. Missing metadata is fetched synchronously from backends during `Lookup` or `ReadDir` if the cache is not yet fully indexed.
+
+### 9.8. HealthMonitor Enhancements
+- **Implemented:** Parallel and context-aware backend health monitoring.
+- **Functionality:** Backend `Ping()` calls now support `context.Context` with a strict timeout. Multiple backends are checked concurrently using an `errgroup`, preventing a single slow share from blocking the entire monitoring loop.

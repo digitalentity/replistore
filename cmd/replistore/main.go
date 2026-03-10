@@ -81,11 +81,13 @@ func main() {
 	monitor := backend.NewHealthMonitor(backends)
 	monitor.Start(ctx, 10 * time.Second)
 
-	// Warmup Cache
+	// Warmup Cache (Background)
 	cache := vfs.NewCache()
-	logrus.Info("Warming up metadata cache...")
-	cache.Warmup(ctx, backendList)
-	logrus.Info("Metadata cache warmed up")
+	go func() {
+		logrus.Info("Starting background metadata warmup...")
+		cache.Warmup(ctx, backendList)
+		logrus.Info("Initial metadata cache warmup complete")
+	}()
 
 	// Start background sync
 	refreshInterval, err := time.ParseDuration(cfg.CacheRefreshInterval)

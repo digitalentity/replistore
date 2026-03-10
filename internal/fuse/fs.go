@@ -42,6 +42,14 @@ func (f *RepliFS) acquireLock(ctx context.Context, path string) (*vfs.Distribute
 	return lock, nil
 }
 
+func (f *RepliFS) getBackendList() []backend.Backend {
+	res := make([]backend.Backend, 0, len(f.Backends))
+	for _, b := range f.Backends {
+		res = append(res, b)
+	}
+	return res
+}
+
 type Dir struct {
 	fs   *RepliFS
 	node *vfs.Node
@@ -60,10 +68,27 @@ func (d *Dir) Attr(ctx context.Context, a *fuse.Attr) error {
 func (d *Dir) Lookup(ctx context.Context, name string) (fs.Node, error) {
 	d.node.Mu.RLock()
 	child, ok := d.node.Children[name]
+	fullyIndexed := d.node.FullyIndexed
+	path := d.node.Meta.Path
 	d.node.Mu.RUnlock()
 
 	if !ok {
-		return nil, syscall.ENOENT
+		if fullyIndexed {
+			return nil, syscall.ENOENT
+		}
+
+		// Try lazy fetch
+		childPath := name
+		if path != "" {
+			childPath = path + "/" + name
+		}
+
+		logrus.Debugf("Lazy fetching metadata for %s", childPath)
+		node, err := d.fs.Cache.FetchEntry(ctx, childPath, d.fs.getBackendList())
+		if err != nil {
+			return nil, syscall.ENOENT
+		}
+		child = node
 	}
 
 	if child.Meta.IsDir {
@@ -73,6 +98,19 @@ func (d *Dir) Lookup(ctx context.Context, name string) (fs.Node, error) {
 }
 
 func (d *Dir) ReadDirAll(ctx context.Context) ([]fuse.Dirent, error) {
+	d.node.Mu.RLock()
+	fullyIndexed := d.node.FullyIndexed
+	path := d.node.Meta.Path
+	d.node.Mu.RUnlock()
+
+	if !fullyIndexed {
+		logrus.Debugf("Lazy fetching directory listing for %s", path)
+		if err := d.fs.Cache.FetchDir(ctx, path, d.fs.getBackendList()); err != nil {
+			logrus.Errorf("FetchDir failed for %s: %v", path, err)
+			// Return what we have anyway
+		}
+	}
+
 	d.node.Mu.RLock()
 	defer d.node.Mu.RUnlock()
 
