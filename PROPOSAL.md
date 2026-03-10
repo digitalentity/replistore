@@ -68,21 +68,13 @@ This document outlines a roadmap for evolving RepliStore from a functional proto
 
 ## 7. Reliability & Data Recovery
 
-### 7.1. Quorum-Based `Remove`
-**Current Issue:** The `Remove` operation currently fails if any backend returns an error, which can prevent file deletion if one backend is temporarily unavailable.
-**Proposal:** Implement quorum-based `Remove`. The operation should succeed if at least `write_quorum` backends acknowledge the deletion. Remaining replicas can be cleaned up later by the `RepairManager`.
-
-### 7.2. Repair Manager Optimizations
+### 7.1. Repair Manager Optimizations
 **Current Issue:** `RepairManager` copies data sequentially to each target backend and does not explicitly ensure the target parent path exists.
 **Proposal:**
 - **Read Once, Write Many:** Optimize the repair process by reading a chunk of data from the source once and writing it to all target backends in parallel.
 - **Safe Directory Creation:** Ensure the destination parent directory exists on the target backend (using `MkdirAll`) before starting the copy.
 
-### 7.3. Quorum-Based `Mkdir`
-**Current Issue:** The `Mkdir` operation currently succeeds if even a single backend acknowledges the directory creation, ignoring the `write_quorum` setting. This can lead to metadata inconsistency where a directory exists in the cache but only on a minority of backends.
-**Proposal:** Update `Dir.Mkdir` to ensure that directory creation is successful on at least `write_quorum` backends. If the quorum is not reached, attempt to roll back the operation on backends where it succeeded.
-
-### 7.4. Backend Selection during `Create`
+### 7.2. Backend Selection during `Create`
 **Current Issue:** `Dir.Create` uses all backends as potential candidates for `SelectForWrite`, but it doesn't explicitly filter out backends where the parent directory might not exist (e.g., if a previous `Mkdir` failed on some backends).
 **Proposal:** Improve target selection to ensure that files are only created on backends that already contain the parent directory structure.
 
@@ -124,8 +116,10 @@ This document outlines a roadmap for evolving RepliStore from a functional proto
 
 ### 9.7. Lazy / Progressive Warmup
 - **Implemented:** Asynchronous metadata scanning and on-demand fetching.
-- **Functionality:** The FUSE filesystem mounts instantly while a full scan proceeds in the background. Missing metadata is fetched synchronously from backends during `Lookup` or `ReadDir` if the cache is not yet fully indexed.
 
 ### 9.8. HealthMonitor Enhancements
 - **Implemented:** Parallel and context-aware backend health monitoring.
-- **Functionality:** Backend `Ping()` calls now support `context.Context` with a strict timeout. Multiple backends are checked concurrently using an `errgroup`, preventing a single slow share from blocking the entire monitoring loop.
+
+### 9.9. Quorum-Based `Mkdir` and `Remove`
+- **Implemented:** Quorum enforcement for directory creation and removal.
+- **Functionality:** `Mkdir` and `Remove` now succeed only if at least `write_quorum` backends acknowledge the operation. `Mkdir` performs automatic rollback on backends if quorum is not reached.

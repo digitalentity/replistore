@@ -333,6 +333,7 @@ func TestMkdir_Quorum(t *testing.T) {
 	dir := root.(*Dir)
 
 	b1.On("Mkdir", mock.Anything, "new-dir", mock.Anything).Return(nil)
+	b1.On("Remove", mock.Anything, "new-dir").Return(nil) // Rollback
 	b2.On("Mkdir", mock.Anything, "new-dir", mock.Anything).Return(fmt.Errorf("failed"))
 
 	req := &fuse.MkdirRequest{Name: "new-dir"}

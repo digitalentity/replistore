@@ -270,8 +270,12 @@ func (d *Dir) Mkdir(ctx context.Context, req *fuse.MkdirRequest) (fs.Node, error
 	}
 	_ = g.Wait()
 
-	if len(createdOn) == 0 {
-		return nil, syscall.EIO
+	if len(createdOn) < d.fs.WriteQuorum {
+		// Rollback successful ones
+		for _, bName := range createdOn {
+			_ = d.fs.Backends[bName].Remove(ctx, path)
+		}
+		return nil, fmt.Errorf("could not reach write quorum for mkdir: %d/%d", len(createdOn), d.fs.WriteQuorum)
 	}
 
 	d.node.Mu.Lock()
@@ -321,22 +325,28 @@ func (d *Dir) Remove(ctx context.Context, req *fuse.RemoveRequest) error {
 		defer lock.Release()
 	}
 
+	var successes int
+	var mu sync.Mutex
 	g, gCtx := errgroup.WithContext(ctx)
 	for _, bName := range backends {
 		bName := bName
 		b := d.fs.Backends[bName]
 		g.Go(func() error {
 			err := b.Remove(gCtx, path)
+			mu.Lock()
+			defer mu.Unlock()
 			if err != nil {
 				logrus.Errorf("Failed to remove %s from %s: %v", path, bName, err)
-				return err
+			} else {
+				successes++
 			}
 			return nil
 		})
 	}
+	_ = g.Wait()
 
-	if err := g.Wait(); err != nil {
-		return err
+	if successes < d.fs.WriteQuorum {
+		return fmt.Errorf("could not reach write quorum for remove: %d/%d", successes, d.fs.WriteQuorum)
 	}
 
 	d.node.Mu.Lock()
