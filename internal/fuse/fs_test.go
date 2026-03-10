@@ -249,7 +249,6 @@ func TestFile_Fsync(t *testing.T) {
 	mockFile2.On("Close").Return(nil)
 
 	err := fileHandle.Fsync(context.Background(), &fuse.FsyncRequest{})
-
 	assert.NoError(t, err)
 
 	file.node.Mu.RLock()
@@ -260,4 +259,119 @@ func TestFile_Fsync(t *testing.T) {
 	b2.AssertExpectations(t)
 	mockFile1.AssertExpectations(t)
 	mockFile2.AssertExpectations(t)
+}
+
+func TestLookup_LazyTrigger(t *testing.T) {
+	b1 := &test.MockBackend{NameVal: "b1"}
+	cache := vfs.NewCache()
+	// Directory exists in cache but not fully indexed
+	cache.Upsert("lazy/dummy", vfs.Metadata{Name: "dummy"}, "b1")
+	dirNode, _ := cache.Get("lazy")
+	dirNode.FullyIndexed = false
+
+	fs := &RepliFS{
+		Cache:    cache,
+		Backends: map[string]backend.Backend{"b1": b1},
+		Selector: vfs.NewRandomSelector(nil),
+	}
+	root, _ := fs.Root()
+	dir := root.(*Dir)
+	lazyDir, _ := dir.Lookup(context.Background(), "lazy")
+
+	b1.On("Stat", mock.Anything, "lazy/file.txt").Return(backend.FileInfo{
+		Name: "file.txt",
+		Size: 100,
+	}, nil)
+
+	node, err := (lazyDir.(*Dir)).Lookup(context.Background(), "file.txt")
+	assert.NoError(t, err)
+	assert.NotNil(t, node)
+	
+	b1.AssertExpectations(t)
+}
+
+func TestReadDir_LazyTrigger(t *testing.T) {
+	b1 := &test.MockBackend{NameVal: "b1"}
+	cache := vfs.NewCache()
+	cache.Upsert("lazy-dir/dummy", vfs.Metadata{Name: "dummy"}, "b1")
+	dirNode, _ := cache.Get("lazy-dir")
+	dirNode.FullyIndexed = false
+
+	fs := &RepliFS{
+		Cache:    cache,
+		Backends: map[string]backend.Backend{"b1": b1},
+		Selector: vfs.NewRandomSelector(nil),
+	}
+	root, _ := fs.Root()
+	dir, _ := (root.(*Dir)).Lookup(context.Background(), "lazy-dir")
+
+	b1.On("ReadDir", mock.Anything, "lazy-dir").Return([]backend.FileInfo{
+		{Name: "file1.txt", Size: 10},
+	}, nil)
+
+	dirents, err := (dir.(*Dir)).ReadDirAll(context.Background())
+	assert.NoError(t, err)
+	assert.Len(t, dirents, 2) // dummy + file1.txt
+	
+	b1.AssertExpectations(t)
+}
+
+func TestMkdir_Quorum(t *testing.T) {
+	b1 := &test.MockBackend{NameVal: "b1"}
+	b2 := &test.MockBackend{NameVal: "b2"}
+
+	cache := vfs.NewCache()
+	fs := &RepliFS{
+		Cache:             cache,
+		Backends:          map[string]backend.Backend{"b1": b1, "b2": b2},
+		ReplicationFactor: 2,
+		WriteQuorum:       2, // Strict quorum
+		Selector:          vfs.NewRandomSelector(nil),
+	}
+	
+	root, _ := fs.Root()
+	dir := root.(*Dir)
+
+	b1.On("Mkdir", mock.Anything, "new-dir", mock.Anything).Return(nil)
+	b2.On("Mkdir", mock.Anything, "new-dir", mock.Anything).Return(fmt.Errorf("failed"))
+
+	req := &fuse.MkdirRequest{Name: "new-dir"}
+	_, err := dir.Mkdir(context.Background(), req)
+
+	// Currently this might pass if the code doesn't check quorum for Mkdir
+	// according to PROPOSAL.md. 
+	// If it fails, then it's already fixed or I'm testing the fix.
+	assert.Error(t, err)
+	
+	b1.AssertExpectations(t)
+	b2.AssertExpectations(t)
+}
+
+func TestRemove_Quorum(t *testing.T) {
+	b1 := &test.MockBackend{NameVal: "b1"}
+	b2 := &test.MockBackend{NameVal: "b2"}
+
+	cache := vfs.NewCache()
+	cache.Upsert("remove.txt", vfs.Metadata{Name: "remove.txt", Path: "remove.txt", Backends: []string{"b1", "b2"}}, "b1")
+	cache.Upsert("remove.txt", vfs.Metadata{Name: "remove.txt", Path: "remove.txt", Backends: []string{"b1", "b2"}}, "b2")
+
+	fs := &RepliFS{
+		Cache:             cache,
+		Backends:          map[string]backend.Backend{"b1": b1, "b2": b2},
+		ReplicationFactor: 2,
+		WriteQuorum:       2, // Strict quorum
+		Selector:          vfs.NewRandomSelector(nil),
+	}
+	
+	root, _ := fs.Root()
+	dir := root.(*Dir)
+
+	b1.On("Remove", mock.Anything, "remove.txt").Return(nil)
+	b2.On("Remove", mock.Anything, "remove.txt").Return(fmt.Errorf("not found"))
+
+	req := &fuse.RemoveRequest{Name: "remove.txt"}
+	err := dir.Remove(context.Background(), req)
+
+	// Should fail because quorum is 2 but only 1 succeeded
+	assert.Error(t, err)
 }

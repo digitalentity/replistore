@@ -1,12 +1,106 @@
 package vfs_test
 
 import (
+	"context"
+	"os"
 	"testing"
 	"time"
 
+	"github.com/digitalentity/replistore/internal/backend"
+	"github.com/digitalentity/replistore/internal/test"
 	"github.com/digitalentity/replistore/internal/vfs"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/mock"
 )
+
+func TestCache_FetchEntry(t *testing.T) {
+	ctx := context.Background()
+	cache := vfs.NewCache()
+	now := time.Now().Round(time.Second)
+
+	// Mock backends
+	b1 := &test.MockBackend{NameVal: "b1"}
+	b2 := &test.MockBackend{NameVal: "b2"}
+	b3 := &test.MockBackend{NameVal: "b3"}
+
+	path := "lazy/file.txt"
+
+	// B1 has an older version
+	b1.On("Stat", mock.Anything, path).Return(backend.FileInfo{
+		Name:    "file.txt",
+		Size:    100,
+		ModTime: now.Add(-time.Hour),
+	}, nil)
+
+	// B2 has the latest version
+	b2.On("Stat", mock.Anything, path).Return(backend.FileInfo{
+		Name:    "file.txt",
+		Size:    200,
+		ModTime: now,
+	}, nil)
+
+	// B3 also has the latest version (same time/size)
+	b3.On("Stat", mock.Anything, path).Return(backend.FileInfo{
+		Name:    "file.txt",
+		Size:    200,
+		ModTime: now,
+	}, nil)
+
+	backends := []backend.Backend{b1, b2, b3}
+
+	node, err := cache.FetchEntry(ctx, path, backends)
+	assert.NoError(t, err)
+	assert.NotNil(t, node)
+	assert.Equal(t, int64(200), node.Meta.Size)
+	assert.ElementsMatch(t, []string{"b2", "b3"}, node.Meta.Backends)
+	assert.False(t, node.FullyIndexed)
+
+	// Verify it's in cache
+	cachedNode, ok := cache.Get(path)
+	assert.True(t, ok)
+	assert.Equal(t, node, cachedNode)
+}
+
+func TestCache_FetchEntry_NotFound(t *testing.T) {
+	ctx := context.Background()
+	cache := vfs.NewCache()
+
+	b1 := &test.MockBackend{NameVal: "b1"}
+	path := "missing.txt"
+	b1.On("Stat", mock.Anything, path).Return(backend.FileInfo{}, os.ErrNotExist)
+
+	node, err := cache.FetchEntry(ctx, path, []backend.Backend{b1})
+	assert.Error(t, err)
+	assert.Nil(t, node)
+}
+
+func TestCache_FetchDir_Partial(t *testing.T) {
+	ctx := context.Background()
+	cache := vfs.NewCache()
+	
+	// Create parent directory in cache but NOT fully indexed
+	cache.Upsert("lazy-dir/dummy", vfs.Metadata{Name: "dummy"}, "b1")
+	dirNode, _ := cache.Get("lazy-dir")
+	assert.False(t, dirNode.FullyIndexed)
+
+	b1 := &test.MockBackend{NameVal: "b1"}
+	b1.On("ReadDir", mock.Anything, "lazy-dir").Return([]backend.FileInfo{
+		{Name: "file1.txt", Size: 10, IsDir: false},
+		{Name: "subdir", IsDir: true},
+	}, nil)
+
+	err := cache.FetchDir(ctx, "lazy-dir", []backend.Backend{b1})
+	assert.NoError(t, err)
+	
+	// Verify directory is now fully indexed
+	assert.True(t, dirNode.FullyIndexed)
+
+	// Verify children are in cache
+	_, ok1 := cache.Get("lazy-dir/file1.txt")
+	assert.True(t, ok1)
+	_, ok2 := cache.Get("lazy-dir/subdir")
+	assert.True(t, ok2)
+}
 
 func TestCache_UpsertAndGet(t *testing.T) {
 	cache := vfs.NewCache()
