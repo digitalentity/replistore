@@ -74,9 +74,14 @@ This document outlines a roadmap for evolving RepliStore from a functional proto
 - **Read Once, Write Many:** Optimize the repair process by reading a chunk of data from the source once and writing it to all target backends in parallel.
 - **Safe Directory Creation:** Ensure the destination parent directory exists on the target backend (using `MkdirAll`) before starting the copy.
 
-### 7.2. Backend Selection during `Create`
+### 7.4. Backend Selection during `Create`
 **Current Issue:** `Dir.Create` uses all backends as potential candidates for `SelectForWrite`, but it doesn't explicitly filter out backends where the parent directory might not exist (e.g., if a previous `Mkdir` failed on some backends).
 **Proposal:** Improve target selection to ensure that files are only created on backends that already contain the parent directory structure.
+
+### 7.5. Replica Pruning (Over-Replication)
+**Current Issue:** If a file has more replicas than the `replication_factor` (e.g. after a config change), the system keeps all of them, increasing write overhead and consuming unnecessary space.
+**Proposal:** Update `RepairManager` to identify over-replicated files and safely remove extra replicas from the least-preferred backends.
+
 
 ## 8. Operational & Observability
 
