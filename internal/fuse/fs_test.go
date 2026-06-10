@@ -532,7 +532,6 @@ func TestFile_Open_HealDegraded(t *testing.T) {
 	dstMockFile.AssertExpectations(t)
 }
 
-
 func TestDir_Create_MkdirAllParent(t *testing.T) {
 	b1 := &test.MockBackend{NameVal: "b1"}
 	mockFile := &test.MockFile{}
@@ -594,4 +593,45 @@ func TestDir_Mkdir_MkdirAllParent(t *testing.T) {
 	assert.NotNil(t, node)
 
 	b1.AssertExpectations(t)
+}
+
+func TestFile_NodeFsync(t *testing.T) {
+	b1 := &test.MockBackend{NameVal: "b1"}
+	b2 := &test.MockBackend{NameVal: "b2"}
+	mockFile1 := &test.MockFile{}
+	mockFile2 := &test.MockFile{}
+
+	cache := vfs.NewCache()
+	cache.Upsert("sync.txt", vfs.Metadata{Name: "sync.txt", Path: "sync.txt", Backends: []string{"b1", "b2"}}, "b1")
+	cache.Upsert("sync.txt", vfs.Metadata{Name: "sync.txt", Path: "sync.txt", Backends: []string{"b1", "b2"}}, "b2")
+
+	fs := &RepliFS{
+		Cache:             cache,
+		Backends:          map[string]backend.Backend{"b1": b1, "b2": b2},
+		ReplicationFactor: 2,
+		WriteQuorum:       2,
+		Selector:          vfs.NewFirstSelector(nil),
+	}
+
+	root, _ := fs.Root()
+	dir := root.(*Dir)
+	node, _ := dir.Lookup(context.Background(), "sync.txt")
+	file := node.(*File)
+
+	b1.On("OpenFile", mock.Anything, "sync.txt", os.O_RDWR, os.FileMode(0)).Return(mockFile1, nil)
+	b2.On("OpenFile", mock.Anything, "sync.txt", os.O_RDWR, os.FileMode(0)).Return(mockFile2, nil)
+
+	mockFile1.On("Sync", mock.Anything).Return(nil)
+	mockFile1.On("Close").Return(nil)
+
+	mockFile2.On("Sync", mock.Anything).Return(nil)
+	mockFile2.On("Close").Return(nil)
+
+	err := file.Fsync(context.Background(), &fuse.FsyncRequest{})
+	assert.NoError(t, err)
+
+	b1.AssertExpectations(t)
+	b2.AssertExpectations(t)
+	mockFile1.AssertExpectations(t)
+	mockFile2.AssertExpectations(t)
 }

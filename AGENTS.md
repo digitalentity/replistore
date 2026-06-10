@@ -1,35 +1,41 @@
-# CLAUDE.md
+# RepliStore Agent Instructions
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This document provides foundational mandates, technical context, and development guidelines for AI agents working on RepliStore.
 
-## Commands
+These instructions take precedence over general defaults.
 
-```bash
-# Build
-go build ./cmd/replistore/...
+## Commands & Validation Workflow
 
-# Test
-go test ./...
-go test -v ./...
-go test -race ./...
+After any code modification, always perform the following validation steps:
 
-# Run a single test
-go test ./internal/fuse/ -run TestLookup
-go test ./internal/vfs/ -run TestDistributedLock
-```
+1. **Build Check:** Run the compiler to ensure it builds successfully:
+   ```bash
+   go build ./cmd/replistore/...
+   ```
+2. **Test Suite:** Run the tests to verify correctness:
+   ```bash
+   # Run all tests
+   go test ./...
+   go test -v ./...
+   go test -race ./...
 
-After any code modification: build, then run tests. If a feature adds a config field or changes a flow, update the corresponding file in `docs/`.
+   # Run specific tests (examples)
+   go test ./internal/fuse/ -run TestLookup
+   go test ./internal/vfs/ -run TestDistributedLock
+   ```
+   *Note: RepliStore relies heavily on mock-based testing in `internal/test/` to verify distributed logic without actual NAS hardware.*
+3. **Documentation:** If a feature adds a configuration field or changes a flow, update the corresponding file in `docs/`.
 
 ## Engineering Standards
 
-- **Minimalism:** Prefer the Go standard library (`net/rpc`, `net/http`). External dependencies require justification.
-- **I/O Resilience:** All backend and cluster RPC operations must accept `context.Context` with timeouts.
-- **Logging:** Use `sirupsen/logrus` with `component`, `path`, or `node_id` fields.
-- **Concurrency:** Use `golang.org/x/sync/errgroup` for parallel fan-out (e.g., writing to multiple replicas).
+- **Minimalism:** Prefer the Go standard library (`net/rpc`, `net/http`, etc.). External dependencies must be justified and reviewed for "bloat."
+- **I/O Resilience:** All backend and cluster RPC operations must support `context.Context` with appropriate timeouts.
+- **Logging:** Use `sirupsen/logrus`. Component-specific loggers should include `component` and `path` or `node_id` fields.
+- **Concurrency:** Use `golang.org/x/sync/errgroup` for parallel fan-out operations (e.g., writing to multiple replicas).
 
 ## Architecture
 
-RepliStore is a FUSE-based replicated filesystem that aggregates multiple SMB2/3 shares into a single mount point. It is a 4-layer stack:
+RepliStore is a FUSE-based replicated filesystem that aggregates multiple SMB2/3 shares into a single mount point. It is structured as a 4-layer stack:
 
 ```
 FUSE Layer        (internal/fuse/)    — translates OS syscalls to VFS operations

@@ -83,6 +83,13 @@ func (d *Discovery) GetPeers() []Peer {
 	return res
 }
 
+func (d *Discovery) GetPeer(id string) (Peer, bool) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	p, ok := d.Peers[id]
+	return p, ok
+}
+
 func (d *Discovery) browseLoop() {
 	entries := make(chan *zeroconf.ServiceEntry)
 	

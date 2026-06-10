@@ -261,10 +261,5 @@ func (l *DistributedLock) rollback(peers []string, token string) {
 }
 
 func (l *DistributedLock) findPeer(id string) (cluster.Peer, bool) {
-	for _, p := range l.Discovery.GetPeers() {
-		if p.ID == id {
-			return p, true
-		}
-	}
-	return cluster.Peer{}, false
+	return l.Discovery.GetPeer(id)
 }

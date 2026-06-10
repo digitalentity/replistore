@@ -7,6 +7,7 @@ import (
 	"os"
 	"sync"
 	"syscall"
+	"time"
 
 	"bazil.org/fuse"
 	"bazil.org/fuse/fs"
@@ -486,6 +487,22 @@ func (d *Dir) Rename(ctx context.Context, req *fuse.RenameRequest, newDir fs.Nod
 		}
 		sourceNode.Meta.Backends = newBackends
 		sourceNode.Mu.Unlock()
+
+		// Launch a background goroutine for each failed backend to asynchronously remove the file at the oldPath
+		for _, bName := range failures {
+			bName := bName
+			go func() {
+				b, ok := d.fs.Backends[bName]
+				if !ok {
+					return
+				}
+				bgCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer cancel()
+				if err := b.Remove(bgCtx, oldPath); err != nil {
+					logrus.Warnf("Failed to asynchronously remove orphaned file %s from backend %s: %v", oldPath, bName, err)
+				}
+			}()
+		}
 	}
 
 	return nil
@@ -507,9 +524,63 @@ func (f *File) Attr(ctx context.Context, a *fuse.Attr) error {
 }
 
 func (f *File) Fsync(ctx context.Context, req *fuse.FsyncRequest) error {
-	// Node fsync is tricky without a handle.
-	// For now, we rely on Handle.Fsync which is what most apps use.
-	// We can implement a "sync on all backends" in the future if needed.
+	f.node.Mu.RLock()
+	backends := make([]string, len(f.node.Meta.Backends))
+	copy(backends, f.node.Meta.Backends)
+	path := f.node.Meta.Path
+	f.node.Mu.RUnlock()
+
+	if len(backends) == 0 {
+		return nil
+	}
+
+	var mu sync.Mutex
+	var successes int
+	var lastErr error
+
+	g, gCtx := errgroup.WithContext(ctx)
+	for _, bName := range backends {
+		bName := bName
+		g.Go(func() error {
+			b, ok := f.fs.Backends[bName]
+			if !ok {
+				mu.Lock()
+				lastErr = fmt.Errorf("backend %s not found", bName)
+				mu.Unlock()
+				return nil
+			}
+
+			sf, err := b.OpenFile(gCtx, path, os.O_RDWR, 0)
+			if err != nil {
+				sf, err = b.OpenFile(gCtx, path, os.O_RDONLY, 0)
+			}
+			if err != nil {
+				mu.Lock()
+				lastErr = err
+				mu.Unlock()
+				return nil
+			}
+			defer sf.Close()
+
+			if err := sf.Sync(gCtx); err != nil {
+				mu.Lock()
+				lastErr = err
+				mu.Unlock()
+				return nil
+			}
+
+			mu.Lock()
+			successes++
+			mu.Unlock()
+			return nil
+		})
+	}
+	_ = g.Wait()
+
+	if successes < f.fs.WriteQuorum && len(backends) > 0 {
+		return fmt.Errorf("could not reach write quorum during fsync: %d/%d (last error: %v)", successes, f.fs.WriteQuorum, lastErr)
+	}
+
 	return nil
 }
 
@@ -548,6 +619,7 @@ func (f *File) Open(ctx context.Context, req *fuse.OpenRequest, resp *fuse.OpenR
 			for name := range f.fs.Backends {
 				allBackendNames = append(allBackendNames, name)
 			}
+
 			healthyBackends := f.fs.Selector.SelectForWrite(f.fs.ReplicationFactor, allBackendNames)
 
 			healthyMap := make(map[string]bool)

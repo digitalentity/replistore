@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"testing"
+	"time"
 
 	"bazil.org/fuse"
 	"github.com/digitalentity/replistore/internal/backend"
@@ -116,6 +117,7 @@ func TestDir_Rename_Quorum(t *testing.T) {
 
 	b2.On("MkdirAll", mock.Anything, "", os.FileMode(0755)).Return(nil)
 	b2.On("Rename", mock.Anything, "old.txt", "new.txt").Return(os.ErrPermission)
+	b2.On("Remove", mock.Anything, "old.txt").Return(nil)
 
 	req := &fuse.RenameRequest{OldName: "old.txt", NewName: "new.txt"}
 	err := root.Rename(context.Background(), req, root)
@@ -126,6 +128,9 @@ func TestDir_Rename_Quorum(t *testing.T) {
 	// Backend list for new file should only contain b1
 	node, _ := cache.Get("new.txt")
 	assert.Equal(t, []string{"b1"}, node.Meta.Backends)
+
+	// Wait for the async cleanup goroutine to finish
+	time.Sleep(50 * time.Millisecond)
 
 	b1.AssertExpectations(t)
 	b2.AssertExpectations(t)
