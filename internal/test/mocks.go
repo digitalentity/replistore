@@ -3,6 +3,7 @@ package test
 import (
 	"context"
 	"os"
+	"time"
 
 	"github.com/digitalentity/replistore/internal/backend"
 	"github.com/stretchr/testify/mock"
@@ -62,6 +63,11 @@ func (m *MockBackend) Remove(ctx context.Context, path string) error {
 
 func (m *MockBackend) Rename(ctx context.Context, oldPath, newPath string) error {
 	args := m.Called(ctx, oldPath, newPath)
+	return args.Error(0)
+}
+
+func (m *MockBackend) Chtimes(ctx context.Context, path string, atime, mtime time.Time) error {
+	args := m.Called(ctx, path, atime, mtime)
 	return args.Error(0)
 }
 

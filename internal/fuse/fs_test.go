@@ -728,6 +728,11 @@ func TestFile_Open_HealDegraded(t *testing.T) {
 	dstMockFile.On("WriteAt", mock.Anything, []byte("hello"), int64(0)).Return(5, nil)
 	dstMockFile.On("Close").Return(nil)
 
+	// The source replica's mtime must be preserved on the healed copy.
+	srcModTime := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	b1.On("Stat", mock.Anything, "degraded.txt").Return(backend.FileInfo{Name: "degraded.txt", Size: 5, ModTime: srcModTime}, nil)
+	b2.On("Chtimes", mock.Anything, "degraded.txt", srcModTime, srcModTime).Return(nil)
+
 	// Mock final open for writing for both backends
 	b1.On("OpenFile", mock.Anything, "degraded.txt", mock.Anything, mock.Anything).Return(b1WriteFile, nil)
 	b2.On("OpenFile", mock.Anything, "degraded.txt", mock.Anything, mock.Anything).Return(b2WriteFile, nil)

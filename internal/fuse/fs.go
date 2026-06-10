@@ -858,6 +858,17 @@ func (f *File) Open(ctx context.Context, req *fuse.OpenRequest, resp *fuse.OpenR
 				_ = srcFile.Close()
 				_ = dstFile.Close()
 
+				// Preserve the source replica's mtime on the destination so
+				// the replicas compare as the same version during
+				// reconciliation (see RepairManager.repairNode).
+				f.node.Mu.RLock()
+				cachedModTime := f.node.Meta.ModTime
+				f.node.Mu.RUnlock()
+				mtime := sourceModTime(ctx, sourceBackend, path, cachedModTime)
+				if err := targetBackend.Chtimes(ctx, path, mtime, mtime); err != nil {
+					logrus.Warnf("Failed to preserve mtime for %s on %s: %v", path, targetName, err)
+				}
+
 				// Update the cache node's metadata: acquire f.node.Mu.Lock(), append the target backend name to f.node.Meta.Backends if not already present, and unlock.
 				f.node.Mu.Lock()
 				found := false

@@ -87,6 +87,7 @@ func (m *RepairManager) performScrub(ctx context.Context) {
 func (m *RepairManager) repairNode(ctx context.Context, node *vfs.Node) error {
 	node.Mu.Lock()
 	path := node.Meta.Path
+	cachedModTime := node.Meta.ModTime
 	currentBackends := make(map[string]bool)
 	for _, b := range node.Meta.Backends {
 		currentBackends[b] = true
@@ -192,6 +193,15 @@ func (m *RepairManager) repairNode(ctx context.Context, node *vfs.Node) error {
 		}
 		_ = dstFile.Close()
 
+		// Preserve the source replica's mtime on the destination so the two
+		// replicas compare as the same version (same mtime, same size) during
+		// reconciliation. Without this, the fresh copy looks newer than the
+		// source and anti-entropy never converges.
+		mtime := sourceModTime(ctx, sourceBackend, path, cachedModTime)
+		if err := targetBackend.Chtimes(ctx, path, mtime, mtime); err != nil {
+			logrus.Warnf("Failed to preserve mtime for %s on %s: %v", path, targetName, err)
+		}
+
 		// Update metadata
 		node.Mu.Lock()
 		found := false
@@ -209,6 +219,17 @@ func (m *RepairManager) repairNode(ctx context.Context, node *vfs.Node) error {
 	}
 
 	return nil
+}
+
+// sourceModTime returns the current ModTime of path on the source backend,
+// falling back to the cached metadata value if the Stat fails.
+func sourceModTime(ctx context.Context, source backend.Backend, path string, fallback time.Time) time.Time {
+	fi, err := source.Stat(ctx, path)
+	if err != nil {
+		logrus.Debugf("Stat of %s on %s failed, using cached mtime: %v", path, source.GetName(), err)
+		return fallback
+	}
+	return fi.ModTime
 }
 
 // Helpers to adapt backend.File to io.Reader/Writer

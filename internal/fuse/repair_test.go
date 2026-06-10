@@ -51,10 +51,65 @@ func TestRepairManager_RepairNode(t *testing.T) {
 	mockFile2.On("WriteAt", mock.Anything, data, int64(0)).Return(len(data), nil)
 	mockFile2.On("Close").Return(nil)
 
+	// The source replica's mtime must be preserved on the target after the copy.
+	srcModTime := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	b1.On("Stat", mock.Anything, "repair.txt").Return(backend.FileInfo{Name: "repair.txt", Size: int64(len(data)), ModTime: srcModTime}, nil)
+	b2.On("Chtimes", mock.Anything, "repair.txt", srcModTime, srcModTime).Return(nil)
+
 	err := mgr.repairNode(context.Background(), node)
 	assert.NoError(t, err)
 
 	// Metadata should now include both b1 and b2
+	node.Mu.RLock()
+	assert.ElementsMatch(t, []string{"b1", "b2"}, node.Meta.Backends)
+	node.Mu.RUnlock()
+
+	b1.AssertExpectations(t)
+	b2.AssertExpectations(t)
+}
+
+func TestRepairManager_RepairNode_ChtimesErrorStillSucceeds(t *testing.T) {
+	b1 := &test.MockBackend{NameVal: "b1"}
+	b2 := &test.MockBackend{NameVal: "b2"}
+
+	mockFile1 := &test.MockFile{}
+	mockFile2 := &test.MockFile{}
+
+	cache := vfs.NewCache()
+	cache.Upsert("repair.txt", vfs.Metadata{Name: "repair.txt", Path: "repair.txt", Backends: []string{"b1"}, Mode: 0644}, "b1")
+
+	fs := &RepliFS{
+		Cache:             cache,
+		Backends:          map[string]backend.Backend{"b1": b1, "b2": b2},
+		ReplicationFactor: 2,
+		Selector:          vfs.NewFirstSelector(nil),
+	}
+
+	mgr := NewRepairManager(fs, time.Hour, 1)
+
+	node, _ := cache.Get("repair.txt")
+
+	b1.On("OpenFile", mock.Anything, "repair.txt", os.O_RDONLY, mock.Anything).Return(mockFile1, nil)
+
+	data := []byte("repair data")
+	mockFile1.On("ReadAt", mock.Anything, mock.Anything, int64(0)).Run(func(args mock.Arguments) {
+		buf := args.Get(1).([]byte)
+		copy(buf, data)
+	}).Return(len(data), io.EOF)
+	mockFile1.On("Close").Return(nil)
+
+	b2.On("OpenFile", mock.Anything, "repair.txt", os.O_CREATE|os.O_TRUNC|os.O_RDWR, os.FileMode(0644)).Return(mockFile2, nil)
+	mockFile2.On("WriteAt", mock.Anything, data, int64(0)).Return(len(data), nil)
+	mockFile2.On("Close").Return(nil)
+
+	// Source Stat fails, so the cached (zero) mtime is used; Chtimes errors out.
+	b1.On("Stat", mock.Anything, "repair.txt").Return(backend.FileInfo{}, io.ErrUnexpectedEOF)
+	b2.On("Chtimes", mock.Anything, "repair.txt", mock.Anything, mock.Anything).Return(io.ErrUnexpectedEOF)
+
+	err := mgr.repairNode(context.Background(), node)
+	assert.NoError(t, err)
+
+	// Repair must still count as successful: b2 is added to the backend list.
 	node.Mu.RLock()
 	assert.ElementsMatch(t, []string{"b1", "b2"}, node.Meta.Backends)
 	node.Mu.RUnlock()

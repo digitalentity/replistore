@@ -41,6 +41,7 @@ type Backend interface {
 	MkdirAll(ctx context.Context, path string, perm os.FileMode) error
 	Remove(ctx context.Context, path string) error
 	Rename(ctx context.Context, oldPath, newPath string) error
+	Chtimes(ctx context.Context, path string, atime, mtime time.Time) error
 }
 
 type SMBBackend struct {
@@ -363,6 +364,20 @@ func (b *SMBBackend) Rename(ctx context.Context, oldPath, newPath string) error 
 		oldSMBPath := toSMBPath(oldPath)
 		newSMBPath := toSMBPath(newPath)
 		return share.Rename(oldSMBPath, newSMBPath)
+	})
+}
+
+func (b *SMBBackend) Chtimes(ctx context.Context, path string, atime, mtime time.Time) error {
+	return b.execute(ctx, func() error {
+		share, err := b.getShare()
+		if err != nil {
+			return err
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		smbPath := toSMBPath(path)
+		return share.Chtimes(smbPath, atime, mtime)
 	})
 }
 
