@@ -7,6 +7,7 @@ import (
 	"os"
 	"syscall"
 	"testing"
+	"time"
 
 	"bazil.org/fuse"
 	"github.com/digitalentity/replistore/internal/backend"
@@ -68,7 +69,7 @@ func TestDir_Create(t *testing.T) {
 	root, _ := fs.Root()
 	dir := root.(*Dir)
 
-	b1.On("OpenFile", mock.Anything, "new.txt", os.O_CREATE|os.O_RDWR, os.FileMode(0644)).Return(mockFile, nil)
+	b1.On("OpenFile", mock.Anything, "new.txt", os.O_CREATE|os.O_EXCL|os.O_RDWR, os.FileMode(0644)).Return(mockFile, nil)
 
 	req := &fuse.CreateRequest{Name: "new.txt", Mode: 0644}
 	resp := &fuse.CreateResponse{}
@@ -543,8 +544,8 @@ func TestDir_Create_QuorumFailure(t *testing.T) {
 	root, _ := fs.Root()
 	dir := root.(*Dir)
 
-	b1.On("OpenFile", mock.Anything, "new_fail.txt", os.O_CREATE|os.O_RDWR, os.FileMode(0644)).Return(mockFile1, nil)
-	b2.On("OpenFile", mock.Anything, "new_fail.txt", os.O_CREATE|os.O_RDWR, os.FileMode(0644)).Return(nil, fmt.Errorf("permission denied"))
+	b1.On("OpenFile", mock.Anything, "new_fail.txt", os.O_CREATE|os.O_EXCL|os.O_RDWR, os.FileMode(0644)).Return(mockFile1, nil)
+	b2.On("OpenFile", mock.Anything, "new_fail.txt", os.O_CREATE|os.O_EXCL|os.O_RDWR, os.FileMode(0644)).Return(nil, fmt.Errorf("permission denied"))
 
 	mockFile1.On("Close").Return(nil)
 	b1.On("Remove", mock.Anything, "new_fail.txt").Return(nil)
@@ -560,6 +561,52 @@ func TestDir_Create_QuorumFailure(t *testing.T) {
 	b1.AssertExpectations(t)
 	b2.AssertExpectations(t)
 	mockFile1.AssertExpectations(t)
+}
+
+func TestDir_Create_AlreadyExistsOnBackends(t *testing.T) {
+	b1 := &test.MockBackend{NameVal: "b1"}
+	b2 := &test.MockBackend{NameVal: "b2"}
+
+	cache := vfs.NewCache()
+	fs := &RepliFS{
+		Cache:             cache,
+		Backends:          map[string]backend.Backend{"b1": b1, "b2": b2},
+		ReplicationFactor: 2,
+		WriteQuorum:       2,
+		Selector:          vfs.NewFirstSelector(nil),
+	}
+
+	root, _ := fs.Root()
+	dir := root.(*Dir)
+
+	// Every backend reports the file already exists.
+	b1.On("OpenFile", mock.Anything, "exists.txt", os.O_CREATE|os.O_EXCL|os.O_RDWR, os.FileMode(0644)).Return(nil, os.ErrExist)
+	b2.On("OpenFile", mock.Anything, "exists.txt", os.O_CREATE|os.O_EXCL|os.O_RDWR, os.FileMode(0644)).Return(nil, os.ErrExist)
+
+	// FetchEntry should be triggered to merge the discovered file into the cache.
+	info := backend.FileInfo{Name: "exists.txt", Size: 42, Mode: 0644, ModTime: time.Now()}
+	b1.On("Stat", mock.Anything, "exists.txt").Return(info, nil)
+	b2.On("Stat", mock.Anything, "exists.txt").Return(info, nil)
+
+	req := &fuse.CreateRequest{Name: "exists.txt", Mode: 0644}
+	resp := &fuse.CreateResponse{}
+	node, handle, err := dir.Create(context.Background(), req, resp)
+
+	assert.ErrorIs(t, err, syscall.EEXIST)
+	assert.Nil(t, node)
+	assert.Nil(t, handle)
+
+	// No replicas were created, so nothing must be removed.
+	b1.AssertNotCalled(t, "Remove", mock.Anything, "exists.txt")
+	b2.AssertNotCalled(t, "Remove", mock.Anything, "exists.txt")
+
+	// The discovered file must now be in the cache.
+	cached, ok := cache.Get("exists.txt")
+	assert.True(t, ok)
+	assert.Equal(t, int64(42), cached.Meta.Size)
+
+	b1.AssertExpectations(t)
+	b2.AssertExpectations(t)
 }
 
 func TestFile_Open_HealDegraded(t *testing.T) {
@@ -648,7 +695,7 @@ func TestDir_Create_MkdirAllParent(t *testing.T) {
 	dir := &Dir{fs: fs, node: parentNode}
 
 	b1.On("MkdirAll", mock.Anything, "parent", os.FileMode(0755)).Return(nil)
-	b1.On("OpenFile", mock.Anything, "parent/new.txt", os.O_CREATE|os.O_RDWR, os.FileMode(0644)).Return(mockFile, nil)
+	b1.On("OpenFile", mock.Anything, "parent/new.txt", os.O_CREATE|os.O_EXCL|os.O_RDWR, os.FileMode(0644)).Return(mockFile, nil)
 
 	req := &fuse.CreateRequest{Name: "new.txt", Mode: 0644}
 	resp := &fuse.CreateResponse{}

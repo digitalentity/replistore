@@ -187,6 +187,7 @@ func (d *Dir) Create(ctx context.Context, req *fuse.CreateRequest, resp *fuse.Cr
 	// Perform I/O outside of VFS lock to prevent deadlock
 	var mu sync.Mutex
 	var successfulBackends []string
+	var existsCount int
 	g, gCtx := errgroup.WithContext(ctx)
 
 	for _, bName := range selectedBackends {
@@ -198,8 +199,16 @@ func (d *Dir) Create(ctx context.Context, req *fuse.CreateRequest, resp *fuse.Cr
 					logrus.Warnf("Failed to MkdirAll parent %s on backend %s: %v", parentPath, bName, err)
 				}
 			}
-			sf, err := b.OpenFile(gCtx, path, os.O_CREATE|os.O_RDWR, req.Mode)
+			sf, err := b.OpenFile(gCtx, path, os.O_CREATE|os.O_EXCL|os.O_RDWR, req.Mode)
 			if err != nil {
+				if os.IsExist(err) || errors.Is(err, os.ErrExist) {
+					// The file already exists on this backend (e.g. created by
+					// another cluster node and not yet in our cache).
+					mu.Lock()
+					existsCount++
+					mu.Unlock()
+					return nil
+				}
 				logrus.Warnf("Failed to create file %s on backend %s: %v", path, bName, err)
 				return nil // Don't fail the whole operation yet
 			}
@@ -214,11 +223,14 @@ func (d *Dir) Create(ctx context.Context, req *fuse.CreateRequest, resp *fuse.Cr
 
 	if len(successfulBackends) < d.fs.WriteQuorum {
 		_ = h.Release(ctx, nil)
-		for _, bName := range successfulBackends {
-			b := d.fs.Backends[bName]
-			if b != nil {
-				_ = b.Remove(ctx, path)
+		d.removeCreated(ctx, path, successfulBackends)
+		if existsCount > 0 {
+			// The file already exists on at least one backend. Merge the
+			// discovered file into the cache so subsequent lookups see it.
+			if _, ferr := d.fs.Cache.FetchEntry(ctx, path, d.fs.getBackendList()); ferr != nil {
+				logrus.Warnf("FetchEntry after create conflict for %s failed: %v", path, ferr)
 			}
+			return nil, nil, syscall.EEXIST
 		}
 		return nil, nil, fmt.Errorf("could not reach write quorum: %d/%d", len(successfulBackends), d.fs.WriteQuorum)
 	}
@@ -228,9 +240,25 @@ func (d *Dir) Create(ctx context.Context, req *fuse.CreateRequest, resp *fuse.Cr
 	defer d.node.Mu.Unlock()
 
 	// Check if someone else created it while we were doing I/O
-	if _, ok := d.node.Children[req.Name]; ok {
-		// Conflict!
+	if winner, ok := d.node.Children[req.Name]; ok {
+		// Conflict! Clean up the replicas this call created, but only on
+		// backends the winning entry does not use: another local create may
+		// have won the race and have open handles on the same backends.
+		winner.Mu.RLock()
+		winnerBackends := make(map[string]bool, len(winner.Meta.Backends))
+		for _, bName := range winner.Meta.Backends {
+			winnerBackends[bName] = true
+		}
+		winner.Mu.RUnlock()
+
+		var toRemove []string
+		for _, bName := range successfulBackends {
+			if !winnerBackends[bName] {
+				toRemove = append(toRemove, bName)
+			}
+		}
 		_ = h.Release(ctx, nil)
+		d.removeCreated(ctx, path, toRemove)
 		return nil, nil, syscall.EEXIST
 	}
 
@@ -249,6 +277,20 @@ func (d *Dir) Create(ctx context.Context, req *fuse.CreateRequest, resp *fuse.Cr
 	h.file = &File{fs: d.fs, node: child}
 
 	return h.file, h, nil
+}
+
+// removeCreated removes replicas of path that a create call produced on the
+// given backends. Used to roll back partially completed creates.
+func (d *Dir) removeCreated(ctx context.Context, path string, backends []string) {
+	for _, bName := range backends {
+		b := d.fs.Backends[bName]
+		if b == nil {
+			continue
+		}
+		if err := b.Remove(ctx, path); err != nil {
+			logrus.Warnf("Failed to remove partially created file %s on backend %s: %v", path, bName, err)
+		}
+	}
 }
 
 func (d *Dir) Mkdir(ctx context.Context, req *fuse.MkdirRequest) (fs.Node, error) {
