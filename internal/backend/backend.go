@@ -2,10 +2,14 @@ package backend
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"strings"
+	"sync"
+	"syscall"
 	"time"
 
 	"github.com/hirochachacha/go-smb2"
@@ -47,6 +51,7 @@ type SMBBackend struct {
 	Password string
 	Domain   string
 
+	mu      sync.Mutex
 	session *smb2.Session
 	share   *smb2.Share
 	conn    net.Conn
@@ -67,19 +72,36 @@ func (b *SMBBackend) GetName() string {
 	return b.Name
 }
 
-func (b *SMBBackend) Ping(ctx context.Context) error {
-	if b.share == nil {
-		return fmt.Errorf("not connected")
+func (b *SMBBackend) Close() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.closeLocked()
+}
+
+func (b *SMBBackend) closeLocked() {
+	if b.share != nil {
+		_ = b.share.Umount()
+		b.share = nil
 	}
-	// go-smb2 doesn't support context directly, but we check if ctx is already cancelled
-	if err := ctx.Err(); err != nil {
-		return err
+	if b.session != nil {
+		_ = b.session.Logoff()
+		b.session = nil
 	}
-	_, err := b.share.Stat(".")
-	return err
+	if b.conn != nil {
+		_ = b.conn.Close()
+		b.conn = nil
+	}
 }
 
 func (b *SMBBackend) Connect() error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.connectLocked()
+}
+
+func (b *SMBBackend) connectLocked() error {
+	b.closeLocked()
+
 	conn, err := net.DialTimeout("tcp", b.Address, 5*time.Second)
 	if err != nil {
 		return fmt.Errorf("dial failed: %w", err)
@@ -96,15 +118,18 @@ func (b *SMBBackend) Connect() error {
 
 	s, err := d.Dial(conn)
 	if err != nil {
-		conn.Close()
+		_ = conn.Close()
+		b.conn = nil
 		return fmt.Errorf("smb dial failed: %w", err)
 	}
 	b.session = s
 
 	fs, err := s.Mount(b.Share)
 	if err != nil {
-		s.Logoff()
-		conn.Close()
+		_ = s.Logoff()
+		b.session = nil
+		_ = conn.Close()
+		b.conn = nil
 		return fmt.Errorf("mount failed: %w", err)
 	}
 	b.share = fs
@@ -112,16 +137,73 @@ func (b *SMBBackend) Connect() error {
 	return nil
 }
 
-func (b *SMBBackend) Close() {
-	if b.share != nil {
-		b.share.Umount()
+func (b *SMBBackend) ensureConnected() error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.share == nil {
+		return b.connectLocked()
 	}
-	if b.session != nil {
-		b.session.Logoff()
+	return nil
+}
+
+func (b *SMBBackend) getShare() (*smb2.Share, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.share == nil {
+		return nil, fmt.Errorf("not connected")
 	}
-	if b.conn != nil {
-		b.conn.Close()
+	return b.share, nil
+}
+
+func isConnectionError(err error) bool {
+	if err == nil {
+		return false
 	}
+	if errors.Is(err, io.EOF) {
+		return true
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) {
+		if netErr.Timeout() {
+			return true
+		}
+	}
+	if errors.Is(err, net.ErrClosed) {
+		return true
+	}
+	var errno syscall.Errno
+	if errors.As(err, &errno) {
+		switch errno {
+		case syscall.EPIPE, syscall.ECONNRESET, syscall.ECONNABORTED, syscall.ECONNREFUSED:
+			return true
+		}
+	}
+	errStr := strings.ToLower(err.Error())
+	if strings.Contains(errStr, "use of closed network connection") ||
+		strings.Contains(errStr, "connection refused") ||
+		strings.Contains(errStr, "broken pipe") ||
+		strings.Contains(errStr, "connection reset") ||
+		strings.Contains(errStr, "eof") ||
+		strings.Contains(errStr, "closed connection") {
+		return true
+	}
+	return false
+}
+
+func (b *SMBBackend) execute(ctx context.Context, op func() error) error {
+	if err := b.ensureConnected(); err != nil {
+		return err
+	}
+
+	err := op()
+	if err != nil && isConnectionError(err) {
+		b.Close()
+		if reconnectErr := b.ensureConnected(); reconnectErr != nil {
+			return err
+		}
+		return op()
+	}
+	return err
 }
 
 func toSMBPath(path string) string {
@@ -132,103 +214,175 @@ func toSMBPath(path string) string {
 	return s
 }
 
+func (b *SMBBackend) Ping(ctx context.Context) error {
+	return b.execute(ctx, func() error {
+		share, err := b.getShare()
+		if err != nil {
+			return err
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		_, err = share.Stat(".")
+		return err
+	})
+}
+
 func (b *SMBBackend) ReadDir(ctx context.Context, path string) ([]FileInfo, error) {
-	if b.share == nil {
-		return nil, fmt.Errorf("not connected")
-	}
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-
-	smbPath := toSMBPath(path)
-	entries, err := b.share.ReadDir(smbPath)
-	if err != nil {
-		return nil, err
-	}
-
 	var results []FileInfo
-	for _, e := range entries {
-		results = append(results, FileInfo{
-			Name:    e.Name(),
-			Size:    e.Size(),
-			Mode:    e.Mode(),
-			ModTime: e.ModTime(),
-			IsDir:   e.IsDir(),
-		})
-	}
-	return results, nil
+	err := b.execute(ctx, func() error {
+		share, err := b.getShare()
+		if err != nil {
+			return err
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		smbPath := toSMBPath(path)
+		entries, err := share.ReadDir(smbPath)
+		if err != nil {
+			return err
+		}
+		results = nil // clear if retry
+		for _, e := range entries {
+			results = append(results, FileInfo{
+				Name:    e.Name(),
+				Size:    e.Size(),
+				Mode:    e.Mode(),
+				ModTime: e.ModTime(),
+				IsDir:   e.IsDir(),
+			})
+		}
+		return nil
+	})
+	return results, err
 }
 
 func (b *SMBBackend) Stat(ctx context.Context, path string) (FileInfo, error) {
-	if err := ctx.Err(); err != nil {
-		return FileInfo{}, err
-	}
-	smbPath := toSMBPath(path)
-	fi, err := b.share.Stat(smbPath)
-	if err != nil {
-		return FileInfo{}, err
-	}
-	return FileInfo{
-		Name:    fi.Name(),
-		Size:    fi.Size(),
-		Mode:    fi.Mode(),
-		ModTime: fi.ModTime(),
-		IsDir:   fi.IsDir(),
-	}, nil
+	var fi FileInfo
+	err := b.execute(ctx, func() error {
+		share, err := b.getShare()
+		if err != nil {
+			return err
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		smbPath := toSMBPath(path)
+		res, err := share.Stat(smbPath)
+		if err != nil {
+			return err
+		}
+		fi = FileInfo{
+			Name:    res.Name(),
+			Size:    res.Size(),
+			Mode:    res.Mode(),
+			ModTime: res.ModTime(),
+			IsDir:   res.IsDir(),
+		}
+		return nil
+	})
+	return fi, err
 }
 
 func (b *SMBBackend) OpenFile(ctx context.Context, path string, flag int, perm os.FileMode) (File, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	smbPath := toSMBPath(path)
-	f, err := b.share.OpenFile(smbPath, flag, perm)
-	if err != nil {
-		return nil, err
-	}
-	return &smbFile{f}, nil
+	var file File
+	err := b.execute(ctx, func() error {
+		share, err := b.getShare()
+		if err != nil {
+			return err
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		smbPath := toSMBPath(path)
+		f, err := share.OpenFile(smbPath, flag, perm)
+		if err != nil {
+			return err
+		}
+		file = &smbFile{f}
+		return nil
+	})
+	return file, err
 }
 
 func (b *SMBBackend) Mkdir(ctx context.Context, path string, perm os.FileMode) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	smbPath := toSMBPath(path)
-	return b.share.Mkdir(smbPath, perm)
+	return b.execute(ctx, func() error {
+		share, err := b.getShare()
+		if err != nil {
+			return err
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		smbPath := toSMBPath(path)
+		return share.Mkdir(smbPath, perm)
+	})
 }
 
 func (b *SMBBackend) MkdirAll(ctx context.Context, path string, perm os.FileMode) error {
 	if path == "" || path == "." {
 		return nil
 	}
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	
-	smbPath := toSMBPath(path)
-	return b.share.MkdirAll(smbPath, perm)
+	return b.execute(ctx, func() error {
+		share, err := b.getShare()
+		if err != nil {
+			return err
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		smbPath := toSMBPath(path)
+		return share.MkdirAll(smbPath, perm)
+	})
 }
 
 func (b *SMBBackend) Remove(ctx context.Context, path string) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	smbPath := toSMBPath(path)
-	return b.share.Remove(smbPath)
+	return b.execute(ctx, func() error {
+		share, err := b.getShare()
+		if err != nil {
+			return err
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		smbPath := toSMBPath(path)
+		return share.Remove(smbPath)
+	})
 }
 
 func (b *SMBBackend) Rename(ctx context.Context, oldPath, newPath string) error {
+	return b.execute(ctx, func() error {
+		share, err := b.getShare()
+		if err != nil {
+			return err
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		oldSMBPath := toSMBPath(oldPath)
+		newSMBPath := toSMBPath(newPath)
+		return share.Rename(oldSMBPath, newSMBPath)
+	})
+}
+
+func (b *SMBBackend) Walk(ctx context.Context, path string, fn func(path string, info FileInfo) error) error {
+	return b.execute(ctx, func() error {
+		share, err := b.getShare()
+		if err != nil {
+			return err
+		}
+		return b.walk(ctx, share, path, fn)
+	})
+}
+
+func (b *SMBBackend) walk(ctx context.Context, share *smb2.Share, path string, fn func(path string, info FileInfo) error) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	oldSMBPath := toSMBPath(oldPath)
-	newSMBPath := toSMBPath(newPath)
-	return b.share.Rename(oldSMBPath, newSMBPath)
-}
 
-// Walk performs a recursive scan of the backend and returns all files/folders
-func (b *SMBBackend) Walk(ctx context.Context, path string, fn func(path string, info FileInfo) error) error {
-	entries, err := b.ReadDir(ctx, path)
+	smbPath := toSMBPath(path)
+	entries, err := share.ReadDir(smbPath)
 	if err != nil {
 		return err
 	}
@@ -240,13 +394,20 @@ func (b *SMBBackend) Walk(ctx context.Context, path string, fn func(path string,
 		default:
 		}
 
-		fullPath := strings.TrimPrefix(path+"/"+entry.Name, "/")
-		if err := fn(fullPath, entry); err != nil {
+		fullPath := strings.TrimPrefix(path+"/"+entry.Name(), "/")
+		fi := FileInfo{
+			Name:    entry.Name(),
+			Size:    entry.Size(),
+			Mode:    entry.Mode(),
+			ModTime: entry.ModTime(),
+			IsDir:   entry.IsDir(),
+		}
+		if err := fn(fullPath, fi); err != nil {
 			return err
 		}
 
-		if entry.IsDir {
-			if err := b.Walk(ctx, fullPath, fn); err != nil {
+		if entry.IsDir() {
+			if err := b.walk(ctx, share, fullPath, fn); err != nil {
 				return err
 			}
 		}
