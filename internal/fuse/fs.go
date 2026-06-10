@@ -276,7 +276,8 @@ func (d *Dir) Mkdir(ctx context.Context, req *fuse.MkdirRequest) (fs.Node, error
 
 	// Directories are created on ALL backends to maintain tree structure
 	var mu sync.Mutex
-	var createdOn []string
+	var createdOn []string   // directories this call actually created (rollback candidates)
+	var satisfiedOn []string // backends where the directory is present (counted toward quorum)
 	g, gCtx := errgroup.WithContext(ctx)
 
 	for name, b := range d.fs.Backends {
@@ -289,23 +290,41 @@ func (d *Dir) Mkdir(ctx context.Context, req *fuse.MkdirRequest) (fs.Node, error
 			}
 			err := b.Mkdir(gCtx, path, req.Mode)
 			if err != nil {
+				if os.IsExist(err) || errors.Is(err, os.ErrExist) {
+					// The directory may already exist on this backend (e.g. created
+					// by another cluster node). Verify it really is a directory.
+					info, statErr := b.Stat(gCtx, path)
+					if statErr != nil {
+						logrus.Warnf("Failed to stat existing path %s on %s: %v", path, name, statErr)
+						return nil
+					}
+					if !info.IsDir {
+						logrus.Warnf("Path %s already exists on %s but is not a directory", path, name)
+						return nil
+					}
+					mu.Lock()
+					satisfiedOn = append(satisfiedOn, name)
+					mu.Unlock()
+					return nil
+				}
 				logrus.Warnf("Failed to create directory %s on %s: %v", path, name, err)
 				return nil // Don't fail the whole operation if one backend fails
 			}
 			mu.Lock()
 			createdOn = append(createdOn, name)
+			satisfiedOn = append(satisfiedOn, name)
 			mu.Unlock()
 			return nil
 		})
 	}
 	_ = g.Wait()
 
-	if len(createdOn) < d.fs.WriteQuorum {
-		// Rollback successful ones
+	if len(satisfiedOn) < d.fs.WriteQuorum {
+		// Rollback only directories this call created; never remove pre-existing ones.
 		for _, bName := range createdOn {
 			_ = d.fs.Backends[bName].Remove(ctx, path)
 		}
-		return nil, fmt.Errorf("could not reach write quorum for mkdir: %d/%d", len(createdOn), d.fs.WriteQuorum)
+		return nil, fmt.Errorf("could not reach write quorum for mkdir: %d/%d", len(satisfiedOn), d.fs.WriteQuorum)
 	}
 
 	d.node.Mu.Lock()
@@ -321,7 +340,7 @@ func (d *Dir) Mkdir(ctx context.Context, req *fuse.MkdirRequest) (fs.Node, error
 		Path:     path,
 		Mode:     req.Mode | os.ModeDir,
 		IsDir:    true,
-		Backends: createdOn,
+		Backends: satisfiedOn,
 	}
 	child := &vfs.Node{
 		Meta:     meta,

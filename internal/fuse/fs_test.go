@@ -377,6 +377,74 @@ func TestMkdir_Quorum(t *testing.T) {
 	b2.AssertExpectations(t)
 }
 
+func TestMkdir_AlreadyExistsCountsTowardQuorum(t *testing.T) {
+	b1 := &test.MockBackend{NameVal: "b1"}
+	b2 := &test.MockBackend{NameVal: "b2"}
+
+	cache := vfs.NewCache()
+	fs := &RepliFS{
+		Cache:             cache,
+		Backends:          map[string]backend.Backend{"b1": b1, "b2": b2},
+		ReplicationFactor: 2,
+		WriteQuorum:       2, // Strict quorum
+		Selector:          vfs.NewRandomSelector(nil),
+	}
+
+	root, _ := fs.Root()
+	dir := root.(*Dir)
+
+	b1.On("Mkdir", mock.Anything, "existing-dir", mock.Anything).Return(nil)
+	// b2 already has the directory (e.g. created by another cluster node).
+	b2.On("Mkdir", mock.Anything, "existing-dir", mock.Anything).Return(os.ErrExist)
+	b2.On("Stat", mock.Anything, "existing-dir").Return(backend.FileInfo{Name: "existing-dir", IsDir: true}, nil)
+
+	req := &fuse.MkdirRequest{Name: "existing-dir", Mode: 0755}
+	node, err := dir.Mkdir(context.Background(), req)
+
+	assert.NoError(t, err)
+	assert.NotNil(t, node)
+
+	child := node.(*Dir)
+	assert.ElementsMatch(t, []string{"b1", "b2"}, child.node.Meta.Backends)
+
+	b1.AssertExpectations(t)
+	b2.AssertExpectations(t)
+}
+
+func TestMkdir_ExistsAsFileNotCounted(t *testing.T) {
+	b1 := &test.MockBackend{NameVal: "b1"}
+	b2 := &test.MockBackend{NameVal: "b2"}
+
+	cache := vfs.NewCache()
+	fs := &RepliFS{
+		Cache:             cache,
+		Backends:          map[string]backend.Backend{"b1": b1, "b2": b2},
+		ReplicationFactor: 2,
+		WriteQuorum:       2, // Strict quorum
+		Selector:          vfs.NewRandomSelector(nil),
+	}
+
+	root, _ := fs.Root()
+	dir := root.(*Dir)
+
+	b1.On("Mkdir", mock.Anything, "blocked-dir", mock.Anything).Return(nil)
+	b1.On("Remove", mock.Anything, "blocked-dir").Return(nil) // Rollback of the dir we created
+	// b2 has a FILE in the way, not a directory.
+	b2.On("Mkdir", mock.Anything, "blocked-dir", mock.Anything).Return(os.ErrExist)
+	b2.On("Stat", mock.Anything, "blocked-dir").Return(backend.FileInfo{Name: "blocked-dir", IsDir: false}, nil)
+
+	req := &fuse.MkdirRequest{Name: "blocked-dir", Mode: 0755}
+	_, err := dir.Mkdir(context.Background(), req)
+
+	assert.Error(t, err)
+
+	// Rollback must not touch b2's pre-existing file.
+	b2.AssertNotCalled(t, "Remove", mock.Anything, "blocked-dir")
+
+	b1.AssertExpectations(t)
+	b2.AssertExpectations(t)
+}
+
 func TestRemove_Quorum(t *testing.T) {
 	b1 := &test.MockBackend{NameVal: "b1"}
 	b2 := &test.MockBackend{NameVal: "b2"}
