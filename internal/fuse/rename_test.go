@@ -26,7 +26,7 @@ func TestDir_Rename_Simple(t *testing.T) {
 		WriteQuorum:       1,
 		Selector:          vfs.NewRandomSelector(nil),
 	}
-	
+
 	rootNode, _ := fs.Root()
 	root := rootNode.(*Dir)
 
@@ -63,10 +63,10 @@ func TestDir_Rename_CrossDir(t *testing.T) {
 		WriteQuorum:       1,
 		Selector:          vfs.NewRandomSelector(nil),
 	}
-	
+
 	rootNode, _ := fs.Root()
 	root := rootNode.(*Dir)
-	
+
 	d1Node, _ := root.Lookup(context.Background(), "dir1")
 	d1 := d1Node.(*Dir)
 	d2Node, _ := root.Lookup(context.Background(), "dir2")
@@ -106,14 +106,14 @@ func TestDir_Rename_Quorum(t *testing.T) {
 		WriteQuorum:       1,
 		Selector:          vfs.NewRandomSelector(nil),
 	}
-	
+
 	rootNode, _ := fs.Root()
 	root := rootNode.(*Dir)
 
 	// b1 succeeds, b2 fails
 	b1.On("MkdirAll", mock.Anything, "", os.FileMode(0755)).Return(nil)
 	b1.On("Rename", mock.Anything, "old.txt", "new.txt").Return(nil)
-	
+
 	b2.On("MkdirAll", mock.Anything, "", os.FileMode(0755)).Return(nil)
 	b2.On("Rename", mock.Anything, "old.txt", "new.txt").Return(os.ErrPermission)
 

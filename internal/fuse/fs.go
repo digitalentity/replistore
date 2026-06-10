@@ -135,7 +135,7 @@ func (d *Dir) Create(ctx context.Context, req *fuse.CreateRequest, resp *fuse.Cr
 		d.node.Mu.Unlock()
 		return nil, nil, syscall.EEXIST
 	}
-	
+
 	// Snapshot needed data while holding lock
 	parentPath := d.node.Meta.Path
 	d.node.Mu.Unlock()
@@ -195,6 +195,12 @@ func (d *Dir) Create(ctx context.Context, req *fuse.CreateRequest, resp *fuse.Cr
 
 	if len(successfulBackends) < d.fs.WriteQuorum {
 		_ = h.Release(ctx, nil)
+		for _, bName := range successfulBackends {
+			b := d.fs.Backends[bName]
+			if b != nil {
+				_ = b.Remove(ctx, path)
+			}
+		}
 		return nil, nil, fmt.Errorf("could not reach write quorum: %d/%d", len(successfulBackends), d.fs.WriteQuorum)
 	}
 
@@ -215,7 +221,7 @@ func (d *Dir) Create(ctx context.Context, req *fuse.CreateRequest, resp *fuse.Cr
 		Mode:     req.Mode,
 		Backends: successfulBackends,
 	}
-	
+
 	child := &vfs.Node{
 		Meta:     meta,
 		Children: make(map[string]*vfs.Node),
@@ -412,7 +418,7 @@ func (d *Dir) Rename(ctx context.Context, req *fuse.RenameRequest, newDir fs.Nod
 		bName := bName
 		g.Go(func() error {
 			b := d.fs.Backends[bName]
-			
+
 			// Ensure destination parent path exists on this backend
 			if err := b.MkdirAll(gCtx, targetParentPath, 0755); err != nil {
 				logrus.Warnf("Failed to ensure parent path %s on backend %s: %v", targetParentPath, bName, err)
@@ -523,7 +529,7 @@ func (f *File) Open(ctx context.Context, req *fuse.OpenRequest, resp *fuse.OpenR
 	}
 
 	// Unlock I/O: Open outside of lock (already done since we RUnlocked above)
-	
+
 	if req.Flags.IsReadOnly() {
 		bName := f.fs.Selector.SelectForRead(f.node.Meta)
 		if bName == "" {
@@ -675,6 +681,9 @@ func (h *FileHandle) Write(ctx context.Context, req *fuse.WriteRequest, resp *fu
 	_ = g.Wait()
 
 	if successes < h.file.fs.WriteQuorum {
+		if len(failures) > 0 {
+			h.cleanupFailedBackends(failures)
+		}
 		return fmt.Errorf("could not reach write quorum: %d/%d (last error: %v)", successes, h.file.fs.WriteQuorum, lastErr)
 	}
 

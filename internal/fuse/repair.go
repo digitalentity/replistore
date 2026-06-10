@@ -137,7 +137,7 @@ func (m *RepairManager) repairNode(ctx context.Context, node *vfs.Node) error {
 	for name := range m.fs.Backends {
 		allBackendNames = append(allBackendNames, name)
 	}
-	
+
 	// We need backends that DON'T have the file
 	// Select for write gives us healthy backends.
 	potentialTargets := m.fs.Selector.SelectForWrite(m.fs.ReplicationFactor, allBackendNames)
@@ -167,7 +167,7 @@ func (m *RepairManager) repairNode(ctx context.Context, node *vfs.Node) error {
 	// For each target, open and copy
 	for _, targetName := range targets {
 		targetBackend := m.fs.Backends[targetName]
-		
+
 		dstFile, err := targetBackend.OpenFile(ctx, path, os.O_CREATE|os.O_TRUNC|os.O_RDWR, node.Meta.Mode)
 		if err != nil {
 			logrus.Warnf("Repair failed for %s on target %s: %v", path, targetName, err)

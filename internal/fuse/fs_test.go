@@ -62,7 +62,7 @@ func TestDir_Create(t *testing.T) {
 		WriteQuorum:       1,
 		Selector:          vfs.NewRandomSelector(nil),
 	}
-	
+
 	root, _ := fs.Root()
 	dir := root.(*Dir)
 
@@ -75,7 +75,7 @@ func TestDir_Create(t *testing.T) {
 	assert.NoError(t, err)
 	assert.NotNil(t, node)
 	assert.NotNil(t, handle)
-	
+
 	b1.AssertExpectations(t)
 }
 
@@ -93,22 +93,22 @@ func TestFile_Write(t *testing.T) {
 		WriteQuorum:       1,
 		Selector:          vfs.NewFirstSelector(nil),
 	}
-	
+
 	root, _ := fs.Root()
 	dir := root.(*Dir)
 	node, _ := dir.Lookup(context.Background(), "test.txt")
 	file := node.(*File)
 
 	b1.On("OpenFile", mock.Anything, "test.txt", mock.Anything, mock.Anything).Return(mockFile, nil)
-	
+
 	h, err := file.Open(context.Background(), &fuse.OpenRequest{Flags: fuse.OpenReadWrite}, &fuse.OpenResponse{})
 	assert.NoError(t, err)
-	
+
 	fileHandle := h.(*FileHandle)
-	
+
 	data := []byte("hello")
 	mockFile.On("WriteAt", mock.Anything, data, int64(0)).Return(5, nil)
-	
+
 	writeReq := &fuse.WriteRequest{Data: data, Offset: 0}
 	writeResp := &fuse.WriteResponse{}
 	err = fileHandle.Write(context.Background(), writeReq, writeResp)
@@ -131,19 +131,19 @@ func TestFile_Read_Failover(t *testing.T) {
 		Backends: map[string]backend.Backend{"b1": b1, "b2": b2},
 		Selector: vfs.NewFirstSelector(nil),
 	}
-	
+
 	root, _ := fs.Root()
 	dir := root.(*Dir)
 	node, _ := dir.Lookup(context.Background(), "failover.txt")
 	file := node.(*File)
 
 	b1.On("OpenFile", mock.Anything, "failover.txt", os.O_RDONLY, mock.Anything).Return(mockFile1, nil)
-	
+
 	h, err := file.Open(context.Background(), &fuse.OpenRequest{Flags: fuse.OpenReadOnly}, &fuse.OpenResponse{})
 	assert.NoError(t, err)
-	
+
 	fileHandle := h.(*FileHandle)
-	
+
 	mockFile1.On("ReadAt", mock.Anything, mock.Anything, int64(0)).Return(0, fmt.Errorf("connection lost"))
 	mockFile1.On("Close").Return(nil)
 
@@ -155,7 +155,7 @@ func TestFile_Read_Failover(t *testing.T) {
 	err = fileHandle.Read(context.Background(), readReq, readResp)
 	assert.NoError(t, err)
 	assert.Len(t, readResp.Data, 5)
-	
+
 	b1.AssertExpectations(t)
 	b2.AssertExpectations(t)
 	mockFile1.AssertExpectations(t)
@@ -286,7 +286,7 @@ func TestLookup_LazyTrigger(t *testing.T) {
 	node, err := (lazyDir.(*Dir)).Lookup(context.Background(), "file.txt")
 	assert.NoError(t, err)
 	assert.NotNil(t, node)
-	
+
 	b1.AssertExpectations(t)
 }
 
@@ -312,7 +312,7 @@ func TestReadDir_LazyTrigger(t *testing.T) {
 	dirents, err := (dir.(*Dir)).ReadDirAll(context.Background())
 	assert.NoError(t, err)
 	assert.Len(t, dirents, 2) // dummy + file1.txt
-	
+
 	b1.AssertExpectations(t)
 }
 
@@ -328,7 +328,7 @@ func TestMkdir_Quorum(t *testing.T) {
 		WriteQuorum:       2, // Strict quorum
 		Selector:          vfs.NewRandomSelector(nil),
 	}
-	
+
 	root, _ := fs.Root()
 	dir := root.(*Dir)
 
@@ -340,10 +340,10 @@ func TestMkdir_Quorum(t *testing.T) {
 	_, err := dir.Mkdir(context.Background(), req)
 
 	// Currently this might pass if the code doesn't check quorum for Mkdir
-	// according to PROPOSAL.md. 
+	// according to PROPOSAL.md.
 	// If it fails, then it's already fixed or I'm testing the fix.
 	assert.Error(t, err)
-	
+
 	b1.AssertExpectations(t)
 	b2.AssertExpectations(t)
 }
@@ -363,7 +363,7 @@ func TestRemove_Quorum(t *testing.T) {
 		WriteQuorum:       2, // Strict quorum
 		Selector:          vfs.NewRandomSelector(nil),
 	}
-	
+
 	root, _ := fs.Root()
 	dir := root.(*Dir)
 
@@ -375,4 +375,92 @@ func TestRemove_Quorum(t *testing.T) {
 
 	// Should fail because quorum is 2 but only 1 succeeded
 	assert.Error(t, err)
+}
+
+func TestFile_Write_QuorumFailure(t *testing.T) {
+	b1 := &test.MockBackend{NameVal: "b1"}
+	b2 := &test.MockBackend{NameVal: "b2"}
+	mockFile1 := &test.MockFile{}
+	mockFile2 := &test.MockFile{}
+
+	cache := vfs.NewCache()
+	cache.Upsert("quorum_fail.txt", vfs.Metadata{Name: "quorum_fail.txt", Path: "quorum_fail.txt", Backends: []string{"b1", "b2"}}, "b1")
+	cache.Upsert("quorum_fail.txt", vfs.Metadata{Name: "quorum_fail.txt", Path: "quorum_fail.txt", Backends: []string{"b1", "b2"}}, "b2")
+
+	fs := &RepliFS{
+		Cache:             cache,
+		Backends:          map[string]backend.Backend{"b1": b1, "b2": b2},
+		ReplicationFactor: 2,
+		WriteQuorum:       2,
+		Selector:          vfs.NewFirstSelector(nil),
+	}
+
+	root, _ := fs.Root()
+	dir := root.(*Dir)
+	node, _ := dir.Lookup(context.Background(), "quorum_fail.txt")
+	file := node.(*File)
+
+	b1.On("OpenFile", mock.Anything, "quorum_fail.txt", mock.Anything, mock.Anything).Return(mockFile1, nil)
+	b2.On("OpenFile", mock.Anything, "quorum_fail.txt", mock.Anything, mock.Anything).Return(mockFile2, nil)
+
+	h, err := file.Open(context.Background(), &fuse.OpenRequest{Flags: fuse.OpenReadWrite}, &fuse.OpenResponse{})
+	assert.NoError(t, err)
+
+	fileHandle := h.(*FileHandle)
+
+	data := []byte("hello")
+	mockFile1.On("WriteAt", mock.Anything, data, int64(0)).Return(5, nil)
+	mockFile2.On("WriteAt", mock.Anything, data, int64(0)).Return(0, fmt.Errorf("disk full"))
+	mockFile2.On("Close").Return(nil)
+
+	writeReq := &fuse.WriteRequest{Data: data, Offset: 0}
+	writeResp := &fuse.WriteResponse{}
+	err = fileHandle.Write(context.Background(), writeReq, writeResp)
+
+	assert.Error(t, err)
+
+	file.node.Mu.RLock()
+	assert.Equal(t, []string{"b1"}, file.node.Meta.Backends)
+	file.node.Mu.RUnlock()
+
+	b1.AssertExpectations(t)
+	b2.AssertExpectations(t)
+	mockFile1.AssertExpectations(t)
+	mockFile2.AssertExpectations(t)
+}
+
+func TestDir_Create_QuorumFailure(t *testing.T) {
+	b1 := &test.MockBackend{NameVal: "b1"}
+	b2 := &test.MockBackend{NameVal: "b2"}
+	mockFile1 := &test.MockFile{}
+
+	cache := vfs.NewCache()
+	fs := &RepliFS{
+		Cache:             cache,
+		Backends:          map[string]backend.Backend{"b1": b1, "b2": b2},
+		ReplicationFactor: 2,
+		WriteQuorum:       2,
+		Selector:          vfs.NewFirstSelector(nil),
+	}
+
+	root, _ := fs.Root()
+	dir := root.(*Dir)
+
+	b1.On("OpenFile", mock.Anything, "new_fail.txt", os.O_CREATE|os.O_RDWR, os.FileMode(0644)).Return(mockFile1, nil)
+	b2.On("OpenFile", mock.Anything, "new_fail.txt", os.O_CREATE|os.O_RDWR, os.FileMode(0644)).Return(nil, fmt.Errorf("permission denied"))
+
+	mockFile1.On("Close").Return(nil)
+	b1.On("Remove", mock.Anything, "new_fail.txt").Return(nil)
+
+	req := &fuse.CreateRequest{Name: "new_fail.txt", Mode: 0644}
+	resp := &fuse.CreateResponse{}
+	node, handle, err := dir.Create(context.Background(), req, resp)
+
+	assert.Error(t, err)
+	assert.Nil(t, node)
+	assert.Nil(t, handle)
+
+	b1.AssertExpectations(t)
+	b2.AssertExpectations(t)
+	mockFile1.AssertExpectations(t)
 }
