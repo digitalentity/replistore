@@ -24,6 +24,7 @@ type Config struct {
 	RepairConcurrency    int             `yaml:"repair_concurrency"`
 	ListenAddr           string          `yaml:"listen_addr"`
 	AdvertiseAddr        string          `yaml:"advertise_addr"`
+	ExpectedClusterSize  int             `yaml:"expected_cluster_size"`
 	Backends             []BackendConfig `yaml:"backends"`
 }
 
@@ -38,6 +39,10 @@ func LoadConfig(path string) (*Config, error) {
 	var cfg Config
 	if err := yaml.Unmarshal([]byte(expandedData), &cfg); err != nil {
 		return nil, err
+	}
+
+	if cfg.ExpectedClusterSize <= 0 {
+		cfg.ExpectedClusterSize = 1
 	}
 
 	if cfg.ReplicationFactor <= 0 {

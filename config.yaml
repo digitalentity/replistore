@@ -1,5 +1,6 @@
 mount_point: "/tmp/replistore_mount"
 replication_factor: 2
+expected_cluster_size: 1
 cache_refresh_interval: "5m"
 backends:
   - name: "nas-01"

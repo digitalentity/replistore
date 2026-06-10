@@ -13,14 +13,17 @@ import (
 func TestDistributedLock_AcquireQuorum(t *testing.T) {
 	// Setup 3 nodes
 	n1 := cluster.NewLockManager("node1")
+	n1.ExpectedClusterSize = 3
 	_, _ = n1.Start("127.0.0.1:0")
 	defer n1.Stop()
 
 	n2 := cluster.NewLockManager("node2")
+	n2.ExpectedClusterSize = 3
 	addr2, _ := n2.Start("127.0.0.1:0")
 	defer n2.Stop()
 
 	n3 := cluster.NewLockManager("node3")
+	n3.ExpectedClusterSize = 3
 	addr3, _ := n3.Start("127.0.0.1:0")
 	defer n3.Stop()
 
@@ -45,6 +48,7 @@ func TestDistributedLock_AcquireQuorum(t *testing.T) {
 
 func TestDistributedLock_AcquireQuorumFailure(t *testing.T) {
 	n1 := cluster.NewLockManager("node1")
+	n1.ExpectedClusterSize = 2
 	_, _ = n1.Start("127.0.0.1:0")
 	defer n1.Stop()
 
@@ -68,6 +72,7 @@ func TestDistributedLock_AcquireQuorumFailure(t *testing.T) {
 
 func TestDistributedLock_Renewal(t *testing.T) {
 	n1 := cluster.NewLockManager("node1")
+	n1.ExpectedClusterSize = 1
 	n1.LeaseTTL = 500 * time.Millisecond
 	_, _ = n1.Start("127.0.0.1:0")
 	defer n1.Stop()
@@ -86,4 +91,32 @@ func TestDistributedLock_Renewal(t *testing.T) {
 	assert.True(t, lock.IsValid())
 
 	lock.Release()
+}
+
+
+func TestDistributedLock_ExpectedClusterSizeQuorum(t *testing.T) {
+	n1 := cluster.NewLockManager("node1")
+	n1.ExpectedClusterSize = 5
+	_, _ = n1.Start("127.0.0.1:0")
+	defer n1.Stop()
+
+	n2 := cluster.NewLockManager("node2")
+	n2.ExpectedClusterSize = 5
+	addr2, _ := n2.Start("127.0.0.1:0")
+	defer n2.Stop()
+
+	// Discovery mock for node1 (only sees node2)
+	disco1 := cluster.NewDiscovery("node1", 0)
+	disco1.Peers["node2"] = cluster.Peer{ID: "node2", Address: addr2, LastSeen: time.Now()}
+
+	lock := vfs.NewDistributedLock("test/expected_size", n1, disco1)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+	defer cancel()
+
+	// Quorum for ExpectedClusterSize=5 is 3. We only have node1 and node2 (2 nodes).
+	// So acquisition should fail.
+	err := lock.Acquire(ctx)
+	assert.Error(t, err)
+	assert.False(t, lock.IsValid())
 }

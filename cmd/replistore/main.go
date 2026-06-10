@@ -62,6 +62,7 @@ func main() {
 		}
 
 		lockMgr = cluster.NewLockManager(nodeID)
+		lockMgr.ExpectedClusterSize = cfg.ExpectedClusterSize
 		actualAddr, err := lockMgr.Start(cfg.ListenAddr)
 		if err != nil {
 			logrus.Fatalf("Failed to start lock manager: %v", err)

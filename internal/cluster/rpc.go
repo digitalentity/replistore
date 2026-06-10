@@ -78,9 +78,10 @@ func (c *LamportClock) Get() int64 {
 
 // LockManager handles the local lock table and Lamport clock for a node.
 type LockManager struct {
-	NodeID   string
-	Clock    *LamportClock
-	LeaseTTL time.Duration
+	NodeID              string
+	Clock               *LamportClock
+	LeaseTTL            time.Duration
+	ExpectedClusterSize int
 
 	grants sync.Map // path (string) -> Grant
 	log    *logrus.Entry

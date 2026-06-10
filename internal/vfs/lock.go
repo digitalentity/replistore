@@ -42,10 +42,15 @@ func (l *DistributedLock) IsValid() bool {
 // Acquire attempts to get a quorum of peers to grant the lock.
 func (l *DistributedLock) Acquire(ctx context.Context) error {
 	peers := l.Discovery.GetPeers()
-	n := len(peers) + 1 // +1 for local node
-	quorum := (n / 2) + 1
+	var quorum int
+	if l.Manager != nil && l.Manager.ExpectedClusterSize > 0 {
+		quorum = (l.Manager.ExpectedClusterSize / 2) + 1
+	} else {
+		n := len(peers) + 1 // +1 for local node
+		quorum = (n / 2) + 1
+	}
 
-	l.log.Debugf("Attempting to acquire lock with %d peers (quorum: %d)", n-1, quorum)
+	l.log.Debugf("Attempting to acquire lock with %d peers (quorum: %d)", len(peers), quorum)
 
 	lamportTime := l.Manager.Clock.Tick()
 	req := cluster.LockRequest{
@@ -161,8 +166,16 @@ func (l *DistributedLock) startRenewal(peers []string) {
 }
 
 func (l *DistributedLock) renew(peers []string) bool {
-	n := len(peers)
-	quorum := (n / 2) + 1
+	var quorum int
+	if l.Manager != nil && l.Manager.ExpectedClusterSize > 0 {
+		quorum = (l.Manager.ExpectedClusterSize / 2) + 1
+	} else {
+		n := len(peers)
+		if l.Discovery != nil {
+			n = len(l.Discovery.GetPeers()) + 1
+		}
+		quorum = (n / 2) + 1
+	}
 	
 	var mu sync.Mutex
 	successes := 0
