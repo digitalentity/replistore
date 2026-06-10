@@ -14,6 +14,8 @@ Severity legend:
 
 ### C1. Default `expected_cluster_size = 1` silently disables mutual exclusion (split-brain by default)
 
+> **Status: FIXED** in `881277e`
+
 `config.LoadConfig` (internal/config/config.go:44) forces `ExpectedClusterSize = 1` when unset. `DistributedLock.Acquire` (internal/vfs/lock.go:46) then computes `quorum = (1/2)+1 = 1`. The local lock request virtually always succeeds (a node's own `LockManager` grants unless it has recorded another node's grant), so **every node in the cluster acquires every lock with quorum 1, regardless of what peers say**. Two nodes can concurrently hold a "lock" on the same path and write to the same backends. The peer-count-based fallback in `Acquire` (`len(peers)+1`) is dead code because the config guarantees `ExpectedClusterSize > 0`.
 
 The documentation (docs/multi-client.md §4) promises majority-based split-brain protection; the default configuration delivers none.
@@ -24,6 +26,8 @@ The documentation (docs/multi-client.md §4) promises majority-based split-brain
 - Add a startup validation test: `listen_addr set && expected_cluster_size < 2` → configuration error.
 
 ### C2. Same-node re-grant: the DLM provides no mutual exclusion between operations on the same node, and clobbers the first holder's lease
+
+> **Status: FIXED** in `c199352`
 
 `LockManager.RequestLock` (internal/cluster/rpc.go:144) rejects only when `grant.NodeID != req.NodeID`. Two concurrent operations on the *same* node (e.g., two processes opening the same file for write, or an inline heal racing a repair scrub) both acquire the lock successfully. Worse, the second grant overwrites the stored fencing token, so the first holder's next `RenewLock` fails on token mismatch and its lock is spuriously declared lost mid-write (`Write` then returns `EIO`).
 
@@ -44,6 +48,8 @@ This is the classic stale-lock-holder problem (Kleppmann's "How to do distribute
 
 ### C4. Last-writer-wins on `(mtime, size)` makes anti-entropy non-convergent: perpetual repair churn and clock-skew data loss
 
+> **Status: PARTIALLY FIXED** in `12b76c5` — mitigation: mtime preserved on repair/heal copies; versioning/checksums still open
+
 Replica metadata reconciliation (`Cache.Upsert`, `syncAll`, `FetchEntry` — internal/vfs/cache.go:84, 170, 457) declares the replica with the newest `ModTime` the sole winner and drops all others from `Meta.Backends`. But:
 
 1. **Replica mtimes always diverge.** Each SMB server stamps mtime with its own clock when `WriteAt` lands. After every successful replicated write, the two replicas have *different* mtimes. The next background sync picks one winner, drops the other, `FindDegraded` flags the file, and `RepairManager` re-copies it — which again produces a fresh mtime on the destination NAS, making the *destination* the new winner and the *source* "stale". The system ping-pongs full-file copies between backends forever. Repair cannot converge because the `Backend`/`File` interfaces have no way to preserve mtime on copy (no `Chtimes`).
@@ -56,6 +62,8 @@ Replica metadata reconciliation (`Cache.Upsert`, `syncAll`, `FetchEntry` — int
 - Until then, apply an mtime tolerance window (e.g., treat |Δmtime| < 2s with equal size as "same version, merge backends") to absorb SMB timestamp granularity and per-write stamping jitter — an imperfect but high-leverage mitigation for (1).
 
 ### C5. Directories are reconciled with file LWW semantics, so directory `Backends` lists are arbitrary — `Rename`/`Remove` of directories only act on a subset of backends
+
+> **Status: FIXED** in `0849288`
 
 `Upsert`/`UpsertMulti` apply the same newest-mtime-wins logic to directories (`IsDir` is never special-cased). A directory's mtime changes whenever its children change, and differs per backend, so a directory's `Meta.Backends` typically collapses to a single "winner" backend. Consequences:
 
@@ -72,6 +80,8 @@ Replica metadata reconciliation (`Cache.Upsert`, `syncAll`, `FetchEntry` — int
 
 ### C7. `Create` without `O_EXCL`, and the post-I/O conflict path, can clobber existing data via LWW
 
+> **Status: FIXED** in `48f3594`
+
 `Dir.Create` (fs.go:188) opens with `O_CREATE|O_RDWR` (no `O_EXCL`) on backends chosen by the selector:
 
 1. If the file already exists on backends but isn't cached yet (lazy warmup, or created by another node — and the DLM is off or broken per C1/C2), "create" silently opens the existing file and records `Meta.Backends` as just the selected subset.
@@ -83,6 +93,8 @@ Replica metadata reconciliation (`Cache.Upsert`, `syncAll`, `FetchEntry` — int
 
 ### C8. `FetchDir`/`FetchEntry` swallow all backend errors and assert authoritative results — transient outages become `ENOENT`/empty directories
 
+> **Status: FIXED** in `68b1d53`
+
 `FetchDir` (cache.go:486) ignores every `ReadDir` error and then sets `FullyIndexed = true` unconditionally. If all (or the relevant) backends are briefly unreachable, the directory is presented as authoritatively empty and **stays** that way until the next full sync; lookups inside it return `ENOENT` without retry because `FullyIndexed` is now true. `FetchEntry` likewise returns `os.ErrNotExist` when every `Stat` errored, conflating "doesn't exist" with "couldn't ask" — `Lookup` then returns `ENOENT` for files that exist. Applications treat `ENOENT` as a definitive answer (build systems delete outputs, `rsync --delete` removes files…), so this is a data-affecting lie.
 
 **Proposed solution:** distinguish *not found* from *error* per backend. Mark `FullyIndexed = true` only if at least one backend (better: a read quorum of healthy backends) completed `ReadDir` successfully. In `FetchEntry`, return `EIO` (not `ENOENT`) when zero backends gave a definitive "not found" and at least one errored.
@@ -93,17 +105,23 @@ Replica metadata reconciliation (`Cache.Upsert`, `syncAll`, `FetchEntry` — int
 
 ### H1. `Rename` acquires path locks in non-canonical order — ABBA conflicts between crossing renames
 
+> **Status: FIXED** in `5003ee2`
+
 `Dir.Rename` locks `oldPath` then `newPath` (fs.go:406-420). Two nodes performing `mv A B` and `mv B A` concurrently each grab one lock and fail on the other. Because `Acquire` fails fast there is no deadlock, but there is also no retry, so both operations fail — and repeat attempts can livelock indefinitely.
 
 **Proposed solution:** sort the two paths lexicographically and always acquire in that order; add bounded randomized-backoff retries to `acquireLock`.
 
 ### H2. Lock contention has no resolution protocol: Lamport time is carried but never used; failed acquisitions don't retry
 
+> **Status: PARTIALLY FIXED** in `5003ee2` — retry/backoff added; Lamport ordering still unused
+
 `RequestLock` is first-come-first-served per peer; `LamportTime` only updates the clock. Two simultaneous requesters can each collect a partial set of grants, both miss quorum, both roll back, and both immediately fail the FUSE op back to the application. PLAN.md §3.1 claims deterministic Lamport-ordered conflict resolution; the code has none.
 
 **Proposed solution:** either (a) implement request ordering — a peer that has granted to `(T1, NodeA)` and receives `(T0, NodeB)` with `T0 < T1` (or equal time, lower node ID) should be able to yield via a wound/wait rule — or (b) keep FCFS but add randomized exponential backoff and retry inside `Acquire` before surfacing failure. Option (b) is far simpler and adequate at this scale.
 
 ### H3. `Mkdir` treats backend `EEXIST` as failure — spurious quorum failures and incorrect rollback pressure
+
+> **Status: FIXED** in `80334d8`
 
 `Dir.Mkdir` fans out to all backends and counts only clean successes (fs.go:277). If the directory already exists on backends (created by another node, or left from a previous partial mkdir), every `Mkdir` returns an exists-error, `createdOn` stays short of quorum, and the operation fails even though the directory exists everywhere. The same applies to `MkdirAll` parent-creation warnings in `Create`/`Rename`.
 
@@ -117,6 +135,8 @@ Replica metadata reconciliation (`Cache.Upsert`, `syncAll`, `FetchEntry` — int
 
 ### H5. `RenewLock` resurrects expired grants
 
+> **Status: FIXED** in `7878579`
+
 `RenewLock` (rpc.go:165) checks owner and token but not `ExpiresAt`. A holder paused longer than the TTL (GC pause, network partition) can renew an expired grant. Combined with C3 (no fencing), this widens the window where two nodes believe they hold the same lock: a second node may have acquired quorum on *other* peers while this peer's expired-but-renewable grant still counts toward the first holder's renewal quorum.
 
 **Proposed solution:** reject renewal of expired grants (`now.After(grant.ExpiresAt)` → `LockReject`). The holder must then re-`Acquire`, which re-runs conflict checks.
@@ -128,6 +148,8 @@ No `Setattr` is implemented (acknowledged in PROPOSAL.md §4.1), so kernel-initi
 **Proposed solution:** implement `Setattr` for size (fan out a truncate to all replica backends with quorum accounting, update cache size/mtime); on `Open` with `O_TRUNC`, reset cached size to 0 after backend opens succeed. Reject `O_APPEND` opens with `EINVAL` until append is implemented via size-tracking in the handle (single source of truth for the append offset).
 
 ### H7. Repair and inline healing race with active writers when the DLM is disabled (and on the same node even when enabled, per C2)
+
+> **Status: PARTIALLY FIXED** in `2497fb1` — residual gap: in-flight writes on open handles
 
 With `listen_addr` unset, `acquireLock` returns `(nil, nil)` and `RepairManager.repairNode` / the inline heal in `File.Open` proceed with no coordination at all. A repair copy of a file being actively written produces a torn replica that then participates in LWW (and per C4 may even win). bazil/FUSE dispatches operations concurrently, so single-node deployment does not imply serialization.
 
