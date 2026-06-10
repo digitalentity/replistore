@@ -2,9 +2,10 @@ package vfs
 
 import (
 	"context"
-	"crypto/rand"
+	cryptorand "crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"math/rand"
 	"sync"
 	"time"
 
@@ -41,7 +42,7 @@ func NewDistributedLock(path string, mgr *cluster.LockManager, disco *cluster.Di
 // hex-encoded.
 func newLockID() string {
 	b := make([]byte, 16)
-	if _, err := rand.Read(b); err != nil {
+	if _, err := cryptorand.Read(b); err != nil {
 		// crypto/rand never fails on supported platforms; fall back to a
 		// time-derived ID rather than panicking.
 		return fmt.Sprintf("fallback-%d", time.Now().UnixNano())
@@ -55,8 +56,51 @@ func (l *DistributedLock) IsValid() bool {
 	return l.isValid
 }
 
-// Acquire attempts to get a quorum of peers to grant the lock.
+const (
+	acquireMaxAttempts = 4
+	acquireBaseBackoff = 50 * time.Millisecond
+	acquireMaxBackoff  = 400 * time.Millisecond
+)
+
+// Acquire attempts to get a quorum of peers to grant the lock. On quorum
+// failure it retries with randomized backoff, up to acquireMaxAttempts total
+// attempts, while ctx remains live. Every attempt reuses the same LockID
+// (peers treat repeated requests for the same (NodeID, LockID) idempotently)
+// but takes a fresh Lamport tick.
 func (l *DistributedLock) Acquire(ctx context.Context) error {
+	backoff := acquireBaseBackoff
+	var lastErr error
+
+	for attempt := 1; attempt <= acquireMaxAttempts; attempt++ {
+		lastErr = l.tryAcquire(ctx)
+		if lastErr == nil {
+			return nil
+		}
+		if attempt == acquireMaxAttempts {
+			break
+		}
+
+		// Full jitter: sleep a random duration in [0, backoff).
+		wait := time.Duration(rand.Int63n(int64(backoff)))
+		backoff *= 2
+		if backoff > acquireMaxBackoff {
+			backoff = acquireMaxBackoff
+		}
+
+		timer := time.NewTimer(wait)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
+	}
+	return lastErr
+}
+
+// tryAcquire performs a single quorum acquisition attempt with its own
+// per-attempt timeout.
+func (l *DistributedLock) tryAcquire(ctx context.Context) error {
 	peers := l.Discovery.GetPeers()
 	quorum := (l.Manager.ExpectedClusterSize / 2) + 1
 

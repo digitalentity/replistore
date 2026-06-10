@@ -150,3 +150,42 @@ func TestDistributedLock_ExpectedClusterSizeQuorum(t *testing.T) {
 	assert.Error(t, err)
 	assert.False(t, lock.IsValid())
 }
+
+func TestDistributedLock_AcquireRetriesAfterContention(t *testing.T) {
+	n1 := cluster.NewLockManager("node1")
+	n1.ExpectedClusterSize = 1
+	n1.LeaseTTL = 100 * time.Millisecond
+	_, _ = n1.Start("127.0.0.1:0")
+	defer n1.Stop()
+
+	disco1 := cluster.NewDiscovery("node1", 0)
+
+	// Simulate a conflicting holder: a grant on the same path from another
+	// (node, lockid), expiring after LeaseTTL.
+	var resp cluster.LockResponse
+	err := n1.RequestLock(cluster.LockRequest{
+		Path:        "contended/path",
+		NodeID:      "node2",
+		LockID:      "other-lock",
+		LamportTime: 1,
+	}, &resp)
+	assert.NoError(t, err)
+	assert.Equal(t, cluster.LockOK, resp.Status)
+
+	// Let most of the conflicting lease elapse so the first Acquire attempt
+	// is rejected but a backed-off retry lands after expiry.
+	time.Sleep(80 * time.Millisecond)
+
+	lock := vfs.NewDistributedLock("contended/path", n1, disco1)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	err = lock.Acquire(ctx)
+	assert.NoError(t, err)
+	assert.True(t, lock.IsValid())
+	assert.NotEmpty(t, lock.FencingToken)
+
+	lock.Release()
+	assert.False(t, lock.IsValid())
+}

@@ -476,21 +476,30 @@ func (d *Dir) Rename(ctx context.Context, req *fuse.RenameRequest, newDir fs.Nod
 		newPath = req.NewName
 	}
 
-	// Distributed Locking for BOTH paths
-	oldLock, err := d.fs.acquireLock(ctx, oldPath)
-	if err != nil {
-		return err
-	}
-	if oldLock != nil {
-		defer oldLock.Release()
+	// Distributed locking for BOTH paths. Acquire in lexicographic order so
+	// crossing renames (mv A B vs mv B A) on different nodes cannot grab one
+	// lock each and defeat the other (ABBA conflict).
+	firstPath, secondPath := oldPath, newPath
+	if secondPath < firstPath {
+		firstPath, secondPath = secondPath, firstPath
 	}
 
-	newLock, err := d.fs.acquireLock(ctx, newPath)
+	firstLock, err := d.fs.acquireLock(ctx, firstPath)
 	if err != nil {
 		return err
 	}
-	if newLock != nil {
-		defer newLock.Release()
+	if firstLock != nil {
+		defer firstLock.Release()
+	}
+
+	if firstPath != secondPath {
+		secondLock, err := d.fs.acquireLock(ctx, secondPath)
+		if err != nil {
+			return err
+		}
+		if secondLock != nil {
+			defer secondLock.Release()
+		}
 	}
 
 	var mu sync.Mutex
