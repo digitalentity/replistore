@@ -22,6 +22,7 @@ const (
 type LockRequest struct {
 	Path        string
 	NodeID      string
+	LockID      string
 	LamportTime int64
 }
 
@@ -33,18 +34,21 @@ type LockResponse struct {
 type LockRenewal struct {
 	Path         string
 	NodeID       string
+	LockID       string
 	FencingToken string
 }
 
 type LockRelease struct {
 	Path         string
 	NodeID       string
+	LockID       string
 	FencingToken string
 }
 
 // Grant represents a lock granted by this node to a requester.
 type Grant struct {
 	NodeID       string
+	LockID       string
 	FencingToken string
 	ExpiresAt    time.Time
 }
@@ -141,18 +145,20 @@ func (m *LockManager) RequestLock(req LockRequest, resp *LockResponse) error {
 	// Check if we've already granted this lock to someone else
 	if val, ok := m.grants.Load(path); ok {
 		grant := val.(Grant)
-		if now.Before(grant.ExpiresAt) && grant.NodeID != req.NodeID {
-			// Lock held by someone else
+		if now.Before(grant.ExpiresAt) && (grant.NodeID != req.NodeID || grant.LockID != req.LockID) {
+			// Lock held by another acquisition (different node or different
+			// lock instance on the same node)
 			resp.Status = LockReject
 			return nil
 		}
 	}
 
-	// Grant (or renew implicitly via Request) the lock
-	// Fencing token is <LamportTime>-<NodeID>
-	fencingToken := fmt.Sprintf("%d-%s", req.LamportTime, req.NodeID)
+	// Grant (or refresh, for an idempotent retry of the same acquisition) the lock
+	// Fencing token is <LamportTime>-<NodeID>-<LockID>
+	fencingToken := fmt.Sprintf("%d-%s-%s", req.LamportTime, req.NodeID, req.LockID)
 	m.grants.Store(path, Grant{
 		NodeID:       req.NodeID,
+		LockID:       req.LockID,
 		FencingToken: fencingToken,
 		ExpiresAt:    now.Add(m.LeaseTTL),
 	})
@@ -173,7 +179,7 @@ func (m *LockManager) RenewLock(req LockRenewal, resp *LockStatus) error {
 	}
 
 	grant := val.(Grant)
-	if grant.NodeID != req.NodeID || grant.FencingToken != req.FencingToken {
+	if grant.NodeID != req.NodeID || grant.LockID != req.LockID || grant.FencingToken != req.FencingToken {
 		// Not the owner or stale token
 		*resp = LockReject
 		return nil
@@ -206,7 +212,7 @@ func (m *LockManager) ReleaseLock(req LockRelease, resp *LockStatus) error {
 	}
 
 	grant := val.(Grant)
-	if grant.NodeID != req.NodeID || grant.FencingToken != req.FencingToken {
+	if grant.NodeID != req.NodeID || grant.LockID != req.LockID || grant.FencingToken != req.FencingToken {
 		// Not the owner or different token, but we still return OK because it's effectively released
 		*resp = LockOK
 		return nil

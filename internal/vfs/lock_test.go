@@ -33,7 +33,7 @@ func TestDistributedLock_AcquireQuorum(t *testing.T) {
 	disco1.Peers["node3"] = cluster.Peer{ID: "node3", Address: addr3, LastSeen: time.Now()}
 
 	lock := vfs.NewDistributedLock("test/path", n1, disco1)
-	
+
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
@@ -53,13 +53,13 @@ func TestDistributedLock_AcquireQuorumFailure(t *testing.T) {
 	defer n1.Stop()
 
 	// node2 is "down" (no server started)
-	addr2 := "127.0.0.1:65535" 
+	addr2 := "127.0.0.1:65535"
 
 	disco1 := cluster.NewDiscovery("node1", 0)
 	disco1.Peers["node2"] = cluster.Peer{ID: "node2", Address: addr2, LastSeen: time.Now()}
 
 	lock := vfs.NewDistributedLock("test/path", n1, disco1)
-	
+
 	// With 2 nodes total (n1, n2), quorum is 2.
 	// Since node2 is down, acquisition should fail.
 	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
@@ -81,7 +81,7 @@ func TestDistributedLock_Renewal(t *testing.T) {
 	// Just local node for simplicity in renewal test
 
 	lock := vfs.NewDistributedLock("renew/path", n1, disco1)
-	
+
 	err := lock.Acquire(context.Background())
 	assert.NoError(t, err)
 	assert.True(t, lock.IsValid())
@@ -93,6 +93,36 @@ func TestDistributedLock_Renewal(t *testing.T) {
 	lock.Release()
 }
 
+func TestDistributedLock_SameNodeMutualExclusion(t *testing.T) {
+	n1 := cluster.NewLockManager("node1")
+	n1.ExpectedClusterSize = 1
+	_, _ = n1.Start("127.0.0.1:0")
+	defer n1.Stop()
+
+	disco1 := cluster.NewDiscovery("node1", 0)
+
+	lock1 := vfs.NewDistributedLock("same/path", n1, disco1)
+	lock2 := vfs.NewDistributedLock("same/path", n1, disco1)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	// First acquisition succeeds.
+	err := lock1.Acquire(ctx)
+	assert.NoError(t, err)
+	assert.True(t, lock1.IsValid())
+
+	// Second acquisition for the same path from the same node must fail
+	// while the first lock is held.
+	err = lock2.Acquire(ctx)
+	assert.Error(t, err)
+	assert.False(t, lock2.IsValid())
+
+	// The first lock is unaffected.
+	assert.True(t, lock1.IsValid())
+
+	lock1.Release()
+}
 
 func TestDistributedLock_ExpectedClusterSizeQuorum(t *testing.T) {
 	n1 := cluster.NewLockManager("node1")

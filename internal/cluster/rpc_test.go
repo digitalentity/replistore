@@ -24,6 +24,7 @@ func TestLockManager_RPC(t *testing.T) {
 	req := LockRequest{
 		Path:        path,
 		NodeID:      "node2",
+		LockID:      "lock-a",
 		LamportTime: 100,
 	}
 	var resp LockResponse
@@ -36,6 +37,7 @@ func TestLockManager_RPC(t *testing.T) {
 	req2 := LockRequest{
 		Path:        path,
 		NodeID:      "node3",
+		LockID:      "lock-b",
 		LamportTime: 101,
 	}
 	var resp2 LockResponse
@@ -47,6 +49,7 @@ func TestLockManager_RPC(t *testing.T) {
 	renewReq := LockRenewal{
 		Path:         path,
 		NodeID:       "node2",
+		LockID:       "lock-a",
 		FencingToken: resp.FencingToken,
 	}
 	var status LockStatus
@@ -58,6 +61,7 @@ func TestLockManager_RPC(t *testing.T) {
 	releaseReq := LockRelease{
 		Path:         path,
 		NodeID:       "node2",
+		LockID:       "lock-a",
 		FencingToken: resp.FencingToken,
 	}
 	err = client.Call("LockManager.ReleaseLock", releaseReq, &status)
@@ -68,6 +72,38 @@ func TestLockManager_RPC(t *testing.T) {
 	err = client.Call("LockManager.RequestLock", req2, &resp2)
 	assert.NoError(t, err)
 	assert.Equal(t, LockOK, resp2.Status)
+}
+
+func TestLockManager_SameNodeDifferentLockID(t *testing.T) {
+	m := NewLockManager("node1")
+
+	path := "same-node/path"
+
+	// First acquisition from node2 with lock-a
+	req := LockRequest{Path: path, NodeID: "node2", LockID: "lock-a", LamportTime: 100}
+	var resp LockResponse
+	_ = m.RequestLock(req, &resp)
+	assert.Equal(t, LockOK, resp.Status)
+
+	// Second acquisition from the SAME node but a different LockID must be
+	// rejected while the first grant is unexpired.
+	req2 := LockRequest{Path: path, NodeID: "node2", LockID: "lock-b", LamportTime: 101}
+	var resp2 LockResponse
+	_ = m.RequestLock(req2, &resp2)
+	assert.Equal(t, LockReject, resp2.Status)
+
+	// Idempotent retry of the same (NodeID, LockID) succeeds with a
+	// consistent grant.
+	var resp3 LockResponse
+	_ = m.RequestLock(req, &resp3)
+	assert.Equal(t, LockOK, resp3.Status)
+	assert.Equal(t, resp.FencingToken, resp3.FencingToken)
+
+	// The original holder's token is still valid for renewal.
+	renewReq := LockRenewal{Path: path, NodeID: "node2", LockID: "lock-a", FencingToken: resp.FencingToken}
+	var status LockStatus
+	_ = m.RenewLock(renewReq, &status)
+	assert.Equal(t, LockOK, status)
 }
 
 func TestLamportClock(t *testing.T) {
@@ -85,7 +121,7 @@ func TestLockManager_RenewExpiredLease(t *testing.T) {
 	m := NewLockManager("node1")
 	m.LeaseTTL = 10 * time.Millisecond
 
-	req := LockRequest{Path: "renew-expired", NodeID: "node2", LamportTime: 100}
+	req := LockRequest{Path: "renew-expired", NodeID: "node2", LockID: "lock-a", LamportTime: 100}
 	var resp LockResponse
 	_ = m.RequestLock(req, &resp)
 	assert.Equal(t, LockOK, resp.Status)
@@ -94,6 +130,7 @@ func TestLockManager_RenewExpiredLease(t *testing.T) {
 	renewReq := LockRenewal{
 		Path:         "renew-expired",
 		NodeID:       "node2",
+		LockID:       "lock-a",
 		FencingToken: resp.FencingToken,
 	}
 	var status LockStatus
@@ -108,7 +145,7 @@ func TestLockManager_RenewExpiredLease(t *testing.T) {
 	assert.Equal(t, LockReject, status)
 
 	// The expired grant was deleted, so another node can acquire the lock
-	req2 := LockRequest{Path: "renew-expired", NodeID: "node3", LamportTime: 101}
+	req2 := LockRequest{Path: "renew-expired", NodeID: "node3", LockID: "lock-b", LamportTime: 101}
 	var resp2 LockResponse
 	_ = m.RequestLock(req2, &resp2)
 	assert.Equal(t, LockOK, resp2.Status)
@@ -118,7 +155,7 @@ func TestLockManager_LeaseExpiration(t *testing.T) {
 	m := NewLockManager("node1")
 	m.LeaseTTL = 100 * time.Millisecond
 
-	req := LockRequest{Path: "expire", NodeID: "node2"}
+	req := LockRequest{Path: "expire", NodeID: "node2", LockID: "lock-a"}
 	var resp LockResponse
 	_ = m.RequestLock(req, &resp)
 
@@ -128,7 +165,7 @@ func TestLockManager_LeaseExpiration(t *testing.T) {
 	time.Sleep(200 * time.Millisecond)
 
 	// Should be able to lock from another node now
-	req2 := LockRequest{Path: "expire", NodeID: "node3"}
+	req2 := LockRequest{Path: "expire", NodeID: "node3", LockID: "lock-b"}
 	var resp2 LockResponse
 	_ = m.RequestLock(req2, &resp2)
 	assert.Equal(t, LockOK, resp2.Status)
