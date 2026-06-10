@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"syscall"
 	"testing"
 
 	"bazil.org/fuse"
@@ -287,6 +288,33 @@ func TestLookup_LazyTrigger(t *testing.T) {
 	node, err := (lazyDir.(*Dir)).Lookup(context.Background(), "file.txt")
 	assert.NoError(t, err)
 	assert.NotNil(t, node)
+
+	b1.AssertExpectations(t)
+}
+
+func TestLookup_AllBackendsUnavailable(t *testing.T) {
+	b1 := &test.MockBackend{NameVal: "b1"}
+	cache := vfs.NewCache()
+	// Directory exists in cache but not fully indexed
+	cache.Upsert("lazy/dummy", vfs.Metadata{Name: "dummy"}, "b1")
+	dirNode, _ := cache.Get("lazy")
+	dirNode.FullyIndexed = false
+
+	fs := &RepliFS{
+		Cache:    cache,
+		Backends: map[string]backend.Backend{"b1": b1},
+		Selector: vfs.NewRandomSelector(nil),
+	}
+	root, _ := fs.Root()
+	dir := root.(*Dir)
+	lazyDir, _ := dir.Lookup(context.Background(), "lazy")
+
+	// Backend errors transiently — we must not report ENOENT
+	b1.On("Stat", mock.Anything, "lazy/file.txt").Return(backend.FileInfo{}, fmt.Errorf("conn reset"))
+
+	node, err := (lazyDir.(*Dir)).Lookup(context.Background(), "file.txt")
+	assert.Equal(t, syscall.EIO, err)
+	assert.Nil(t, node)
 
 	b1.AssertExpectations(t)
 }

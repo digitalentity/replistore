@@ -2,6 +2,7 @@ package fuse
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -87,7 +88,12 @@ func (d *Dir) Lookup(ctx context.Context, name string) (fs.Node, error) {
 		logrus.Debugf("Lazy fetching metadata for %s", childPath)
 		node, err := d.fs.Cache.FetchEntry(ctx, childPath, d.fs.getBackendList())
 		if err != nil {
-			return nil, syscall.ENOENT
+			if errors.Is(err, os.ErrNotExist) {
+				return nil, syscall.ENOENT
+			}
+			// ErrUnavailable or any other error: we don't know whether the
+			// entry exists, so don't lie with ENOENT.
+			return nil, syscall.EIO
 		}
 		child = node
 	}
@@ -104,16 +110,23 @@ func (d *Dir) ReadDirAll(ctx context.Context) ([]fuse.Dirent, error) {
 	path := d.node.Meta.Path
 	d.node.Mu.RUnlock()
 
+	var fetchErr error
 	if !fullyIndexed {
 		logrus.Debugf("Lazy fetching directory listing for %s", path)
-		if err := d.fs.Cache.FetchDir(ctx, path, d.fs.getBackendList()); err != nil {
-			logrus.Errorf("FetchDir failed for %s: %v", path, err)
-			// Return what we have anyway
+		if fetchErr = d.fs.Cache.FetchDir(ctx, path, d.fs.getBackendList()); fetchErr != nil {
+			logrus.Errorf("FetchDir failed for %s: %v", path, fetchErr)
+			// Return what we have anyway (unless we have nothing, see below)
 		}
 	}
 
 	d.node.Mu.RLock()
 	defer d.node.Mu.RUnlock()
+
+	// If no backend could give an authoritative answer and we have nothing
+	// cached for a never-indexed directory, an empty listing would be a lie.
+	if errors.Is(fetchErr, vfs.ErrUnavailable) && len(d.node.Children) == 0 && !d.node.FullyIndexed {
+		return nil, syscall.EIO
+	}
 
 	var res []fuse.Dirent
 	for name, child := range d.node.Children {

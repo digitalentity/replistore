@@ -2,6 +2,7 @@ package vfs
 
 import (
 	"context"
+	"errors"
 	"os"
 	"strings"
 	"sync"
@@ -12,9 +13,14 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
+// ErrUnavailable indicates that no backend was able to give an authoritative
+// answer (e.g. all backends were unreachable), so the result must not be
+// treated as a definitive "does not exist".
+var ErrUnavailable = errors.New("vfs: no backend available for authoritative answer")
+
 type Metadata struct {
 	Name     string
-	Path     string   // Relative path from share root
+	Path     string // Relative path from share root
 	Size     int64
 	Mode     os.FileMode
 	ModTime  time.Time
@@ -23,10 +29,10 @@ type Metadata struct {
 }
 
 type Node struct {
-	Meta          Metadata
-	Children      map[string]*Node
+	Meta         Metadata
+	Children     map[string]*Node
 	FullyIndexed bool // true if this directory has been fully scanned from backends
-	Mu            sync.RWMutex
+	Mu           sync.RWMutex
 }
 
 type Cache struct {
@@ -73,13 +79,13 @@ func (c *Cache) Upsert(path string, meta Metadata, backendName string) {
 				newMeta.Path = path
 			}
 			next = &Node{
-				Meta:          newMeta,
-				Children:      make(map[string]*Node),
+				Meta:         newMeta,
+				Children:     make(map[string]*Node),
 				FullyIndexed: false,
 			}
 			curr.Children[part] = next
 		}
-		
+
 		if i == len(parts)-1 {
 			isNewer := meta.ModTime.After(next.Meta.ModTime)
 			isSameTime := meta.ModTime.Equal(next.Meta.ModTime)
@@ -87,7 +93,7 @@ func (c *Cache) Upsert(path string, meta Metadata, backendName string) {
 			isSameSize := meta.Size == next.Meta.Size
 
 			if isNewer || (isSameTime && isLarger) {
-				// We found a better/newer version. 
+				// We found a better/newer version.
 				// This backend becomes the sole winner for now.
 				next.Meta.Size = meta.Size
 				next.Meta.ModTime = meta.ModTime
@@ -220,8 +226,8 @@ func (c *Cache) UpsertMulti(path string, meta Metadata, backends []string) {
 				newMeta.Path = path
 			}
 			next = &Node{
-				Meta:          newMeta,
-				Children:      make(map[string]*Node),
+				Meta:         newMeta,
+				Children:     make(map[string]*Node),
 				FullyIndexed: false,
 			}
 			curr.Children[part] = next
@@ -352,7 +358,7 @@ func (c *Cache) Rename(oldPath, newPath string) bool {
 	// Find/Create destination parent
 	destParentPath := strings.Join(newParts[:len(newParts)-1], "/")
 	destNodeName := newParts[len(newParts)-1]
-	
+
 	// Create destination parents if they don't exist
 	destParent := c.ensurePathWithLock(destParentPath)
 
@@ -425,6 +431,7 @@ func (c *Cache) FetchEntry(ctx context.Context, path string, backends []backend.
 	var bestMeta Metadata
 	var bestBackends []string
 	var found bool
+	var notExistCount int
 
 	g, gCtx := errgroup.WithContext(ctx)
 	for _, b := range backends {
@@ -432,7 +439,13 @@ func (c *Cache) FetchEntry(ctx context.Context, path string, backends []backend.
 		g.Go(func() error {
 			info, err := b.Stat(gCtx, path)
 			if err != nil {
-				return nil // backend doesn't have it or error
+				if os.IsNotExist(err) || errors.Is(err, os.ErrNotExist) {
+					// Definitive answer: this backend doesn't have it.
+					stateMu.Lock()
+					notExistCount++
+					stateMu.Unlock()
+				}
+				return nil // backend doesn't have it or errored
 			}
 
 			meta := Metadata{
@@ -471,7 +484,13 @@ func (c *Cache) FetchEntry(ctx context.Context, path string, backends []backend.
 	_ = g.Wait()
 
 	if !found {
-		return nil, os.ErrNotExist
+		if notExistCount > 0 {
+			// At least one backend gave a definitive "not found".
+			return nil, os.ErrNotExist
+		}
+		// Every backend errored non-definitively (or there were no backends):
+		// we have no authoritative answer.
+		return nil, ErrUnavailable
 	}
 
 	c.UpsertMulti(path, bestMeta, bestBackends)
@@ -489,14 +508,28 @@ func (c *Cache) FetchDir(ctx context.Context, path string, backends []backend.Ba
 		return os.ErrNotExist
 	}
 
+	var stateMu sync.Mutex
+	var definitiveCount int
+
 	g, gCtx := errgroup.WithContext(ctx)
 	for _, b := range backends {
 		b := b
 		g.Go(func() error {
 			entries, err := b.ReadDir(gCtx, path)
 			if err != nil {
+				if os.IsNotExist(err) || errors.Is(err, os.ErrNotExist) {
+					// Definitive answer: this directory doesn't exist on this
+					// backend. Counts towards indexing completeness, but
+					// there are no entries to add.
+					stateMu.Lock()
+					definitiveCount++
+					stateMu.Unlock()
+				}
 				return nil
 			}
+			stateMu.Lock()
+			definitiveCount++
+			stateMu.Unlock()
 			for _, info := range entries {
 				childPath := strings.TrimPrefix(path+"/"+info.Name, "/")
 				c.Upsert(childPath, Metadata{
@@ -512,6 +545,12 @@ func (c *Cache) FetchDir(ctx context.Context, path string, backends []backend.Ba
 	}
 	if err := g.Wait(); err != nil {
 		return err
+	}
+
+	if definitiveCount == 0 {
+		// No backend gave a definitive answer; don't pretend the listing is
+		// authoritative.
+		return ErrUnavailable
 	}
 
 	node.Mu.Lock()

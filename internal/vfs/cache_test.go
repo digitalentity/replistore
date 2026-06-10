@@ -2,6 +2,7 @@ package vfs_test
 
 import (
 	"context"
+	"errors"
 	"os"
 	"testing"
 	"time"
@@ -74,10 +75,42 @@ func TestCache_FetchEntry_NotFound(t *testing.T) {
 	assert.Nil(t, node)
 }
 
+func TestCache_FetchEntry_AllBackendsUnavailable(t *testing.T) {
+	ctx := context.Background()
+	cache := vfs.NewCache()
+
+	b1 := &test.MockBackend{NameVal: "b1"}
+	b2 := &test.MockBackend{NameVal: "b2"}
+	path := "missing.txt"
+	b1.On("Stat", mock.Anything, path).Return(backend.FileInfo{}, errors.New("conn reset"))
+	b2.On("Stat", mock.Anything, path).Return(backend.FileInfo{}, errors.New("conn reset"))
+
+	node, err := cache.FetchEntry(ctx, path, []backend.Backend{b1, b2})
+	assert.ErrorIs(t, err, vfs.ErrUnavailable)
+	assert.NotErrorIs(t, err, os.ErrNotExist)
+	assert.Nil(t, node)
+}
+
+func TestCache_FetchEntry_DefinitiveNotFoundWins(t *testing.T) {
+	ctx := context.Background()
+	cache := vfs.NewCache()
+
+	b1 := &test.MockBackend{NameVal: "b1"}
+	b2 := &test.MockBackend{NameVal: "b2"}
+	path := "missing.txt"
+	// b1 gives a definitive "not found", b2 errors transiently
+	b1.On("Stat", mock.Anything, path).Return(backend.FileInfo{}, os.ErrNotExist)
+	b2.On("Stat", mock.Anything, path).Return(backend.FileInfo{}, errors.New("conn reset"))
+
+	node, err := cache.FetchEntry(ctx, path, []backend.Backend{b1, b2})
+	assert.ErrorIs(t, err, os.ErrNotExist)
+	assert.Nil(t, node)
+}
+
 func TestCache_FetchDir_Partial(t *testing.T) {
 	ctx := context.Background()
 	cache := vfs.NewCache()
-	
+
 	// Create parent directory in cache but NOT fully indexed
 	cache.Upsert("lazy-dir/dummy", vfs.Metadata{Name: "dummy"}, "b1")
 	dirNode, _ := cache.Get("lazy-dir")
@@ -91,7 +124,7 @@ func TestCache_FetchDir_Partial(t *testing.T) {
 
 	err := cache.FetchDir(ctx, "lazy-dir", []backend.Backend{b1})
 	assert.NoError(t, err)
-	
+
 	// Verify directory is now fully indexed
 	assert.True(t, dirNode.FullyIndexed)
 
@@ -100,6 +133,50 @@ func TestCache_FetchDir_Partial(t *testing.T) {
 	assert.True(t, ok1)
 	_, ok2 := cache.Get("lazy-dir/subdir")
 	assert.True(t, ok2)
+}
+
+func TestCache_FetchDir_AllBackendsUnavailable(t *testing.T) {
+	ctx := context.Background()
+	cache := vfs.NewCache()
+
+	cache.Upsert("lazy-dir/dummy", vfs.Metadata{Name: "dummy"}, "b1")
+	dirNode, _ := cache.Get("lazy-dir")
+	assert.False(t, dirNode.FullyIndexed)
+
+	b1 := &test.MockBackend{NameVal: "b1"}
+	b2 := &test.MockBackend{NameVal: "b2"}
+	b1.On("ReadDir", mock.Anything, "lazy-dir").Return([]backend.FileInfo(nil), errors.New("conn reset"))
+	b2.On("ReadDir", mock.Anything, "lazy-dir").Return([]backend.FileInfo(nil), errors.New("conn reset"))
+
+	err := cache.FetchDir(ctx, "lazy-dir", []backend.Backend{b1, b2})
+	assert.ErrorIs(t, err, vfs.ErrUnavailable)
+
+	// Directory must NOT be marked fully indexed
+	assert.False(t, dirNode.FullyIndexed)
+}
+
+func TestCache_FetchDir_PartialBackendFailure(t *testing.T) {
+	ctx := context.Background()
+	cache := vfs.NewCache()
+
+	cache.Upsert("lazy-dir/dummy", vfs.Metadata{Name: "dummy"}, "b1")
+	dirNode, _ := cache.Get("lazy-dir")
+	assert.False(t, dirNode.FullyIndexed)
+
+	b1 := &test.MockBackend{NameVal: "b1"}
+	b2 := &test.MockBackend{NameVal: "b2"}
+	b1.On("ReadDir", mock.Anything, "lazy-dir").Return([]backend.FileInfo{
+		{Name: "file1.txt", Size: 10, IsDir: false},
+	}, nil)
+	b2.On("ReadDir", mock.Anything, "lazy-dir").Return([]backend.FileInfo(nil), errors.New("conn reset"))
+
+	err := cache.FetchDir(ctx, "lazy-dir", []backend.Backend{b1, b2})
+	assert.NoError(t, err)
+
+	// One backend answered, so the directory counts as fully indexed
+	assert.True(t, dirNode.FullyIndexed)
+	_, ok := cache.Get("lazy-dir/file1.txt")
+	assert.True(t, ok)
 }
 
 func TestCache_UpsertAndGet(t *testing.T) {
