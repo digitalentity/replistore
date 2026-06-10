@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"os"
 
 	"gopkg.in/yaml.v3"
@@ -41,7 +42,12 @@ func LoadConfig(path string) (*Config, error) {
 		return nil, err
 	}
 
-	if cfg.ExpectedClusterSize <= 0 {
+	if cfg.ListenAddr != "" {
+		if cfg.ExpectedClusterSize < 2 {
+			return nil, fmt.Errorf("expected_cluster_size must be >= 2 when listen_addr is set: distributed locking requires a known cluster size for quorum")
+		}
+	} else if cfg.ExpectedClusterSize <= 0 {
+		// Single node, no clustering: the value is unused.
 		cfg.ExpectedClusterSize = 1
 	}
 
