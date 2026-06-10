@@ -55,6 +55,83 @@ func NewCache() *Cache {
 	}
 }
 
+// mergeMeta reconciles incoming metadata (present on incomingBackends) into
+// existing.
+//
+// Files use last-writer-wins semantics: a strictly newer ModTime, or an equal
+// ModTime with a larger Size, replaces the backend list; an identical version
+// unions the backend lists; a stale version is ignored.
+//
+// Directories are presence-sets, not LWW registers: a directory's ModTime
+// legitimately differs per backend (it changes whenever children change), so
+// backend names are always unioned, and ModTime is only bumped forward for
+// display purposes — never used to replace the backend list.
+//
+// Type conflict rule: if the path is a directory on at least one backend and
+// a file on another, the directory wins (directory presence masks the file).
+// The node becomes a directory and the file's backend is still unioned into
+// the presence set, so namespace operations fan out everywhere the path is
+// occupied. A warning is logged per occurrence.
+func mergeMeta(existing *Metadata, incoming Metadata, incomingBackends []string) {
+	if existing.IsDir || incoming.IsDir {
+		if existing.IsDir != incoming.IsDir {
+			p := existing.Path
+			if p == "" {
+				p = incoming.Path
+			}
+			if p == "" {
+				p = existing.Name
+			}
+			logrus.Warnf("vfs: type conflict at %q: file on some backends, directory on others; treating as directory", p)
+		}
+		if !existing.IsDir {
+			// Directory wins the type conflict: convert the node to a directory.
+			existing.IsDir = true
+			existing.Size = 0
+			existing.Mode = incoming.Mode
+		}
+		existing.Backends = unionBackends(existing.Backends, incomingBackends)
+		if incoming.ModTime.After(existing.ModTime) {
+			existing.ModTime = incoming.ModTime
+		}
+		return
+	}
+
+	isNewer := incoming.ModTime.After(existing.ModTime)
+	isSameTime := incoming.ModTime.Equal(existing.ModTime)
+	isLarger := incoming.Size > existing.Size
+	isSameSize := incoming.Size == existing.Size
+
+	switch {
+	case isNewer || (isSameTime && isLarger):
+		// A better/newer version: its backends replace the list.
+		existing.Size = incoming.Size
+		existing.ModTime = incoming.ModTime
+		existing.Backends = append([]string(nil), incomingBackends...)
+	case isSameTime && isSameSize:
+		// Same version: union the backends.
+		existing.Backends = unionBackends(existing.Backends, incomingBackends)
+	default:
+		// Stale version: ignored.
+	}
+}
+
+// unionBackends returns the deduplicated union of two backend name lists,
+// preserving first-seen order.
+func unionBackends(a, b []string) []string {
+	seen := make(map[string]struct{}, len(a)+len(b))
+	res := make([]string, 0, len(a)+len(b))
+	for _, list := range [][]string{a, b} {
+		for _, name := range list {
+			if _, ok := seen[name]; !ok {
+				seen[name] = struct{}{}
+				res = append(res, name)
+			}
+		}
+	}
+	return res
+}
+
 func (c *Cache) Upsert(path string, meta Metadata, backendName string) {
 	c.Mu.Lock()
 	defer c.Mu.Unlock()
@@ -87,32 +164,7 @@ func (c *Cache) Upsert(path string, meta Metadata, backendName string) {
 		}
 
 		if i == len(parts)-1 {
-			isNewer := meta.ModTime.After(next.Meta.ModTime)
-			isSameTime := meta.ModTime.Equal(next.Meta.ModTime)
-			isLarger := meta.Size > next.Meta.Size
-			isSameSize := meta.Size == next.Meta.Size
-
-			if isNewer || (isSameTime && isLarger) {
-				// We found a better/newer version.
-				// This backend becomes the sole winner for now.
-				next.Meta.Size = meta.Size
-				next.Meta.ModTime = meta.ModTime
-				next.Meta.Backends = []string{backendName}
-			} else if isSameTime && isSameSize {
-				// This backend matches the current best version.
-				found := false
-				for _, b := range next.Meta.Backends {
-					if b == backendName {
-						found = true
-						break
-					}
-				}
-				if !found {
-					next.Meta.Backends = append(next.Meta.Backends, backendName)
-				}
-			} else {
-				// This backend is stale. We don't add it to the list.
-			}
+			mergeMeta(&next.Meta, meta, []string{backendName})
 		}
 
 		parent := curr
@@ -138,11 +190,8 @@ func (c *Cache) StartSync(ctx context.Context, backends []backend.Backend, inter
 }
 
 func (c *Cache) syncAll(ctx context.Context, backends []backend.Backend) {
-	type fileState struct {
-		meta     Metadata
-		backends []string
-	}
-	globalState := make(map[string]*fileState)
+	// globalState entries carry their backend presence in Meta.Backends.
+	globalState := make(map[string]*Metadata)
 	var stateMu sync.Mutex
 
 	g, gCtx := errgroup.WithContext(ctx)
@@ -166,24 +215,13 @@ func (c *Cache) syncAll(ctx context.Context, backends []backend.Backend) {
 
 				s, ok := globalState[path]
 				if !ok {
-					globalState[path] = &fileState{
-						meta:     meta,
-						backends: []string{b.GetName()},
-					}
+					m := meta
+					m.Backends = []string{b.GetName()}
+					globalState[path] = &m
 					return nil
 				}
 
-				isNewer := meta.ModTime.After(s.meta.ModTime)
-				isSameTime := meta.ModTime.Equal(s.meta.ModTime)
-				isLarger := meta.Size > s.meta.Size
-				isSameSize := meta.Size == s.meta.Size
-
-				if isNewer || (isSameTime && isLarger) {
-					s.meta = meta
-					s.backends = []string{b.GetName()}
-				} else if isSameTime && isSameSize {
-					s.backends = append(s.backends, b.GetName())
-				}
+				mergeMeta(s, meta, []string{b.GetName()})
 				return nil
 			})
 			if err != nil {
@@ -198,7 +236,7 @@ func (c *Cache) syncAll(ctx context.Context, backends []backend.Backend) {
 
 	// Update cache with global winners
 	for path, s := range globalState {
-		c.UpsertMulti(path, s.meta, s.backends)
+		c.UpsertMulti(path, *s, s.Backends)
 	}
 	c.markAllIndexed(c.Root)
 }
@@ -234,30 +272,7 @@ func (c *Cache) UpsertMulti(path string, meta Metadata, backends []string) {
 		}
 
 		if i == len(parts)-1 {
-			isNewer := meta.ModTime.After(next.Meta.ModTime)
-			isSameTime := meta.ModTime.Equal(next.Meta.ModTime)
-			isLarger := meta.Size > next.Meta.Size
-			isSameSize := meta.Size == next.Meta.Size
-
-			if isNewer || (isSameTime && isLarger) {
-				next.Meta.Size = meta.Size
-				next.Meta.ModTime = meta.ModTime
-				next.Meta.Backends = backends
-			} else if isSameTime && isSameSize {
-				// Merge backends
-				bm := make(map[string]bool)
-				for _, b := range next.Meta.Backends {
-					bm[b] = true
-				}
-				for _, b := range backends {
-					bm[b] = true
-				}
-				newBackends := make([]string, 0, len(bm))
-				for b := range bm {
-					newBackends = append(newBackends, b)
-				}
-				next.Meta.Backends = newBackends
-			}
+			mergeMeta(&next.Meta, meta, backends)
 		}
 
 		parent := curr
@@ -428,8 +443,7 @@ func (c *Cache) FetchEntry(ctx context.Context, path string, backends []backend.
 	}
 
 	var stateMu sync.Mutex
-	var bestMeta Metadata
-	var bestBackends []string
+	var bestMeta Metadata // backend presence tracked in bestMeta.Backends
 	var found bool
 	var notExistCount int
 
@@ -462,22 +476,12 @@ func (c *Cache) FetchEntry(ctx context.Context, path string, backends []backend.
 
 			if !found {
 				bestMeta = meta
-				bestBackends = []string{b.GetName()}
+				bestMeta.Backends = []string{b.GetName()}
 				found = true
 				return nil
 			}
 
-			isNewer := meta.ModTime.After(bestMeta.ModTime)
-			isSameTime := meta.ModTime.Equal(bestMeta.ModTime)
-			isLarger := meta.Size > bestMeta.Size
-			isSameSize := meta.Size == bestMeta.Size
-
-			if isNewer || (isSameTime && isLarger) {
-				bestMeta = meta
-				bestBackends = []string{b.GetName()}
-			} else if isSameTime && isSameSize {
-				bestBackends = append(bestBackends, b.GetName())
-			}
+			mergeMeta(&bestMeta, meta, []string{b.GetName()})
 			return nil
 		})
 	}
@@ -493,7 +497,7 @@ func (c *Cache) FetchEntry(ctx context.Context, path string, backends []backend.
 		return nil, ErrUnavailable
 	}
 
-	c.UpsertMulti(path, bestMeta, bestBackends)
+	c.UpsertMulti(path, bestMeta, bestMeta.Backends)
 	node, ok := c.Get(path)
 	if !ok {
 		return nil, os.ErrNotExist

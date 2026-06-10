@@ -403,9 +403,21 @@ func (d *Dir) Remove(ctx context.Context, req *fuse.RemoveRequest) error {
 
 	child.Mu.Lock()
 	path := child.Meta.Path
+	isDir := child.Meta.IsDir
 	backends := make([]string, len(child.Meta.Backends))
 	copy(backends, child.Meta.Backends)
 	child.Mu.Unlock()
+
+	if isDir {
+		// Directories are presence-sets: the cached Meta.Backends list may be
+		// incomplete (per-backend mtimes differ), so fan the delete out to ALL
+		// configured backends to avoid leaving subtrees that resurrect on the
+		// next sync.
+		backends = backends[:0]
+		for bName := range d.fs.Backends {
+			backends = append(backends, bName)
+		}
+	}
 
 	// Distributed Locking
 	lock, err := d.fs.acquireLock(ctx, path)
@@ -426,10 +438,12 @@ func (d *Dir) Remove(ctx context.Context, req *fuse.RemoveRequest) error {
 			err := b.Remove(gCtx, path)
 			mu.Lock()
 			defer mu.Unlock()
-			if err != nil {
-				logrus.Errorf("Failed to remove %s from %s: %v", path, bName, err)
-			} else {
+			// A path that is already absent on a backend is a success for
+			// delete purposes (idempotent remove).
+			if err == nil || os.IsNotExist(err) || errors.Is(err, os.ErrNotExist) {
 				successes++
+			} else {
+				logrus.Errorf("Failed to remove %s from %s: %v", path, bName, err)
 			}
 			return nil
 		})
@@ -463,9 +477,20 @@ func (d *Dir) Rename(ctx context.Context, req *fuse.RenameRequest, newDir fs.Nod
 
 	sourceNode.Mu.RLock()
 	oldPath := sourceNode.Meta.Path
+	isDir := sourceNode.Meta.IsDir
 	backends := make([]string, len(sourceNode.Meta.Backends))
 	copy(backends, sourceNode.Meta.Backends)
 	sourceNode.Mu.RUnlock()
+
+	if isDir {
+		// Directories are presence-sets: the cached Meta.Backends list may be
+		// incomplete, so fan the rename out to ALL configured backends to keep
+		// the namespace consistent everywhere.
+		backends = backends[:0]
+		for bName := range d.fs.Backends {
+			backends = append(backends, bName)
+		}
+	}
 
 	targetDir.node.Mu.RLock()
 	targetParentPath := targetDir.node.Meta.Path
@@ -522,12 +547,18 @@ func (d *Dir) Rename(ctx context.Context, req *fuse.RenameRequest, newDir fs.Nod
 			err := b.Rename(gCtx, oldPath, newPath)
 			mu.Lock()
 			defer mu.Unlock()
-			if err != nil {
+			switch {
+			case err == nil:
+				successful = append(successful, bName)
+			case isDir && (os.IsNotExist(err) || errors.Is(err, os.ErrNotExist)):
+				// The source dir simply doesn't exist on this backend: that is
+				// neither a success nor a failure for quorum purposes, and
+				// there is no orphan to clean up.
+				logrus.Debugf("Skipping rename of %s on %s: source does not exist", oldPath, bName)
+			default:
 				logrus.Warnf("Failed to rename %s to %s on %s: %v", oldPath, newPath, bName, err)
 				failures = append(failures, bName)
 				lastErr = err
-			} else {
-				successful = append(successful, bName)
 			}
 			return nil
 		})
@@ -552,24 +583,34 @@ func (d *Dir) Rename(ctx context.Context, req *fuse.RenameRequest, newDir fs.Nod
 		return syscall.EIO
 	}
 
+	if isDir {
+		// The renamed directory now exists exactly on the backends where the
+		// rename succeeded.
+		sourceNode.Mu.Lock()
+		sourceNode.Meta.Backends = append([]string(nil), successful...)
+		sourceNode.Mu.Unlock()
+	}
+
 	// If some backends failed, update the node's backend list
 	if len(failures) > 0 {
-		sourceNode.Mu.Lock()
-		newBackends := make([]string, 0, len(sourceNode.Meta.Backends))
-		for _, bName := range sourceNode.Meta.Backends {
-			failed := false
-			for _, fName := range failures {
-				if bName == fName {
-					failed = true
-					break
+		if !isDir {
+			sourceNode.Mu.Lock()
+			newBackends := make([]string, 0, len(sourceNode.Meta.Backends))
+			for _, bName := range sourceNode.Meta.Backends {
+				failed := false
+				for _, fName := range failures {
+					if bName == fName {
+						failed = true
+						break
+					}
+				}
+				if !failed {
+					newBackends = append(newBackends, bName)
 				}
 			}
-			if !failed {
-				newBackends = append(newBackends, bName)
-			}
+			sourceNode.Meta.Backends = newBackends
+			sourceNode.Mu.Unlock()
 		}
-		sourceNode.Meta.Backends = newBackends
-		sourceNode.Mu.Unlock()
 
 		// Launch a background goroutine for each failed backend to asynchronously remove the file at the oldPath
 		for _, bName := range failures {

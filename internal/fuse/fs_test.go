@@ -475,6 +475,78 @@ func TestRemove_Quorum(t *testing.T) {
 	assert.Error(t, err)
 }
 
+func TestRemove_DirFansOutToAllBackends(t *testing.T) {
+	b1 := &test.MockBackend{NameVal: "b1"}
+	b2 := &test.MockBackend{NameVal: "b2"}
+
+	cache := vfs.NewCache()
+	// Directory is only listed on b1 in the cache, but it may exist on b2 too
+	// (directory mtimes differ per backend), so Remove must fan out to all
+	// configured backends.
+	cache.Upsert("subdir", vfs.Metadata{Name: "subdir", Path: "subdir", IsDir: true, Mode: os.ModeDir | 0755}, "b1")
+	node, _ := cache.Get("subdir")
+	assert.Equal(t, []string{"b1"}, node.Meta.Backends)
+
+	fs := &RepliFS{
+		Cache:             cache,
+		Backends:          map[string]backend.Backend{"b1": b1, "b2": b2},
+		ReplicationFactor: 2,
+		WriteQuorum:       2, // Strict quorum
+		Selector:          vfs.NewRandomSelector(nil),
+	}
+
+	root, _ := fs.Root()
+	dir := root.(*Dir)
+
+	b1.On("Remove", mock.Anything, "subdir").Return(nil)
+	// The directory being already absent on b2 counts as success for delete.
+	b2.On("Remove", mock.Anything, "subdir").Return(os.ErrNotExist)
+
+	req := &fuse.RemoveRequest{Name: "subdir", Dir: true}
+	err := dir.Remove(context.Background(), req)
+	assert.NoError(t, err)
+
+	_, ok := cache.Get("subdir")
+	assert.False(t, ok)
+
+	b1.AssertExpectations(t)
+	b2.AssertExpectations(t)
+}
+
+func TestRemove_FileNotExistCountsAsSuccess(t *testing.T) {
+	b1 := &test.MockBackend{NameVal: "b1"}
+	b2 := &test.MockBackend{NameVal: "b2"}
+
+	cache := vfs.NewCache()
+	cache.Upsert("gone.txt", vfs.Metadata{Name: "gone.txt", Path: "gone.txt", Backends: []string{"b1", "b2"}}, "b1")
+	cache.Upsert("gone.txt", vfs.Metadata{Name: "gone.txt", Path: "gone.txt", Backends: []string{"b1", "b2"}}, "b2")
+
+	fs := &RepliFS{
+		Cache:             cache,
+		Backends:          map[string]backend.Backend{"b1": b1, "b2": b2},
+		ReplicationFactor: 2,
+		WriteQuorum:       2, // Strict quorum
+		Selector:          vfs.NewRandomSelector(nil),
+	}
+
+	root, _ := fs.Root()
+	dir := root.(*Dir)
+
+	b1.On("Remove", mock.Anything, "gone.txt").Return(nil)
+	// Idempotent delete: already-absent file counts towards quorum.
+	b2.On("Remove", mock.Anything, "gone.txt").Return(os.ErrNotExist)
+
+	req := &fuse.RemoveRequest{Name: "gone.txt"}
+	err := dir.Remove(context.Background(), req)
+	assert.NoError(t, err)
+
+	_, ok := cache.Get("gone.txt")
+	assert.False(t, ok)
+
+	b1.AssertExpectations(t)
+	b2.AssertExpectations(t)
+}
+
 func TestFile_Write_QuorumFailure(t *testing.T) {
 	b1 := &test.MockBackend{NameVal: "b1"}
 	b2 := &test.MockBackend{NameVal: "b2"}

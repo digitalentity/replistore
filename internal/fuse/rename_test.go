@@ -92,6 +92,88 @@ func TestDir_Rename_CrossDir(t *testing.T) {
 	b1.AssertExpectations(t)
 }
 
+func TestDir_Rename_DirFansOutToAllBackends(t *testing.T) {
+	b1 := &test.MockBackend{NameVal: "b1"}
+	b2 := &test.MockBackend{NameVal: "b2"}
+
+	cache := vfs.NewCache()
+	// Directory listed on b1 only in the cache, but rename must fan out to
+	// all configured backends.
+	cache.Upsert("olddir", vfs.Metadata{Name: "olddir", Path: "olddir", IsDir: true, Mode: os.ModeDir | 0755}, "b1")
+	node, _ := cache.Get("olddir")
+	assert.Equal(t, []string{"b1"}, node.Meta.Backends)
+
+	fs := &RepliFS{
+		Cache:             cache,
+		Backends:          map[string]backend.Backend{"b1": b1, "b2": b2},
+		ReplicationFactor: 2,
+		WriteQuorum:       2,
+		Selector:          vfs.NewRandomSelector(nil),
+	}
+
+	rootNode, _ := fs.Root()
+	root := rootNode.(*Dir)
+
+	b1.On("MkdirAll", mock.Anything, "", os.FileMode(0755)).Return(nil)
+	b1.On("Rename", mock.Anything, "olddir", "newdir").Return(nil)
+	b2.On("MkdirAll", mock.Anything, "", os.FileMode(0755)).Return(nil)
+	b2.On("Rename", mock.Anything, "olddir", "newdir").Return(nil)
+
+	req := &fuse.RenameRequest{OldName: "olddir", NewName: "newdir"}
+	err := root.Rename(context.Background(), req, root)
+	assert.NoError(t, err)
+
+	_, ok := cache.Get("olddir")
+	assert.False(t, ok)
+	newNode, ok := cache.Get("newdir")
+	assert.True(t, ok)
+	assert.ElementsMatch(t, []string{"b1", "b2"}, newNode.Meta.Backends)
+
+	b1.AssertExpectations(t)
+	b2.AssertExpectations(t)
+}
+
+func TestDir_Rename_DirNotExistIsSkipped(t *testing.T) {
+	b1 := &test.MockBackend{NameVal: "b1"}
+	b2 := &test.MockBackend{NameVal: "b2"}
+
+	cache := vfs.NewCache()
+	cache.Upsert("olddir", vfs.Metadata{Name: "olddir", Path: "olddir", IsDir: true, Mode: os.ModeDir | 0755}, "b1")
+
+	fs := &RepliFS{
+		Cache:             cache,
+		Backends:          map[string]backend.Backend{"b1": b1, "b2": b2},
+		ReplicationFactor: 2,
+		WriteQuorum:       1,
+		Selector:          vfs.NewRandomSelector(nil),
+	}
+
+	rootNode, _ := fs.Root()
+	root := rootNode.(*Dir)
+
+	b1.On("MkdirAll", mock.Anything, "", os.FileMode(0755)).Return(nil)
+	b1.On("Rename", mock.Anything, "olddir", "newdir").Return(nil)
+	b2.On("MkdirAll", mock.Anything, "", os.FileMode(0755)).Return(nil)
+	// Source dir simply doesn't exist on b2: neither success nor failure,
+	// and no async orphan removal must be triggered.
+	b2.On("Rename", mock.Anything, "olddir", "newdir").Return(os.ErrNotExist)
+
+	req := &fuse.RenameRequest{OldName: "olddir", NewName: "newdir"}
+	err := root.Rename(context.Background(), req, root)
+	assert.NoError(t, err)
+
+	newNode, ok := cache.Get("newdir")
+	assert.True(t, ok)
+	assert.Equal(t, []string{"b1"}, newNode.Meta.Backends)
+
+	// Give any (incorrect) async cleanup goroutine a chance to fire.
+	time.Sleep(50 * time.Millisecond)
+	b2.AssertNotCalled(t, "Remove", mock.Anything, "olddir")
+
+	b1.AssertExpectations(t)
+	b2.AssertExpectations(t)
+}
+
 func TestDir_Rename_Quorum(t *testing.T) {
 	b1 := &test.MockBackend{NameVal: "b1"}
 	b2 := &test.MockBackend{NameVal: "b2"}

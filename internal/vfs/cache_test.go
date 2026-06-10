@@ -283,6 +283,94 @@ func TestCache_FindDegraded(t *testing.T) {
 	assert.Equal(t, "degraded.txt", degraded[0].Meta.Name)
 }
 
+func TestCache_UpsertDirUnionsBackends(t *testing.T) {
+	cache := vfs.NewCache()
+	now := time.Now()
+
+	// Same directory on two backends with DIFFERENT mtimes: directories are
+	// presence-sets, so both backends must be kept.
+	cache.Upsert("shared", vfs.Metadata{Name: "shared", IsDir: true, Mode: os.ModeDir | 0755, ModTime: now}, "b1")
+	cache.Upsert("shared", vfs.Metadata{Name: "shared", IsDir: true, Mode: os.ModeDir | 0755, ModTime: now.Add(-time.Hour)}, "b2")
+
+	node, ok := cache.Get("shared")
+	assert.True(t, ok)
+	assert.True(t, node.Meta.IsDir)
+	assert.ElementsMatch(t, []string{"b1", "b2"}, node.Meta.Backends)
+	// Newest mtime is kept for display.
+	assert.Equal(t, now, node.Meta.ModTime)
+
+	// A newer mtime must also not displace existing backends.
+	cache.Upsert("shared", vfs.Metadata{Name: "shared", IsDir: true, Mode: os.ModeDir | 0755, ModTime: now.Add(time.Hour)}, "b3")
+	node, _ = cache.Get("shared")
+	assert.ElementsMatch(t, []string{"b1", "b2", "b3"}, node.Meta.Backends)
+	assert.Equal(t, now.Add(time.Hour), node.Meta.ModTime)
+}
+
+func TestCache_UpsertMultiDirUnionsBackends(t *testing.T) {
+	cache := vfs.NewCache()
+	now := time.Now()
+
+	cache.Upsert("shared", vfs.Metadata{Name: "shared", IsDir: true, Mode: os.ModeDir | 0755, ModTime: now}, "b1")
+	// Older mtime via UpsertMulti must still union, not be dropped as stale.
+	cache.UpsertMulti("shared", vfs.Metadata{Name: "shared", IsDir: true, Mode: os.ModeDir | 0755, ModTime: now.Add(-time.Hour)}, []string{"b2", "b3"})
+
+	node, ok := cache.Get("shared")
+	assert.True(t, ok)
+	assert.ElementsMatch(t, []string{"b1", "b2", "b3"}, node.Meta.Backends)
+	assert.Equal(t, now, node.Meta.ModTime)
+}
+
+func TestCache_FetchEntryDirUnionsBackends(t *testing.T) {
+	ctx := context.Background()
+	cache := vfs.NewCache()
+	now := time.Now().Round(time.Second)
+
+	b1 := &test.MockBackend{NameVal: "b1"}
+	b2 := &test.MockBackend{NameVal: "b2"}
+
+	path := "some/dir"
+	// Directory mtimes differ per backend; both must be listed.
+	b1.On("Stat", mock.Anything, path).Return(backend.FileInfo{
+		Name:    "dir",
+		IsDir:   true,
+		Mode:    os.ModeDir | 0755,
+		ModTime: now,
+	}, nil)
+	b2.On("Stat", mock.Anything, path).Return(backend.FileInfo{
+		Name:    "dir",
+		IsDir:   true,
+		Mode:    os.ModeDir | 0755,
+		ModTime: now.Add(-time.Hour),
+	}, nil)
+
+	node, err := cache.FetchEntry(ctx, path, []backend.Backend{b1, b2})
+	assert.NoError(t, err)
+	assert.NotNil(t, node)
+	assert.True(t, node.Meta.IsDir)
+	assert.ElementsMatch(t, []string{"b1", "b2"}, node.Meta.Backends)
+}
+
+func TestCache_UpsertFileDirTypeConflict(t *testing.T) {
+	cache := vfs.NewCache()
+	now := time.Now()
+
+	// File on b1, directory on b2 at the same path: the directory wins and
+	// the file's backend stays in the presence set.
+	cache.Upsert("conflict", vfs.Metadata{Name: "conflict", Size: 10, Mode: 0644, ModTime: now}, "b1")
+	cache.Upsert("conflict", vfs.Metadata{Name: "conflict", IsDir: true, Mode: os.ModeDir | 0755, ModTime: now.Add(-time.Hour)}, "b2")
+
+	node, ok := cache.Get("conflict")
+	assert.True(t, ok)
+	assert.True(t, node.Meta.IsDir)
+	assert.ElementsMatch(t, []string{"b1", "b2"}, node.Meta.Backends)
+
+	// The reverse order: a later file upsert cannot demote a directory.
+	cache.Upsert("conflict", vfs.Metadata{Name: "conflict", Size: 10, Mode: 0644, ModTime: now.Add(time.Hour)}, "b3")
+	node, _ = cache.Get("conflict")
+	assert.True(t, node.Meta.IsDir)
+	assert.ElementsMatch(t, []string{"b1", "b2", "b3"}, node.Meta.Backends)
+}
+
 func TestCache_UpsertLatestWins(t *testing.T) {
 	cache := vfs.NewCache()
 	now := time.Now()
