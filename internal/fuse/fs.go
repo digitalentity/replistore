@@ -526,6 +526,108 @@ func (f *File) Open(ctx context.Context, req *fuse.OpenRequest, resp *fuse.OpenR
 			return nil, err
 		}
 		h.lock = lock
+
+		// Re-read backends after acquiring the lock to get the latest state
+		f.node.Mu.RLock()
+		backends = make([]string, len(f.node.Meta.Backends))
+		copy(backends, f.node.Meta.Backends)
+		f.node.Mu.RUnlock()
+
+		if len(backends) < f.fs.ReplicationFactor {
+			allBackendNames := make([]string, 0, len(f.fs.Backends))
+			for name := range f.fs.Backends {
+				allBackendNames = append(allBackendNames, name)
+			}
+			healthyBackends := f.fs.Selector.SelectForWrite(f.fs.ReplicationFactor, allBackendNames)
+
+			healthyMap := make(map[string]bool)
+			for _, hb := range healthyBackends {
+				healthyMap[hb] = true
+			}
+
+			// Find if there is at least one healthy backend that currently contains the file (source backend)
+			var sourceBackendName string
+			for _, bName := range backends {
+				if healthyMap[bName] {
+					sourceBackendName = bName
+					break
+				}
+			}
+
+			if sourceBackendName == "" {
+				_ = h.Release(ctx, nil)
+				return nil, syscall.EIO
+			}
+
+			// Find target backends (healthy backends that do not currently have the file) up to the replication factor.
+			currentBackendsMap := make(map[string]bool)
+			for _, bName := range backends {
+				currentBackendsMap[bName] = true
+			}
+
+			var targetBackends []string
+			for _, hb := range healthyBackends {
+				if !currentBackendsMap[hb] {
+					targetBackends = append(targetBackends, hb)
+					// Stop if we have reached the replication factor in total (existing backends + new targets)
+					if len(backends)+len(targetBackends) == f.fs.ReplicationFactor {
+						break
+					}
+				}
+			}
+
+			// For each target backend:
+			for _, targetName := range targetBackends {
+				sourceBackend := f.fs.Backends[sourceBackendName]
+				srcFile, err := sourceBackend.OpenFile(ctx, path, os.O_RDONLY, 0)
+				if err != nil {
+					_ = h.Release(ctx, nil)
+					return nil, err
+				}
+
+				f.node.Mu.RLock()
+				mode := f.node.Meta.Mode
+				f.node.Mu.RUnlock()
+
+				targetBackend := f.fs.Backends[targetName]
+				dstFile, err := targetBackend.OpenFile(ctx, path, os.O_CREATE|os.O_TRUNC|os.O_RDWR, mode)
+				if err != nil {
+					_ = srcFile.Close()
+					_ = h.Release(ctx, nil)
+					return nil, err
+				}
+
+				// Copy the data from the source file to the target file.
+				reader := &offsetReader{ctx: ctx, f: srcFile}
+				writer := &offsetWriter{ctx: ctx, f: dstFile}
+				if _, err := io.Copy(writer, reader); err != nil {
+					_ = srcFile.Close()
+					_ = dstFile.Close()
+					_ = h.Release(ctx, nil)
+					return nil, err
+				}
+
+				_ = srcFile.Close()
+				_ = dstFile.Close()
+
+				// Update the cache node's metadata: acquire f.node.Mu.Lock(), append the target backend name to f.node.Meta.Backends if not already present, and unlock.
+				f.node.Mu.Lock()
+				found := false
+				for _, b := range f.node.Meta.Backends {
+					if b == targetName {
+						found = true
+						break
+					}
+				}
+				if !found {
+					f.node.Meta.Backends = append(f.node.Meta.Backends, targetName)
+				}
+				f.node.Mu.Unlock()
+
+				// Update the local backends slice variable to include the new backend so that it is opened for writing by the subsequent loop.
+				backends = append(backends, targetName)
+			}
+		}
 	}
 
 	// Unlock I/O: Open outside of lock (already done since we RUnlocked above)

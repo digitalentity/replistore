@@ -3,6 +3,7 @@ package fuse
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"testing"
 
@@ -463,4 +464,70 @@ func TestDir_Create_QuorumFailure(t *testing.T) {
 	b1.AssertExpectations(t)
 	b2.AssertExpectations(t)
 	mockFile1.AssertExpectations(t)
+}
+
+func TestFile_Open_HealDegraded(t *testing.T) {
+	b1 := &test.MockBackend{NameVal: "b1"}
+	b2 := &test.MockBackend{NameVal: "b2"}
+
+	srcMockFile := &test.MockFile{}
+	dstMockFile := &test.MockFile{}
+	b1WriteFile := &test.MockFile{}
+	b2WriteFile := &test.MockFile{}
+
+	cache := vfs.NewCache()
+	// Node has initially Backends = []string{"b1"}
+	cache.Upsert("degraded.txt", vfs.Metadata{
+		Name:     "degraded.txt",
+		Path:     "degraded.txt",
+		Mode:     0644,
+		Backends: []string{"b1"},
+	}, "b1")
+
+	fs := &RepliFS{
+		Cache:             cache,
+		Backends:          map[string]backend.Backend{"b1": b1, "b2": b2},
+		ReplicationFactor: 2,
+		WriteQuorum:       2,
+		Selector:          vfs.NewFirstSelector(nil),
+	}
+
+	root, _ := fs.Root()
+	dir := root.(*Dir)
+	node, _ := dir.Lookup(context.Background(), "degraded.txt")
+	file := node.(*File)
+
+	// Mock b1 (source backend) read open for heal
+	b1.On("OpenFile", mock.Anything, "degraded.txt", os.O_RDONLY, mock.Anything).Return(srcMockFile, nil)
+
+	// Mock srcMockFile read calls
+	srcMockFile.On("ReadAt", mock.Anything, mock.Anything, int64(0)).Return(5, nil).Run(func(args mock.Arguments) {
+		buf := args.Get(1).([]byte)
+		copy(buf, []byte("hello"))
+	})
+	srcMockFile.On("ReadAt", mock.Anything, mock.Anything, int64(5)).Return(0, io.EOF)
+	srcMockFile.On("Close").Return(nil)
+
+	// Mock b2 (target backend) write open for heal
+	b2.On("OpenFile", mock.Anything, "degraded.txt", os.O_CREATE|os.O_TRUNC|os.O_RDWR, os.FileMode(0644)).Return(dstMockFile, nil)
+	dstMockFile.On("WriteAt", mock.Anything, []byte("hello"), int64(0)).Return(5, nil)
+	dstMockFile.On("Close").Return(nil)
+
+	// Mock final open for writing for both backends
+	b1.On("OpenFile", mock.Anything, "degraded.txt", mock.Anything, mock.Anything).Return(b1WriteFile, nil)
+	b2.On("OpenFile", mock.Anything, "degraded.txt", mock.Anything, mock.Anything).Return(b2WriteFile, nil)
+
+	h, err := file.Open(context.Background(), &fuse.OpenRequest{Flags: fuse.OpenReadWrite}, &fuse.OpenResponse{})
+	assert.NoError(t, err)
+	assert.NotNil(t, h)
+
+	// Verify that the file's VFS cache node now lists ["b1", "b2"] as backends
+	file.node.Mu.RLock()
+	assert.ElementsMatch(t, []string{"b1", "b2"}, file.node.Meta.Backends)
+	file.node.Mu.RUnlock()
+
+	b1.AssertExpectations(t)
+	b2.AssertExpectations(t)
+	srcMockFile.AssertExpectations(t)
+	dstMockFile.AssertExpectations(t)
 }
