@@ -19,7 +19,7 @@ func TestLockManager_RPC(t *testing.T) {
 	defer client.Close()
 
 	path := "test/path"
-	
+
 	// 1. Request Lock
 	req := LockRequest{
 		Path:        path,
@@ -74,26 +74,59 @@ func TestLamportClock(t *testing.T) {
 	c := &LamportClock{}
 	assert.Equal(t, int64(1), c.Tick())
 	assert.Equal(t, int64(2), c.Tick())
-	
+
 	assert.Equal(t, int64(11), c.Update(10))
 	assert.Equal(t, int64(12), c.Tick())
-	
+
 	assert.Equal(t, int64(13), c.Update(5)) // Update with smaller time still ticks
+}
+
+func TestLockManager_RenewExpiredLease(t *testing.T) {
+	m := NewLockManager("node1")
+	m.LeaseTTL = 10 * time.Millisecond
+
+	req := LockRequest{Path: "renew-expired", NodeID: "node2", LamportTime: 100}
+	var resp LockResponse
+	_ = m.RequestLock(req, &resp)
+	assert.Equal(t, LockOK, resp.Status)
+
+	// Renewal before expiry succeeds
+	renewReq := LockRenewal{
+		Path:         "renew-expired",
+		NodeID:       "node2",
+		FencingToken: resp.FencingToken,
+	}
+	var status LockStatus
+	_ = m.RenewLock(renewReq, &status)
+	assert.Equal(t, LockOK, status)
+
+	// Wait for the lease to expire
+	time.Sleep(20 * time.Millisecond)
+
+	// Renewal after expiry is rejected; holder must re-Acquire
+	_ = m.RenewLock(renewReq, &status)
+	assert.Equal(t, LockReject, status)
+
+	// The expired grant was deleted, so another node can acquire the lock
+	req2 := LockRequest{Path: "renew-expired", NodeID: "node3", LamportTime: 101}
+	var resp2 LockResponse
+	_ = m.RequestLock(req2, &resp2)
+	assert.Equal(t, LockOK, resp2.Status)
 }
 
 func TestLockManager_LeaseExpiration(t *testing.T) {
 	m := NewLockManager("node1")
 	m.LeaseTTL = 100 * time.Millisecond
-	
+
 	req := LockRequest{Path: "expire", NodeID: "node2"}
 	var resp LockResponse
 	_ = m.RequestLock(req, &resp)
-	
+
 	assert.Equal(t, LockOK, resp.Status)
-	
+
 	// Wait for expiration
 	time.Sleep(200 * time.Millisecond)
-	
+
 	// Should be able to lock from another node now
 	req2 := LockRequest{Path: "expire", NodeID: "node3"}
 	var resp2 LockResponse

@@ -179,6 +179,14 @@ func (m *LockManager) RenewLock(req LockRenewal, resp *LockStatus) error {
 		return nil
 	}
 
+	if !now.Before(grant.ExpiresAt) {
+		// Lease already expired; the holder must re-Acquire so conflict
+		// checks run again. Treat the expired grant as gone.
+		m.grants.Delete(path)
+		*resp = LockReject
+		return nil
+	}
+
 	// Extend lease
 	grant.ExpiresAt = now.Add(m.LeaseTTL)
 	m.grants.Store(path, grant)
