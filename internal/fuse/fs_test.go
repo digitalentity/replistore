@@ -531,3 +531,67 @@ func TestFile_Open_HealDegraded(t *testing.T) {
 	srcMockFile.AssertExpectations(t)
 	dstMockFile.AssertExpectations(t)
 }
+
+
+func TestDir_Create_MkdirAllParent(t *testing.T) {
+	b1 := &test.MockBackend{NameVal: "b1"}
+	mockFile := &test.MockFile{}
+
+	cache := vfs.NewCache()
+	cache.Upsert("parent/dummy", vfs.Metadata{Name: "dummy"}, "b1")
+	parentNode, ok := cache.Get("parent")
+	assert.True(t, ok)
+
+	fs := &RepliFS{
+		Cache:             cache,
+		Backends:          map[string]backend.Backend{"b1": b1},
+		ReplicationFactor: 1,
+		WriteQuorum:       1,
+		Selector:          vfs.NewRandomSelector(nil),
+	}
+
+	dir := &Dir{fs: fs, node: parentNode}
+
+	b1.On("MkdirAll", mock.Anything, "parent", os.FileMode(0755)).Return(nil)
+	b1.On("OpenFile", mock.Anything, "parent/new.txt", os.O_CREATE|os.O_RDWR, os.FileMode(0644)).Return(mockFile, nil)
+
+	req := &fuse.CreateRequest{Name: "new.txt", Mode: 0644}
+	resp := &fuse.CreateResponse{}
+	node, handle, err := dir.Create(context.Background(), req, resp)
+
+	assert.NoError(t, err)
+	assert.NotNil(t, node)
+	assert.NotNil(t, handle)
+
+	b1.AssertExpectations(t)
+}
+
+func TestDir_Mkdir_MkdirAllParent(t *testing.T) {
+	b1 := &test.MockBackend{NameVal: "b1"}
+
+	cache := vfs.NewCache()
+	cache.Upsert("parent/dummy", vfs.Metadata{Name: "dummy"}, "b1")
+	parentNode, ok := cache.Get("parent")
+	assert.True(t, ok)
+
+	fs := &RepliFS{
+		Cache:             cache,
+		Backends:          map[string]backend.Backend{"b1": b1},
+		ReplicationFactor: 1,
+		WriteQuorum:       1,
+		Selector:          vfs.NewRandomSelector(nil),
+	}
+
+	dir := &Dir{fs: fs, node: parentNode}
+
+	b1.On("MkdirAll", mock.Anything, "parent", os.FileMode(0755)).Return(nil)
+	b1.On("Mkdir", mock.Anything, "parent/new-sub-dir", os.FileMode(0755)).Return(nil)
+
+	req := &fuse.MkdirRequest{Name: "new-sub-dir", Mode: 0755}
+	node, err := dir.Mkdir(context.Background(), req)
+
+	assert.NoError(t, err)
+	assert.NotNil(t, node)
+
+	b1.AssertExpectations(t)
+}

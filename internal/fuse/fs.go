@@ -179,6 +179,11 @@ func (d *Dir) Create(ctx context.Context, req *fuse.CreateRequest, resp *fuse.Cr
 		bName := bName // capture for goroutine
 		g.Go(func() error {
 			b := d.fs.Backends[bName]
+			if parentPath != "" {
+				if err := b.MkdirAll(gCtx, parentPath, 0755); err != nil {
+					logrus.Warnf("Failed to MkdirAll parent %s on backend %s: %v", parentPath, bName, err)
+				}
+			}
 			sf, err := b.OpenFile(gCtx, path, os.O_CREATE|os.O_RDWR, req.Mode)
 			if err != nil {
 				logrus.Warnf("Failed to create file %s on backend %s: %v", path, bName, err)
@@ -263,6 +268,11 @@ func (d *Dir) Mkdir(ctx context.Context, req *fuse.MkdirRequest) (fs.Node, error
 	for name, b := range d.fs.Backends {
 		name, b := name, b
 		g.Go(func() error {
+			if parentPath != "" {
+				if err := b.MkdirAll(gCtx, parentPath, 0755); err != nil {
+					logrus.Warnf("Failed to MkdirAll parent %s on backend %s: %v", parentPath, name, err)
+				}
+			}
 			err := b.Mkdir(gCtx, path, req.Mode)
 			if err != nil {
 				logrus.Warnf("Failed to create directory %s on %s: %v", path, name, err)
