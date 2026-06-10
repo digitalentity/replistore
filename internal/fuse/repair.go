@@ -109,6 +109,16 @@ func (m *RepairManager) repairNode(ctx context.Context, node *vfs.Node) error {
 		return io.ErrUnexpectedEOF
 	}
 
+	// Local serialization: held for the whole repair of this file, acquired
+	// before the distributed lock (see ordering invariant on RepliFS). This
+	// serializes repair against local create/remove/rename and against the
+	// inline healing copy in File.Open. Known residual gap: it does NOT
+	// serialize against in-flight writes on an already-open handle (the
+	// handle releases the path lock at the end of Open); a full fix needs
+	// per-file open-handle tracking and is out of scope here.
+	unlock := m.fs.pathLocks.lock(path)
+	defer unlock()
+
 	// Distributed Locking to prevent conflicts with concurrent deletes/writes
 	lock, err := m.fs.acquireLock(ctx, path)
 	if err != nil {

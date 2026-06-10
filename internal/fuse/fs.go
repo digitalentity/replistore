@@ -27,6 +27,17 @@ type RepliFS struct {
 	Selector          vfs.BackendSelector
 	LockManager       *cluster.LockManager
 	Discovery         *cluster.Discovery
+
+	// pathLocks serializes same-path mutations within this process. The
+	// distributed lock manager (when enabled) only arbitrates between nodes
+	// and rejects a second local acquisition instead of queueing it; when
+	// clustering is disabled there is no serialization at all. Ordering
+	// invariant: the local path lock is ALWAYS acquired before the
+	// distributed lock for the same path. Create and Open release the local
+	// lock when they return, while the distributed lock lives on with the
+	// file handle; holding the local path lock for the handle's lifetime
+	// would block background repair forever.
+	pathLocks pathLocks
 }
 
 func (f *RepliFS) Root() (fs.Node, error) {
@@ -159,7 +170,15 @@ func (d *Dir) Create(ctx context.Context, req *fuse.CreateRequest, resp *fuse.Cr
 		path = req.Name
 	}
 
-	// Distributed Locking
+	// Local serialization of same-path mutations. Held until the backend
+	// opens complete and the cache is updated, then released at return: the
+	// handle's writes are protected by its own state and the distributed
+	// lock, and holding the path lock for the handle's lifetime would block
+	// repair forever.
+	unlock := d.fs.pathLocks.lock(path)
+	defer unlock()
+
+	// Distributed Locking (always after the local path lock, see RepliFS)
 	lock, err := d.fs.acquireLock(ctx, path)
 	if err != nil {
 		return nil, nil, err
@@ -307,7 +326,11 @@ func (d *Dir) Mkdir(ctx context.Context, req *fuse.MkdirRequest) (fs.Node, error
 		path = req.Name
 	}
 
-	// Distributed Locking
+	// Local serialization of same-path mutations.
+	unlock := d.fs.pathLocks.lock(path)
+	defer unlock()
+
+	// Distributed Locking (always after the local path lock, see RepliFS)
 	lock, err := d.fs.acquireLock(ctx, path)
 	if err != nil {
 		return nil, err
@@ -419,7 +442,11 @@ func (d *Dir) Remove(ctx context.Context, req *fuse.RemoveRequest) error {
 		}
 	}
 
-	// Distributed Locking
+	// Local serialization of same-path mutations.
+	unlock := d.fs.pathLocks.lock(path)
+	defer unlock()
+
+	// Distributed Locking (always after the local path lock, see RepliFS)
 	lock, err := d.fs.acquireLock(ctx, path)
 	if err != nil {
 		return err
@@ -501,12 +528,20 @@ func (d *Dir) Rename(ctx context.Context, req *fuse.RenameRequest, newDir fs.Nod
 		newPath = req.NewName
 	}
 
-	// Distributed locking for BOTH paths. Acquire in lexicographic order so
-	// crossing renames (mv A B vs mv B A) on different nodes cannot grab one
-	// lock each and defeat the other (ABBA conflict).
+	// Locking for BOTH paths. Acquire in lexicographic order so crossing
+	// renames (mv A B vs mv B A) cannot grab one lock each and defeat the
+	// other (ABBA conflict). Local path locks first, then the distributed
+	// locks (see ordering invariant on RepliFS).
 	firstPath, secondPath := oldPath, newPath
 	if secondPath < firstPath {
 		firstPath, secondPath = secondPath, firstPath
+	}
+
+	unlockFirst := d.fs.pathLocks.lock(firstPath)
+	defer unlockFirst()
+	if firstPath != secondPath {
+		unlockSecond := d.fs.pathLocks.lock(secondPath)
+		defer unlockSecond()
 	}
 
 	firstLock, err := d.fs.acquireLock(ctx, firstPath)
@@ -724,8 +759,15 @@ func (f *File) Open(ctx context.Context, req *fuse.OpenRequest, resp *fuse.OpenR
 		backends: make(map[string]backend.File),
 	}
 
-	// Distributed Locking for writes
+	// Locking for writes
 	if !req.Flags.IsReadOnly() {
+		// Local serialization: held for the duration of Open only (covers
+		// the inline healing copy below), released at return. The
+		// distributed lock, by contrast, lives with the handle. Always
+		// acquired before the distributed lock (see RepliFS).
+		unlock := f.fs.pathLocks.lock(path)
+		defer unlock()
+
 		lock, err := f.fs.acquireLock(ctx, path)
 		if err != nil {
 			return nil, err
