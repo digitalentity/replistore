@@ -143,6 +143,8 @@ Replica metadata reconciliation (`Cache.Upsert`, `syncAll`, `FetchEntry` — int
 
 ### H6. Truncation is unsupported and unmodeled — stale sizes and failing `> file` semantics
 
+> **Status: FIXED** in `6898ec3`
+
 No `Setattr` is implemented (acknowledged in PROPOSAL.md §4.1), so kernel-initiated truncation (`truncate()`, and `O_TRUNC` handled by the kernel as setattr when atomic-trunc is off) fails outright. When `O_TRUNC` does pass through `Open` (fs.go:731), the backends truncate but `node.Meta.Size` is never reset, so `Attr` reports the old size and readers get short reads/garbage tails until the next sync. `O_APPEND` (PROPOSAL.md §5.1) similarly passes through to each backend, which appends at *its own* current EOF — guaranteed replica divergence.
 
 **Proposed solution:** implement `Setattr` for size (fan out a truncate to all replica backends with quorum accounting, update cache size/mtime); on `Open` with `O_TRUNC`, reset cached size to 0 after backend opens succeed. Reject `O_APPEND` opens with `EINVAL` until append is implemented via size-tracking in the handle (single source of truth for the append offset).
@@ -157,11 +159,15 @@ With `listen_addr` unset, `acquireLock` returns `(nil, nil)` and `RepairManager.
 
 ### H8. Read-only `Open` has no failover; `Read` failover ignores newly-healthy replicas
 
+> **Status: PARTIALLY FIXED** in `cb361b7 — open-time failover added; per-handle `tried` set still never resets`
+
 `File.Open` read path (fs.go:717) picks one backend and returns the open error directly — a single unhealthy-but-not-yet-marked backend fails the open even though other replicas are fine. `FileHandle.Read`'s failover loop is solid, but it can never recover once every backend in `Meta.Backends` has been `tried`, even if a backend recovered seconds later (handle is permanently dead until reopened).
 
 **Proposed solution:** in `Open`, iterate over `Meta.Backends` (health-filtered, e.g. via `SelectForRead` repeatedly with exclusion) until one opens. Optionally reset `tried` on a timer or treat `tried` as a per-attempt set rather than per-handle.
 
 ### H9. `cleanupFailedBackends` permanently evicts a replica from metadata on a single failed write, without removing the stale replica
+
+> **Status: FIXED** in `c8e1be3 — best-effort async delete; durable fix remains tombstones (C6)`
 
 One failed `WriteAt` removes the backend from both the handle and `node.Meta.Backends` (fs.go:892). The replica on that backend still exists with *partial* content (earlier writes in this session succeeded). It is no longer tracked, never deleted, and resurrects via sync as a same-path candidate where clock skew can elect it the winner (C4.2). The handle also never re-adds the backend, so a transient SMB hiccup permanently halves redundancy for the rest of the handle's life (until background repair).
 
@@ -172,6 +178,8 @@ One failed `WriteAt` removes the backend from both the handle and `node.Meta.Bac
 ## 3. Medium-severity findings
 
 ### M1. Writes don't update cached mtime
+
+> **Status: FIXED** in `70329dc`
 `FileHandle.Write` bumps `Meta.Size` but not `ModTime` (fs.go:882). `Attr` serves stale mtimes until the next sync; tools relying on mtime (make, rsync) misbehave on the writing node itself. **Fix:** set `Meta.ModTime = time.Now()` alongside the size update (and on `Create`).
 
 ### M2. Negative lookups are never cached
@@ -184,6 +192,8 @@ Every `Lookup` miss in a not-fully-indexed directory triggers a parallel `Stat` 
 `sweep` deletes `*Node`s from the tree while `File`/`FileHandle` objects still hold pointers to them; a later upsert creates a *new* node for the same path. Handle-side metadata updates (size, backend list) then mutate an orphan that the rest of the system no longer sees, and `Attr` on the open file diverges from `Lookup`. **Fix:** never delete nodes that have open handles (add a refcount/open-handle flag to `Node`), or re-link instead of replace (update the existing node in place — the tree already supports in-place meta updates).
 
 ### M5. `LockManager.grants` never garbage-collects expired entries
+
+> **Status: FIXED** in `45b7ce1`
 Every path ever locked leaves a `Grant` in the `sync.Map` until explicitly released (rpc.go:154). Long-running nodes leak memory proportional to distinct locked paths. **Fix:** periodic janitor that deletes grants past `ExpiresAt + slack`.
 
 ### M6. Cluster RPC and mDNS membership are completely unauthenticated
@@ -199,6 +209,8 @@ Config and docs describe `advertise_addr` (config.go:26, docs/multi-client.md), 
 mDNS entries arrive on announcement/query responses; `cleanupStale` (discovery.go:155) drops peers after 2 min of silence even if they are alive, and nothing re-queries on demand. With `ExpectedClusterSize`-based quorum this turns into spurious lock-acquisition failures (availability, not safety). **Fix:** periodic active re-browse/re-query (zeroconf supports it) and/or verify with a direct RPC ping before evicting.
 
 ### M10. `File.Fsync` (node-level) syncs freshly opened handles, not the write handle's data; `FileHandle.Fsync` is dead code
+
+> **Status: FIXED** in `532b94e`
 bazil/fuse dispatches `Fsync` to the *node* (`NodeFsyncer`), so `FileHandle.Fsync` (fs.go:924) is never called. `File.Fsync` opens brand-new SMB handles and syncs those — it does force a server-side flush of the file, but it ignores which backends the active handle actually wrote to, syncs backends the handle may have dropped, and double-opens files. **Fix:** route node-level `Fsync` to the open handles (track open handles on `File`), falling back to the open-and-sync behavior only when no handle exists; delete or wire up `FileHandle.Fsync`.
 
 ### M11. Rename-over-existing-target is not atomic and likely fails
@@ -208,6 +220,8 @@ POSIX `rename` must atomically replace an existing target. SMB2 rename fails if 
 `Dir.Remove` relies on backends rejecting non-empty directory deletion. The cache may know children (from other backends) that the quorum-satisfying backends don't have — the directory is then removed from the namespace while children replicas survive on non-listed backends (compounds C5/C6). **Fix:** return `ENOTEMPTY` if the cached node has children after a fresh `FetchDir`; only then fan out.
 
 ### M13. `CallWithContext` leaks goroutines and writes into reply values after abandonment
+
+> **Status: FIXED** in `c082690`
 On ctx timeout the spawned goroutine keeps running `client.Call` and will write into `reply` after the caller has moved on (rpc.go:223). Currently callers only read replies on the success path, but it's a latent data race; the goroutine also pins the connection until the call completes. **Fix:** close the client on ctx expiry (unblocks `Call`), and heap-allocate a private reply that is copied out only on the success path.
 
 ---
