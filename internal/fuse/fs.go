@@ -55,6 +55,39 @@ func (f *RepliFS) acquireLock(ctx context.Context, path string) (*vfs.Distribute
 	return lock, nil
 }
 
+// removeStaleReplica asynchronously deletes a stale replica of path from the
+// named backend after that backend has been dropped from a node's metadata
+// (e.g. a failed write or rename). It makes one immediate attempt and one
+// retry after 5 seconds, then gives up with a warning. An already-absent
+// replica counts as success.
+//
+// This is best-effort only: the deletion can fail (the backend is likely down,
+// since an operation on it just failed), in which case the stale replica
+// survives and may resurface via background sync. A tombstone mechanism
+// (REVIEW.md C6) is the durable fix for that.
+func (f *RepliFS) removeStaleReplica(path string, backendName string) {
+	b, ok := f.Backends[backendName]
+	if !ok {
+		return
+	}
+	go func() {
+		var lastErr error
+		for attempt := 0; attempt < 2; attempt++ {
+			if attempt > 0 {
+				time.Sleep(5 * time.Second)
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			err := b.Remove(ctx, path)
+			cancel()
+			if err == nil || os.IsNotExist(err) || errors.Is(err, os.ErrNotExist) {
+				return
+			}
+			lastErr = err
+		}
+		logrus.Warnf("Failed to remove stale replica %s from backend %s: %v", path, backendName, lastErr)
+	}()
+}
+
 func (f *RepliFS) getBackendList() []backend.Backend {
 	res := make([]backend.Backend, 0, len(f.Backends))
 	for _, b := range f.Backends {
@@ -647,20 +680,9 @@ func (d *Dir) Rename(ctx context.Context, req *fuse.RenameRequest, newDir fs.Nod
 			sourceNode.Mu.Unlock()
 		}
 
-		// Launch a background goroutine for each failed backend to asynchronously remove the file at the oldPath
+		// Asynchronously remove the orphaned file at oldPath from each failed backend.
 		for _, bName := range failures {
-			bName := bName
-			go func() {
-				b, ok := d.fs.Backends[bName]
-				if !ok {
-					return
-				}
-				bgCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-				defer cancel()
-				if err := b.Remove(bgCtx, oldPath); err != nil {
-					logrus.Warnf("Failed to asynchronously remove orphaned file %s from backend %s: %v", oldPath, bName, err)
-				}
-			}()
+			d.fs.removeStaleReplica(oldPath, bName)
 		}
 	}
 
@@ -1091,7 +1113,17 @@ func (h *FileHandle) cleanupFailedBackends(failures []string) {
 		}
 	}
 	h.file.node.Meta.Backends = newBackends
+	path := h.file.node.Meta.Path
 	h.file.node.Mu.Unlock()
+
+	// The replica on each failed backend still holds partial content from
+	// earlier successful writes in this session. Now that it is untracked,
+	// delete it so the background sync cannot resurrect it as a same-path
+	// candidate (where clock skew could even elect the stale partial as the
+	// LWW winner). Best-effort: see removeStaleReplica.
+	for _, name := range failures {
+		h.file.fs.removeStaleReplica(path, name)
+	}
 }
 
 func (h *FileHandle) Flush(ctx context.Context, req *fuse.FlushRequest) error {

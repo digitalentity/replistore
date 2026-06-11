@@ -201,6 +201,13 @@ func TestFile_Write_Quorum(t *testing.T) {
 	mockFile2.On("WriteAt", mock.Anything, data, int64(0)).Return(0, fmt.Errorf("disk full"))
 	mockFile2.On("Close").Return(nil)
 
+	// The stale partial replica must be removed from the failed backend
+	// asynchronously.
+	removed := make(chan struct{})
+	b2.On("Remove", mock.Anything, "quorum.txt").Return(nil).Run(func(mock.Arguments) {
+		close(removed)
+	})
+
 	writeReq := &fuse.WriteRequest{Data: data, Offset: 0}
 	writeResp := &fuse.WriteResponse{}
 	err = fileHandle.Write(context.Background(), writeReq, writeResp)
@@ -211,6 +218,12 @@ func TestFile_Write_Quorum(t *testing.T) {
 	file.node.Mu.RLock()
 	assert.Equal(t, []string{"b1"}, file.node.Meta.Backends)
 	file.node.Mu.RUnlock()
+
+	select {
+	case <-removed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("stale replica was not removed from failed backend")
+	}
 
 	b1.AssertExpectations(t)
 	b2.AssertExpectations(t)
@@ -251,12 +264,23 @@ func TestFile_Fsync(t *testing.T) {
 	mockFile2.On("Sync", mock.Anything).Return(fmt.Errorf("sync error"))
 	mockFile2.On("Close").Return(nil)
 
+	removed := make(chan struct{})
+	b2.On("Remove", mock.Anything, "sync.txt").Return(nil).Run(func(mock.Arguments) {
+		close(removed)
+	})
+
 	err := fileHandle.Fsync(context.Background(), &fuse.FsyncRequest{})
 	assert.NoError(t, err)
 
 	file.node.Mu.RLock()
 	assert.Equal(t, []string{"b1"}, file.node.Meta.Backends)
 	file.node.Mu.RUnlock()
+
+	select {
+	case <-removed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("stale replica was not removed from failed backend")
+	}
 
 	b1.AssertExpectations(t)
 	b2.AssertExpectations(t)
@@ -583,6 +607,11 @@ func TestFile_Write_QuorumFailure(t *testing.T) {
 	mockFile2.On("WriteAt", mock.Anything, data, int64(0)).Return(0, fmt.Errorf("disk full"))
 	mockFile2.On("Close").Return(nil)
 
+	removed := make(chan struct{})
+	b2.On("Remove", mock.Anything, "quorum_fail.txt").Return(nil).Run(func(mock.Arguments) {
+		close(removed)
+	})
+
 	writeReq := &fuse.WriteRequest{Data: data, Offset: 0}
 	writeResp := &fuse.WriteResponse{}
 	err = fileHandle.Write(context.Background(), writeReq, writeResp)
@@ -592,6 +621,12 @@ func TestFile_Write_QuorumFailure(t *testing.T) {
 	file.node.Mu.RLock()
 	assert.Equal(t, []string{"b1"}, file.node.Meta.Backends)
 	file.node.Mu.RUnlock()
+
+	select {
+	case <-removed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("stale replica was not removed from failed backend")
+	}
 
 	b1.AssertExpectations(t)
 	b2.AssertExpectations(t)
