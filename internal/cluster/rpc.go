@@ -87,9 +87,11 @@ type LockManager struct {
 	LeaseTTL            time.Duration
 	ExpectedClusterSize int
 
-	grants sync.Map // path (string) -> Grant
-	log    *logrus.Entry
-	ln     net.Listener
+	grants   sync.Map // path (string) -> Grant
+	log      *logrus.Entry
+	ln       net.Listener
+	stopCh   chan struct{}
+	stopOnce sync.Once
 }
 
 func NewLockManager(nodeID string) *LockManager {
@@ -98,6 +100,7 @@ func NewLockManager(nodeID string) *LockManager {
 		Clock:    &LamportClock{},
 		LeaseTTL: 5 * time.Second,
 		log:      logrus.WithField("component", "lock-manager").WithField("node_id", nodeID),
+		stopCh:   make(chan struct{}),
 	}
 }
 
@@ -125,14 +128,50 @@ func (m *LockManager) Start(address string) (string, error) {
 		}
 	}()
 
+	go m.janitorLoop()
+
 	m.log.Infof("Lock RPC server listening on %s", actualAddr)
 	return actualAddr, nil
 }
 
 func (m *LockManager) Stop() {
+	m.stopOnce.Do(func() {
+		close(m.stopCh)
+	})
 	if m.ln != nil {
 		m.ln.Close()
 	}
+}
+
+// janitorLoop periodically removes long-expired grants so the grants map
+// does not grow without bound on long-running nodes.
+func (m *LockManager) janitorLoop() {
+	ticker := time.NewTicker(m.LeaseTTL)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-m.stopCh:
+			return
+		case now := <-ticker.C:
+			m.sweepExpiredGrants(now)
+		}
+	}
+}
+
+// sweepExpiredGrants deletes grants that expired more than one LeaseTTL ago.
+// The extra TTL of slack ensures a grant mid-renewal is never collected
+// prematurely.
+func (m *LockManager) sweepExpiredGrants(now time.Time) {
+	slack := m.LeaseTTL
+	m.grants.Range(func(key, val interface{}) bool {
+		grant := val.(Grant)
+		if now.After(grant.ExpiresAt.Add(slack)) {
+			// CompareAndDelete so a grant re-issued for this path between the
+			// Range read and the delete is never collected.
+			m.grants.CompareAndDelete(key, val)
+		}
+		return true
+	})
 }
 
 // --- RPC Methods (Exported) ---

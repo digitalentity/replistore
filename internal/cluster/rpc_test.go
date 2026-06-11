@@ -106,6 +106,48 @@ func TestLockManager_SameNodeDifferentLockID(t *testing.T) {
 	assert.Equal(t, LockOK, status)
 }
 
+func TestLockManager_SweepExpiredGrants(t *testing.T) {
+	m := NewLockManager("node1")
+	m.LeaseTTL = 10 * time.Millisecond
+
+	countGrants := func() int {
+		n := 0
+		m.grants.Range(func(_, _ interface{}) bool {
+			n++
+			return true
+		})
+		return n
+	}
+
+	// Grant two locks
+	var resp LockResponse
+	_ = m.RequestLock(LockRequest{Path: "sweep/a", NodeID: "node2", LockID: "lock-a", LamportTime: 100}, &resp)
+	assert.Equal(t, LockOK, resp.Status)
+	_ = m.RequestLock(LockRequest{Path: "sweep/b", NodeID: "node3", LockID: "lock-b", LamportTime: 101}, &resp)
+	assert.Equal(t, LockOK, resp.Status)
+	assert.Equal(t, 2, countGrants())
+
+	// A sweep at the current time collects nothing: both grants are live.
+	m.sweepExpiredGrants(time.Now())
+	assert.Equal(t, 2, countGrants())
+
+	// Advance "now" past expiry + slack (TTL + TTL); both grants are collected.
+	m.sweepExpiredGrants(time.Now().Add(3 * m.LeaseTTL))
+	assert.Equal(t, 0, countGrants())
+
+	// A non-expired grant survives a sweep that collects an expired one.
+	_ = m.RequestLock(LockRequest{Path: "sweep/expired", NodeID: "node2", LockID: "lock-c", LamportTime: 102}, &resp)
+	assert.Equal(t, LockOK, resp.Status)
+	time.Sleep(3 * m.LeaseTTL) // let it expire past the slack window
+	_ = m.RequestLock(LockRequest{Path: "sweep/live", NodeID: "node2", LockID: "lock-d", LamportTime: 103}, &resp)
+	assert.Equal(t, LockOK, resp.Status)
+
+	m.sweepExpiredGrants(time.Now())
+	assert.Equal(t, 1, countGrants())
+	_, ok := m.grants.Load("sweep/live")
+	assert.True(t, ok)
+}
+
 func TestLamportClock(t *testing.T) {
 	c := &LamportClock{}
 	assert.Equal(t, int64(1), c.Tick())
