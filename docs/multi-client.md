@@ -5,7 +5,7 @@ RepliStore supports multi-client clusters through a Peer-to-Peer (P2P) Distribut
 ## Cluster Architecture
 
 When configured with `listen_addr`, RepliStore instances form a cluster:
-1.  **Discovery:** Nodes automatically discover each other using Multicast DNS (mDNS) on the local network.
+1.  **Discovery:** Nodes discover each other through the shared SMB backends: each node maintains a peer entry at `.replistore/peers/<nodeID>.json` on every backend (heartbeated every ~10s) and polls that directory to learn cluster membership. No multicast or shared L2 network is required — any node that can reach the backends can join.
 2.  **Distributed Locking:** High-level operations (Create, Mkdir, Open for write, Rename, Remove) acquire a distributed lock for the affected path.
 3.  **Lease Validation:** Individual `Write` and `Sync` operations do not re-acquire the lock; instead, they verify that the previously acquired **Lease** is still valid before proceeding with backend I/O.
 4.  **Consensus:** A lock is granted only if a **quorum** (majority) of discovered nodes agree. This prevents "split-brain" scenarios in the event of a network partition.
@@ -18,10 +18,10 @@ To enable clustering, add the following to each node's `config.yaml`:
 
 ```yaml
 listen_addr: ":5050"      # Internal RPC server port
-advertise_addr: "192.168.1.50:5050" # Local IP for peers to reach you
+advertise_addr: "192.168.1.50:5050" # Required: host:port peers use to reach this node
 ```
 
-Ensure all nodes are on the same local network to allow mDNS discovery and RPC communication.
+Ensure all nodes can reach the SMB backends (for discovery) and each other's `advertise_addr` (for RPC communication).
 
 ---
 

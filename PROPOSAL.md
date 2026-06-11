@@ -66,6 +66,21 @@ This document outlines a roadmap for evolving RepliStore from a functional proto
 **Current Issue:** "Last-writer-wins" (based on `mtime`) is insufficient for resolving complex distributed conflicts.
 **Proposal:** Store versioning metadata (e.g., vector clocks or generation IDs) alongside files using SMB Alternative Data Streams (ADS). This enables deterministic detection and resolution of divergent replicas.
 
+> **DECISION (2026-06-11):** version metadata will use a **sidecar tree** (`.replistore/meta/`) on each backend, not ADS (ADS is silently unsupported on some NAS firmware). See REVIEW.md §5.1.
+
+### 6.4. Backend-Based Node Discovery (replaces mDNS) — ACCEPTED 2026-06-11
+**Current Issue:** mDNS discovery confines clusters to one L2 broadcast domain, lets any LAN host register as a peer, picks an arbitrary interface address on multi-homed hosts (`advertise_addr` is parsed but unused), and relies on zeroconf re-announcements for liveness (peers flap after 2 minutes of multicast silence).
+
+**Design:** the SMB backends are already the cluster rendezvous; use them as the membership registry.
+- Each node maintains an entry `.replistore/peers/<nodeID>.json` (`{id, address, seq}`) on **every** backend. One file per node — no write contention, no atomic-append requirement.
+- `address` comes from the mandatory `advertise_addr` config (required when `listen_addr` is set); this fixes the multi-homed problem by construction.
+- **Heartbeat:** every interval the node rewrites its entry with a fresh `seq` (writer's `UnixNano`; only ever compared against the *same node's* previous value, never across nodes — no cross-node clock comparison, avoiding the C4 clock-skew trap).
+- **Poll:** every interval the node lists `.replistore/peers/` on all backends and takes the union, deduplicated by node ID with the highest `seq` winning. A peer expires when its `seq` has not changed for the expiry window, measured on the **reader's own clock** from the moment the reader last observed a change.
+- **Lifecycle:** entries are deleted from all backends on graceful shutdown; a janitor purges entries that have been observed unchanged for a long multiple of the heartbeat (crash leftovers).
+- **Safety:** discovery only feeds the peer list for lock-RPC fan-out; lock quorum derives from `expected_cluster_size`, so a stale address book degrades availability, never consistency.
+- Membership now implicitly requires SMB credentials (improvement over open multicast); the lock RPC channel itself remains unauthenticated (REVIEW.md M6).
+- Removes the `grandcat/zeroconf` dependency. Discovery latency becomes the poll interval (~10 s), acceptable for quasi-static membership.
+
 ## 7. Reliability & Data Recovery
 
 ### 7.1. Repair Manager Optimizations

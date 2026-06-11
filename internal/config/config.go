@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"net"
 	"os"
 
 	"gopkg.in/yaml.v3"
@@ -45,6 +46,13 @@ func LoadConfig(path string) (*Config, error) {
 	if cfg.ListenAddr != "" {
 		if cfg.ExpectedClusterSize < 2 {
 			return nil, fmt.Errorf("expected_cluster_size must be >= 2 when listen_addr is set: distributed locking requires a known cluster size for quorum")
+		}
+		if cfg.AdvertiseAddr == "" {
+			return nil, fmt.Errorf("advertise_addr must be set when listen_addr is set: peers need a reachable host:port address for this node")
+		}
+		host, _, err := net.SplitHostPort(cfg.AdvertiseAddr)
+		if err != nil || host == "" {
+			return nil, fmt.Errorf("advertise_addr %q is not a valid host:port address", cfg.AdvertiseAddr)
 		}
 	} else if cfg.ExpectedClusterSize <= 0 {
 		// Single node, no clustering: the value is unused.

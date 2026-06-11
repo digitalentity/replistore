@@ -3,10 +3,8 @@ package main
 import (
 	"context"
 	"flag"
-	"net"
 	"os"
 	"os/signal"
-	"strconv"
 	"syscall"
 	"time"
 
@@ -63,24 +61,20 @@ func main() {
 
 		lockMgr = cluster.NewLockManager(nodeID)
 		lockMgr.ExpectedClusterSize = cfg.ExpectedClusterSize
-		actualAddr, err := lockMgr.Start(cfg.ListenAddr)
-		if err != nil {
+		if _, err := lockMgr.Start(cfg.ListenAddr); err != nil {
 			logrus.Fatalf("Failed to start lock manager: %v", err)
 		}
 
-		_, portStr, _ := net.SplitHostPort(actualAddr)
-		port, _ := strconv.Atoi(portStr)
-
-		disco = cluster.NewDiscovery(nodeID, port)
-		if err := disco.Start(); err != nil {
+		disco = cluster.NewDiscovery(nodeID, cfg.AdvertiseAddr, backendList)
+		if err := disco.Start(ctx); err != nil {
 			logrus.Fatalf("Failed to start discovery: %v", err)
 		}
-		logrus.Infof("P2P Cluster discovery started. Node ID: %s, Port: %d", nodeID, port)
+		logrus.Infof("P2P Cluster discovery started. Node ID: %s, Advertise address: %s", nodeID, cfg.AdvertiseAddr)
 	}
 
 	// Initialize Health Monitor
 	monitor := backend.NewHealthMonitor(backends)
-	monitor.Start(ctx, 10 * time.Second)
+	monitor.Start(ctx, 10*time.Second)
 
 	// Warmup Cache (Background)
 	cache := vfs.NewCache()

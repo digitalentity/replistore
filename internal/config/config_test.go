@@ -76,6 +76,7 @@ listen_addr: "0.0.0.0:7000"
 		path := writeConfig(t, `
 mount_point: "/tmp/test"
 listen_addr: "0.0.0.0:7000"
+advertise_addr: "192.168.1.50:7000"
 expected_cluster_size: 2
 `)
 		cfg, err := config.LoadConfig(path)
@@ -90,5 +91,74 @@ mount_point: "/tmp/test"
 		cfg, err := config.LoadConfig(path)
 		assert.NoError(t, err)
 		assert.Equal(t, 1, cfg.ExpectedClusterSize)
+	})
+}
+
+func TestLoadConfig_AdvertiseAddr(t *testing.T) {
+	writeConfig := func(t *testing.T, content string) string {
+		t.Helper()
+		tmpFile, err := os.CreateTemp("", "config.yaml")
+		assert.NoError(t, err)
+		t.Cleanup(func() { os.Remove(tmpFile.Name()) })
+
+		_, err = tmpFile.WriteString(content)
+		assert.NoError(t, err)
+		tmpFile.Close()
+		return tmpFile.Name()
+	}
+
+	t.Run("listen_addr set without advertise_addr returns error", func(t *testing.T) {
+		path := writeConfig(t, `
+mount_point: "/tmp/test"
+listen_addr: "0.0.0.0:7000"
+expected_cluster_size: 2
+`)
+		_, err := config.LoadConfig(path)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "advertise_addr must be set")
+	})
+
+	t.Run("advertise_addr without port returns error", func(t *testing.T) {
+		path := writeConfig(t, `
+mount_point: "/tmp/test"
+listen_addr: "0.0.0.0:7000"
+advertise_addr: "192.168.1.50"
+expected_cluster_size: 2
+`)
+		_, err := config.LoadConfig(path)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "not a valid host:port")
+	})
+
+	t.Run("advertise_addr with empty host returns error", func(t *testing.T) {
+		path := writeConfig(t, `
+mount_point: "/tmp/test"
+listen_addr: "0.0.0.0:7000"
+advertise_addr: ":7000"
+expected_cluster_size: 2
+`)
+		_, err := config.LoadConfig(path)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "not a valid host:port")
+	})
+
+	t.Run("valid advertise_addr is ok", func(t *testing.T) {
+		path := writeConfig(t, `
+mount_point: "/tmp/test"
+listen_addr: "0.0.0.0:7000"
+advertise_addr: "192.168.1.50:7000"
+expected_cluster_size: 2
+`)
+		cfg, err := config.LoadConfig(path)
+		assert.NoError(t, err)
+		assert.Equal(t, "192.168.1.50:7000", cfg.AdvertiseAddr)
+	})
+
+	t.Run("no listen_addr does not require advertise_addr", func(t *testing.T) {
+		path := writeConfig(t, `
+mount_point: "/tmp/test"
+`)
+		_, err := config.LoadConfig(path)
+		assert.NoError(t, err)
 	})
 }
