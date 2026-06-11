@@ -297,7 +297,7 @@ func TestFile_Write_Quorum(t *testing.T) {
 	mockFile2.AssertExpectations(t)
 }
 
-func TestFile_Fsync(t *testing.T) {
+func TestFile_Fsync_WithWriteHandle(t *testing.T) {
 	b1 := &test.MockBackend{NameVal: "b1"}
 	b2 := &test.MockBackend{NameVal: "b2"}
 	mockFile1 := &test.MockFile{}
@@ -320,11 +320,13 @@ func TestFile_Fsync(t *testing.T) {
 	node, _ := dir.Lookup(context.Background(), "sync.txt")
 	file := node.(*File)
 
-	b1.On("OpenFile", mock.Anything, "sync.txt", mock.Anything, mock.Anything).Return(mockFile1, nil)
-	b2.On("OpenFile", mock.Anything, "sync.txt", mock.Anything, mock.Anything).Return(mockFile2, nil)
+	// Exactly one open per backend: node-level Fsync must sync the write
+	// handle's already-open files, not open fresh ones.
+	b1.On("OpenFile", mock.Anything, "sync.txt", mock.Anything, mock.Anything).Return(mockFile1, nil).Once()
+	b2.On("OpenFile", mock.Anything, "sync.txt", mock.Anything, mock.Anything).Return(mockFile2, nil).Once()
 
 	h, _ := file.Open(context.Background(), &fuse.OpenRequest{Flags: fuse.OpenReadWrite}, &fuse.OpenResponse{})
-	fileHandle := h.(*FileHandle)
+	assert.NotNil(t, h)
 
 	mockFile1.On("Sync", mock.Anything).Return(nil)
 	mockFile2.On("Sync", mock.Anything).Return(fmt.Errorf("sync error"))
@@ -335,8 +337,10 @@ func TestFile_Fsync(t *testing.T) {
 		close(removed)
 	})
 
-	err := fileHandle.Fsync(context.Background(), &fuse.FsyncRequest{})
+	err := file.Fsync(context.Background(), &fuse.FsyncRequest{})
 	assert.NoError(t, err)
+	b1.AssertNumberOfCalls(t, "OpenFile", 1)
+	b2.AssertNumberOfCalls(t, "OpenFile", 1)
 
 	file.node.Mu.RLock()
 	assert.Equal(t, []string{"b1"}, file.node.Meta.Backends)
@@ -916,7 +920,9 @@ func TestDir_Mkdir_MkdirAllParent(t *testing.T) {
 	b1.AssertExpectations(t)
 }
 
-func TestFile_NodeFsync(t *testing.T) {
+// TestFile_Fsync_FallbackNoHandles exercises the no-open-write-handle path:
+// Fsync opens each replica read-only and syncs it.
+func TestFile_Fsync_FallbackNoHandles(t *testing.T) {
 	b1 := &test.MockBackend{NameVal: "b1"}
 	b2 := &test.MockBackend{NameVal: "b2"}
 	mockFile1 := &test.MockFile{}
@@ -939,8 +945,8 @@ func TestFile_NodeFsync(t *testing.T) {
 	node, _ := dir.Lookup(context.Background(), "sync.txt")
 	file := node.(*File)
 
-	b1.On("OpenFile", mock.Anything, "sync.txt", os.O_RDWR, os.FileMode(0)).Return(mockFile1, nil)
-	b2.On("OpenFile", mock.Anything, "sync.txt", os.O_RDWR, os.FileMode(0)).Return(mockFile2, nil)
+	b1.On("OpenFile", mock.Anything, "sync.txt", os.O_RDONLY, os.FileMode(0)).Return(mockFile1, nil)
+	b2.On("OpenFile", mock.Anything, "sync.txt", os.O_RDONLY, os.FileMode(0)).Return(mockFile2, nil)
 
 	mockFile1.On("Sync", mock.Anything).Return(nil)
 	mockFile1.On("Close").Return(nil)

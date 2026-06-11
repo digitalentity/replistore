@@ -38,6 +38,10 @@ type RepliFS struct {
 	// file handle; holding the local path lock for the handle's lifetime
 	// would block background repair forever.
 	pathLocks pathLocks
+
+	// handles tracks open write handles per cache node so node-level Fsync
+	// can sync the backend files those handles actually hold.
+	handles handleRegistry
 }
 
 func (f *RepliFS) Root() (fs.Node, error) {
@@ -327,6 +331,7 @@ func (d *Dir) Create(ctx context.Context, req *fuse.CreateRequest, resp *fuse.Cr
 	}
 	d.node.Children[req.Name] = child
 	h.file = &File{fs: d.fs, node: child}
+	d.fs.handles.register(child, h)
 
 	return h.file, h, nil
 }
@@ -704,7 +709,22 @@ func (f *File) Attr(ctx context.Context, a *fuse.Attr) error {
 	return nil
 }
 
+// Fsync implements fs.NodeFsyncer. bazil dispatches Fsync to the node, not
+// the handle, so we sync the backend files held by the node's open write
+// handles (which reflect any backends dropped after write failures). If no
+// write handle is open — e.g. fsync on a read-only fd — fall back to opening
+// each replica read-only and syncing it; the data is already server-side.
 func (f *File) Fsync(ctx context.Context, req *fuse.FsyncRequest) error {
+	if hs := f.fs.handles.forNode(f.node); len(hs) > 0 {
+		var firstErr error
+		for _, h := range hs {
+			if err := h.syncBackends(ctx); err != nil && firstErr == nil {
+				firstErr = err
+			}
+		}
+		return firstErr
+	}
+
 	f.node.Mu.RLock()
 	backends := make([]string, len(f.node.Meta.Backends))
 	copy(backends, f.node.Meta.Backends)
@@ -731,10 +751,7 @@ func (f *File) Fsync(ctx context.Context, req *fuse.FsyncRequest) error {
 				return nil
 			}
 
-			sf, err := b.OpenFile(gCtx, path, os.O_RDWR, 0)
-			if err != nil {
-				sf, err = b.OpenFile(gCtx, path, os.O_RDONLY, 0)
-			}
+			sf, err := b.OpenFile(gCtx, path, os.O_RDONLY, 0)
 			if err != nil {
 				mu.Lock()
 				lastErr = err
@@ -1085,6 +1102,10 @@ func (f *File) Open(ctx context.Context, req *fuse.OpenRequest, resp *fuse.OpenR
 			f.node.Meta.ModTime = time.Now()
 			f.node.Mu.Unlock()
 		}
+
+		// Only write handles matter for node-level Fsync; keep the registry
+		// small by not tracking read-only handles.
+		f.fs.handles.register(f.node, h)
 	}
 
 	return h, nil
@@ -1282,10 +1303,6 @@ func (h *FileHandle) Flush(ctx context.Context, req *fuse.FlushRequest) error {
 	return h.syncBackends(ctx)
 }
 
-func (h *FileHandle) Fsync(ctx context.Context, req *fuse.FsyncRequest) error {
-	return h.syncBackends(ctx)
-}
-
 func (h *FileHandle) syncBackends(ctx context.Context) error {
 	if h.lock != nil && !h.lock.IsValid() {
 		return syscall.EIO // Lock lost
@@ -1338,6 +1355,12 @@ func (h *FileHandle) syncBackends(ctx context.Context) error {
 }
 
 func (h *FileHandle) Release(ctx context.Context, req *fuse.ReleaseRequest) error {
+	// Dir.Create's abort paths release the handle before h.file is set, and
+	// read-only handles were never registered; deregister tolerates both.
+	if h.file != nil {
+		h.file.fs.handles.deregister(h.file.node, h)
+	}
+
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
