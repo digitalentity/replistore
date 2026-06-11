@@ -203,9 +203,13 @@ Any host on the LAN can register as a peer, grant/deny locks, call `RequestLock`
 `Ping` gets a 2 s context (monitor.go:52) but `execute → ensureConnected → connectLocked` uses a hardcoded 5 s `net.DialTimeout` and ctx-unaware SMB dial/mount, so a down backend stalls each check ~3× its budget. `smbFile` I/O only checks `ctx.Err()` before issuing the call — FUSE interrupts and timeouts can't cancel in-flight SMB ops. **Fix:** thread `ctx` into `connectLocked` (use `net.Dialer.DialContext`); accept that go-smb2 calls aren't cancellable and wrap them with a watchdog that closes the connection on deadline (the reconnect path already recovers from closed connections).
 
 ### M8. `advertise_addr` is parsed but never used; discovery address selection is arbitrary
+
+> **Status: FIXED** in `2dac188 — advertise_addr now required and published via backend-based discovery`
 Config and docs describe `advertise_addr` (config.go:26, docs/multi-client.md), but `main.go` never reads it; peers use the first mDNS-reported IPv4, which on multi-homed hosts may be the wrong interface (docker bridges, VPNs). **Fix:** when `advertise_addr` is set, publish it in the mDNS TXT record and prefer it when peers build the RPC address; otherwise delete the config field and the doc section.
 
 ### M9. Peer eviction (2 min without re-announce) can silently shrink the contactable peer set below quorum
+
+> **Status: FIXED** in `2dac188 — mDNS replaced by backend peer registry with explicit heartbeats`
 mDNS entries arrive on announcement/query responses; `cleanupStale` (discovery.go:155) drops peers after 2 min of silence even if they are alive, and nothing re-queries on demand. With `ExpectedClusterSize`-based quorum this turns into spurious lock-acquisition failures (availability, not safety). **Fix:** periodic active re-browse/re-query (zeroconf supports it) and/or verify with a direct RPC ping before evicting.
 
 ### M10. `File.Fsync` (node-level) syncs freshly opened handles, not the write handle's data; `FileHandle.Fsync` is dead code
