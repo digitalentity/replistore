@@ -1022,16 +1022,50 @@ func (f *File) Open(ctx context.Context, req *fuse.OpenRequest, resp *fuse.OpenR
 	// Unlock I/O: Open outside of lock (already done since we RUnlocked above)
 
 	if req.Flags.IsReadOnly() {
-		bName := f.fs.Selector.SelectForRead(f.node.Meta)
-		if bName == "" {
+		f.node.Mu.RLock()
+		meta := f.node.Meta
+		f.node.Mu.RUnlock()
+
+		// Candidate order: the selector's pick first (health-aware/random
+		// placement), then any remaining replicas as listed in the metadata.
+		var candidates []string
+		if bName := f.fs.Selector.SelectForRead(meta); bName != "" {
+			candidates = append(candidates, bName)
+		}
+		for _, bName := range meta.Backends {
+			if len(candidates) > 0 && bName == candidates[0] {
+				continue
+			}
+			candidates = append(candidates, bName)
+		}
+		if len(candidates) == 0 {
 			return nil, syscall.EIO
 		}
-		b := f.fs.Backends[bName]
-		sf, err := b.OpenFile(ctx, path, os.O_RDONLY, 0)
-		if err != nil {
-			return nil, err
+
+		var lastErr error
+		opened := false
+		for _, bName := range candidates {
+			b, ok := f.fs.Backends[bName]
+			if !ok {
+				logrus.Warnf("Backend %s listed for %s is not configured", bName, path)
+				continue
+			}
+			sf, err := b.OpenFile(ctx, path, os.O_RDONLY, 0)
+			if err != nil {
+				logrus.Warnf("Read-only open of %s failed on backend %s: %v", path, bName, err)
+				lastErr = err
+				continue
+			}
+			h.backends[bName] = sf
+			opened = true
+			break
 		}
-		h.backends[bName] = sf
+		if !opened {
+			if lastErr == nil {
+				return nil, syscall.EIO
+			}
+			return nil, lastErr
+		}
 	} else {
 		for _, bName := range backends {
 			b := f.fs.Backends[bName]

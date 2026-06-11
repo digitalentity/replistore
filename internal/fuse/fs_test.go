@@ -165,6 +165,72 @@ func TestFile_Read_Failover(t *testing.T) {
 	mockFile2.AssertExpectations(t)
 }
 
+func TestFile_Open_ReadOnly_Failover(t *testing.T) {
+	b1 := &test.MockBackend{NameVal: "b1"}
+	b2 := &test.MockBackend{NameVal: "b2"}
+	mockFile2 := &test.MockFile{}
+
+	cache := vfs.NewCache()
+	cache.Upsert("ro_failover.txt", vfs.Metadata{Name: "ro_failover.txt", Path: "ro_failover.txt", Backends: []string{"b1", "b2"}}, "b1")
+	cache.Upsert("ro_failover.txt", vfs.Metadata{Name: "ro_failover.txt", Path: "ro_failover.txt", Backends: []string{"b1", "b2"}}, "b2")
+
+	fs := &RepliFS{
+		Cache:    cache,
+		Backends: map[string]backend.Backend{"b1": b1, "b2": b2},
+		Selector: vfs.NewFirstSelector(nil),
+	}
+
+	root, _ := fs.Root()
+	dir := root.(*Dir)
+	node, _ := dir.Lookup(context.Background(), "ro_failover.txt")
+	file := node.(*File)
+
+	// The FirstSelector deterministically picks b1; it is down, so Open
+	// must fail over to b2.
+	b1.On("OpenFile", mock.Anything, "ro_failover.txt", os.O_RDONLY, mock.Anything).Return(nil, fmt.Errorf("connection refused"))
+	b2.On("OpenFile", mock.Anything, "ro_failover.txt", os.O_RDONLY, mock.Anything).Return(mockFile2, nil)
+
+	h, err := file.Open(context.Background(), &fuse.OpenRequest{Flags: fuse.OpenReadOnly}, &fuse.OpenResponse{})
+	assert.NoError(t, err)
+
+	fileHandle := h.(*FileHandle)
+	assert.Len(t, fileHandle.backends, 1)
+	assert.Contains(t, fileHandle.backends, "b2")
+
+	b1.AssertExpectations(t)
+	b2.AssertExpectations(t)
+}
+
+func TestFile_Open_ReadOnly_AllBackendsFail(t *testing.T) {
+	b1 := &test.MockBackend{NameVal: "b1"}
+	b2 := &test.MockBackend{NameVal: "b2"}
+
+	cache := vfs.NewCache()
+	cache.Upsert("ro_fail.txt", vfs.Metadata{Name: "ro_fail.txt", Path: "ro_fail.txt", Backends: []string{"b1", "b2"}}, "b1")
+	cache.Upsert("ro_fail.txt", vfs.Metadata{Name: "ro_fail.txt", Path: "ro_fail.txt", Backends: []string{"b1", "b2"}}, "b2")
+
+	fs := &RepliFS{
+		Cache:    cache,
+		Backends: map[string]backend.Backend{"b1": b1, "b2": b2},
+		Selector: vfs.NewFirstSelector(nil),
+	}
+
+	root, _ := fs.Root()
+	dir := root.(*Dir)
+	node, _ := dir.Lookup(context.Background(), "ro_fail.txt")
+	file := node.(*File)
+
+	openErr := fmt.Errorf("connection refused")
+	b1.On("OpenFile", mock.Anything, "ro_fail.txt", os.O_RDONLY, mock.Anything).Return(nil, openErr)
+	b2.On("OpenFile", mock.Anything, "ro_fail.txt", os.O_RDONLY, mock.Anything).Return(nil, openErr)
+
+	_, err := file.Open(context.Background(), &fuse.OpenRequest{Flags: fuse.OpenReadOnly}, &fuse.OpenResponse{})
+	assert.Equal(t, openErr, err)
+
+	b1.AssertExpectations(t)
+	b2.AssertExpectations(t)
+}
+
 func TestFile_Write_Quorum(t *testing.T) {
 	b1 := &test.MockBackend{NameVal: "b1"}
 	b2 := &test.MockBackend{NameVal: "b2"}
