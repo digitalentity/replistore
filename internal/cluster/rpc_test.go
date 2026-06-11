@@ -1,6 +1,8 @@
 package cluster
 
 import (
+	"context"
+	"net"
 	"net/rpc"
 	"testing"
 	"time"
@@ -146,6 +148,44 @@ func TestLockManager_SweepExpiredGrants(t *testing.T) {
 	assert.Equal(t, 1, countGrants())
 	_, ok := m.grants.Load("sweep/live")
 	assert.True(t, ok)
+}
+
+func TestCallWithContext_DeadlineExceeded(t *testing.T) {
+	// A server that accepts the connection but never responds: the RPC call
+	// can only be unblocked by ctx expiry closing the client.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	assert.NoError(t, err)
+	defer ln.Close()
+
+	accepted := make(chan net.Conn, 1)
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		accepted <- conn // hold the conn open, never reply
+	}()
+
+	client, err := DialWithContext(context.Background(), "tcp", ln.Addr().String())
+	assert.NoError(t, err)
+	defer client.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	var resp LockResponse
+	start := time.Now()
+	err = CallWithContext(ctx, client, "LockManager.RequestLock", LockRequest{Path: "p"}, &resp)
+	elapsed := time.Since(start)
+
+	assert.ErrorIs(t, err, context.DeadlineExceeded)
+	assert.Less(t, elapsed, 500*time.Millisecond, "CallWithContext should return promptly after ctx expiry")
+
+	select {
+	case conn := <-accepted:
+		conn.Close()
+	default:
+	}
 }
 
 func TestLamportClock(t *testing.T) {

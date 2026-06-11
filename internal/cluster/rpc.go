@@ -273,16 +273,22 @@ func DialWithContext(ctx context.Context, network, address string) (*rpc.Client,
 	return rpc.NewClient(conn), nil
 }
 
+// CallWithContext invokes serviceMethod on client, honoring ctx cancellation.
+//
+// If ctx expires before the call completes, the client is closed to unblock
+// the pending call, and CallWithContext waits for the call to settle before
+// returning so that reply is never written to after this function returns.
+// Callers must therefore treat the client as dead after a ctx error; clients
+// in this codebase are dialed per request, so this is safe (a subsequent
+// deferred Close simply returns rpc.ErrShutdown).
 func CallWithContext(ctx context.Context, client *rpc.Client, serviceMethod string, args interface{}, reply interface{}) error {
-	done := make(chan error, 1)
-	go func() {
-		done <- client.Call(serviceMethod, args, reply)
-	}()
-
+	call := client.Go(serviceMethod, args, reply, make(chan *rpc.Call, 1))
 	select {
 	case <-ctx.Done():
+		_ = client.Close() // unblocks the pending call; conn is per-request in this codebase
+		<-call.Done        // wait for the call to settle so reply is never written after return
 		return ctx.Err()
-	case err := <-done:
-		return err
+	case <-call.Done:
+		return call.Error
 	}
 }
