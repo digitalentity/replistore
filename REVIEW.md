@@ -228,6 +228,8 @@ On ctx timeout the spawned goroutine keeps running `client.Call` and will write 
 ## 5. Cross-cutting design recommendations (ordered by leverage)
 
 1. **Introduce RepliStore-owned per-file version metadata** (generation counter + checksum, in ADS or a sidecar tree). This single mechanism replaces mtime-LWW (C4), enables tombstones (C6), gives repair a convergence criterion, detects torn replicas (C4.3, H9), and provides a substrate for real fencing (C3). Nearly every critical finding traces back to "the system trusts backend mtimes as version vectors, and they aren't."
+
+   > **DECISION (2026-06-11): sidecar tree.** Version metadata will live in a `.replistore/meta/` sidecar tree on each backend (one metadata file per data file), not in Alternate Data Streams. Rationale: ADS requires `vfs_streams_xattr` on Samba and is silently unsupported on some NAS firmware, while plain files work on every SMB server this tool targets; deployment safety outweighs the extra round-trip and visible clutter. Implementation sequence: generation counter on write → tombstones on delete/rename (C6) → checksums on repair (C4) → fencing check (C3).
 2. **Make the DLM honest:** mandatory cluster size (C1), per-acquisition lock IDs (C2), expiry-checked renewal (H5), retry with backoff (H2), canonical lock ordering (H1). These are small, local fixes.
 3. **Add an in-process path-lock table** under all mutating ops and repair/heal (H7, C2) — cheap and removes a whole class of single-node races.
 4. **Separate "error" from "absent" everywhere** metadata is fetched (C8, L7) and adopt read-quorum semantics for authoritative answers.
