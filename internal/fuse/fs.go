@@ -765,7 +765,115 @@ func (f *File) Fsync(ctx context.Context, req *fuse.FsyncRequest) error {
 	return nil
 }
 
+// Setattr implements fs.NodeSetattrer. Only size changes (truncate) are
+// propagated to the backends. Mode/uid/gid/time-only requests are silently
+// accepted: SMB cannot represent POSIX permissions and ownership faithfully,
+// so we report success without touching the backends rather than break tools
+// like cp -p or tar that chmod/chown after writing.
+func (f *File) Setattr(ctx context.Context, req *fuse.SetattrRequest, resp *fuse.SetattrResponse) error {
+	if !req.Valid.Size() {
+		return f.Attr(ctx, &resp.Attr)
+	}
+
+	f.node.Mu.RLock()
+	path := f.node.Meta.Path
+	f.node.Mu.RUnlock()
+
+	// Local serialization of same-path mutations, then the distributed lock
+	// (always in that order, see RepliFS). Both are released at return.
+	unlock := f.fs.pathLocks.lock(path)
+	defer unlock()
+
+	lock, err := f.fs.acquireLock(ctx, path)
+	if err != nil {
+		return err
+	}
+	if lock != nil {
+		defer lock.Release()
+	}
+
+	f.node.Mu.RLock()
+	backends := make([]string, len(f.node.Meta.Backends))
+	copy(backends, f.node.Meta.Backends)
+	f.node.Mu.RUnlock()
+
+	size := int64(req.Size)
+
+	var mu sync.Mutex
+	var successes int
+	var failures []string
+	var lastErr error
+
+	g, gCtx := errgroup.WithContext(ctx)
+	for _, bName := range backends {
+		bName := bName
+		g.Go(func() error {
+			b, ok := f.fs.Backends[bName]
+			if !ok {
+				mu.Lock()
+				failures = append(failures, bName)
+				lastErr = fmt.Errorf("backend %s not found", bName)
+				mu.Unlock()
+				return nil
+			}
+			err := b.Truncate(gCtx, path, size)
+			mu.Lock()
+			defer mu.Unlock()
+			if err != nil {
+				logrus.Warnf("Truncate failed on backend %s: %v", bName, err)
+				failures = append(failures, bName)
+				lastErr = err
+			} else {
+				successes++
+			}
+			return nil
+		})
+	}
+	_ = g.Wait()
+
+	if successes < f.fs.WriteQuorum {
+		return fmt.Errorf("could not reach write quorum during truncate: %d/%d (last error: %v)", successes, f.fs.WriteQuorum, lastErr)
+	}
+
+	f.node.Mu.Lock()
+	if len(failures) > 0 {
+		// A backend that failed to truncate holds a wrong-length replica —
+		// the same hazard as a failed write. Drop it from the metadata and
+		// delete the stale replica below (best effort).
+		newBackends := make([]string, 0, len(f.node.Meta.Backends))
+		for _, bName := range f.node.Meta.Backends {
+			failed := false
+			for _, fName := range failures {
+				if bName == fName {
+					failed = true
+					break
+				}
+			}
+			if !failed {
+				newBackends = append(newBackends, bName)
+			}
+		}
+		f.node.Meta.Backends = newBackends
+	}
+	f.node.Meta.Size = size
+	f.node.Meta.ModTime = time.Now()
+	f.node.Mu.Unlock()
+
+	for _, bName := range failures {
+		f.fs.removeStaleReplica(path, bName)
+	}
+
+	return f.Attr(ctx, &resp.Attr)
+}
+
 func (f *File) Open(ctx context.Context, req *fuse.OpenRequest, resp *fuse.OpenResponse) (fs.Handle, error) {
+	// O_APPEND is not supported: each backend would append at its own
+	// current EOF, guaranteeing replica divergence. Supporting it requires
+	// handle-tracked write offsets.
+	if req.Flags&fuse.OpenAppend != 0 {
+		return nil, syscall.ENOTSUP
+	}
+
 	f.node.Mu.RLock()
 	backends := make([]string, len(f.node.Meta.Backends))
 	copy(backends, f.node.Meta.Backends)
@@ -933,6 +1041,15 @@ func (f *File) Open(ctx context.Context, req *fuse.OpenRequest, resp *fuse.OpenR
 				return nil, err
 			}
 			h.backends[bName] = sf
+		}
+
+		// The backends just truncated their replicas; reflect that in the
+		// cached metadata so Attr does not report the stale size.
+		if req.Flags&fuse.OpenTruncate != 0 {
+			f.node.Mu.Lock()
+			f.node.Meta.Size = 0
+			f.node.Meta.ModTime = time.Now()
+			f.node.Mu.Unlock()
 		}
 	}
 

@@ -890,3 +890,193 @@ func TestFile_NodeFsync(t *testing.T) {
 	mockFile1.AssertExpectations(t)
 	mockFile2.AssertExpectations(t)
 }
+
+func TestFile_Setattr_Truncate(t *testing.T) {
+	b1 := &test.MockBackend{NameVal: "b1"}
+	b2 := &test.MockBackend{NameVal: "b2"}
+
+	cache := vfs.NewCache()
+	cache.Upsert("trunc.txt", vfs.Metadata{Name: "trunc.txt", Path: "trunc.txt", Size: 100, Mode: 0644, Backends: []string{"b1", "b2"}}, "b1")
+	cache.Upsert("trunc.txt", vfs.Metadata{Name: "trunc.txt", Path: "trunc.txt", Size: 100, Mode: 0644, Backends: []string{"b1", "b2"}}, "b2")
+
+	fs := &RepliFS{
+		Cache:             cache,
+		Backends:          map[string]backend.Backend{"b1": b1, "b2": b2},
+		ReplicationFactor: 2,
+		WriteQuorum:       2,
+		Selector:          vfs.NewFirstSelector(nil),
+	}
+
+	root, _ := fs.Root()
+	dir := root.(*Dir)
+	node, _ := dir.Lookup(context.Background(), "trunc.txt")
+	file := node.(*File)
+
+	b1.On("Truncate", mock.Anything, "trunc.txt", int64(10)).Return(nil)
+	b2.On("Truncate", mock.Anything, "trunc.txt", int64(10)).Return(nil)
+
+	req := &fuse.SetattrRequest{Valid: fuse.SetattrSize, Size: 10}
+	resp := &fuse.SetattrResponse{}
+	err := file.Setattr(context.Background(), req, resp)
+
+	assert.NoError(t, err)
+	assert.Equal(t, uint64(10), resp.Attr.Size)
+
+	file.node.Mu.RLock()
+	assert.Equal(t, int64(10), file.node.Meta.Size)
+	assert.ElementsMatch(t, []string{"b1", "b2"}, file.node.Meta.Backends)
+	file.node.Mu.RUnlock()
+
+	b1.AssertExpectations(t)
+	b2.AssertExpectations(t)
+}
+
+func TestFile_Setattr_Truncate_QuorumFailure(t *testing.T) {
+	b1 := &test.MockBackend{NameVal: "b1"}
+	b2 := &test.MockBackend{NameVal: "b2"}
+
+	cache := vfs.NewCache()
+	cache.Upsert("trunc_fail.txt", vfs.Metadata{Name: "trunc_fail.txt", Path: "trunc_fail.txt", Size: 100, Backends: []string{"b1", "b2"}}, "b1")
+	cache.Upsert("trunc_fail.txt", vfs.Metadata{Name: "trunc_fail.txt", Path: "trunc_fail.txt", Size: 100, Backends: []string{"b1", "b2"}}, "b2")
+
+	fs := &RepliFS{
+		Cache:             cache,
+		Backends:          map[string]backend.Backend{"b1": b1, "b2": b2},
+		ReplicationFactor: 2,
+		WriteQuorum:       2,
+		Selector:          vfs.NewFirstSelector(nil),
+	}
+
+	root, _ := fs.Root()
+	dir := root.(*Dir)
+	node, _ := dir.Lookup(context.Background(), "trunc_fail.txt")
+	file := node.(*File)
+
+	b1.On("Truncate", mock.Anything, "trunc_fail.txt", int64(0)).Return(nil)
+	b2.On("Truncate", mock.Anything, "trunc_fail.txt", int64(0)).Return(fmt.Errorf("disk error"))
+
+	req := &fuse.SetattrRequest{Valid: fuse.SetattrSize, Size: 0}
+	resp := &fuse.SetattrResponse{}
+	err := file.Setattr(context.Background(), req, resp)
+
+	assert.Error(t, err)
+
+	// Size must be unchanged on quorum failure.
+	file.node.Mu.RLock()
+	assert.Equal(t, int64(100), file.node.Meta.Size)
+	file.node.Mu.RUnlock()
+
+	b1.AssertExpectations(t)
+	b2.AssertExpectations(t)
+}
+
+func TestFile_Setattr_Truncate_PartialFailureEvictsBackend(t *testing.T) {
+	b1 := &test.MockBackend{NameVal: "b1"}
+	b2 := &test.MockBackend{NameVal: "b2"}
+
+	cache := vfs.NewCache()
+	cache.Upsert("trunc_part.txt", vfs.Metadata{Name: "trunc_part.txt", Path: "trunc_part.txt", Size: 100, Backends: []string{"b1", "b2"}}, "b1")
+	cache.Upsert("trunc_part.txt", vfs.Metadata{Name: "trunc_part.txt", Path: "trunc_part.txt", Size: 100, Backends: []string{"b1", "b2"}}, "b2")
+
+	fs := &RepliFS{
+		Cache:             cache,
+		Backends:          map[string]backend.Backend{"b1": b1, "b2": b2},
+		ReplicationFactor: 2,
+		WriteQuorum:       1,
+		Selector:          vfs.NewFirstSelector(nil),
+	}
+
+	root, _ := fs.Root()
+	dir := root.(*Dir)
+	node, _ := dir.Lookup(context.Background(), "trunc_part.txt")
+	file := node.(*File)
+
+	b1.On("Truncate", mock.Anything, "trunc_part.txt", int64(5)).Return(nil)
+	b2.On("Truncate", mock.Anything, "trunc_part.txt", int64(5)).Return(fmt.Errorf("disk error"))
+
+	// The wrong-length replica must be removed from the failed backend
+	// asynchronously.
+	removed := make(chan struct{})
+	b2.On("Remove", mock.Anything, "trunc_part.txt").Return(nil).Run(func(mock.Arguments) {
+		close(removed)
+	})
+
+	req := &fuse.SetattrRequest{Valid: fuse.SetattrSize, Size: 5}
+	resp := &fuse.SetattrResponse{}
+	err := file.Setattr(context.Background(), req, resp)
+
+	assert.NoError(t, err)
+	assert.Equal(t, uint64(5), resp.Attr.Size)
+
+	file.node.Mu.RLock()
+	assert.Equal(t, int64(5), file.node.Meta.Size)
+	assert.Equal(t, []string{"b1"}, file.node.Meta.Backends)
+	file.node.Mu.RUnlock()
+
+	select {
+	case <-removed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("stale replica was not removed from failed backend")
+	}
+
+	b1.AssertExpectations(t)
+	b2.AssertExpectations(t)
+}
+
+func TestFile_Setattr_NonSizeIsNoop(t *testing.T) {
+	b1 := &test.MockBackend{NameVal: "b1"}
+
+	cache := vfs.NewCache()
+	cache.Upsert("attrs.txt", vfs.Metadata{Name: "attrs.txt", Path: "attrs.txt", Size: 42, Mode: 0644, Backends: []string{"b1"}}, "b1")
+
+	fs := &RepliFS{
+		Cache:             cache,
+		Backends:          map[string]backend.Backend{"b1": b1},
+		ReplicationFactor: 1,
+		WriteQuorum:       1,
+		Selector:          vfs.NewFirstSelector(nil),
+	}
+
+	root, _ := fs.Root()
+	dir := root.(*Dir)
+	node, _ := dir.Lookup(context.Background(), "attrs.txt")
+	file := node.(*File)
+
+	req := &fuse.SetattrRequest{Valid: fuse.SetattrMode | fuse.SetattrMtime, Mode: 0600, Mtime: time.Now()}
+	resp := &fuse.SetattrResponse{}
+	err := file.Setattr(context.Background(), req, resp)
+
+	assert.NoError(t, err)
+	assert.Equal(t, uint64(42), resp.Attr.Size)
+	assert.Equal(t, os.FileMode(0644), resp.Attr.Mode)
+
+	// No backend calls at all for non-size setattr.
+	b1.AssertExpectations(t)
+	b1.AssertNotCalled(t, "Truncate", mock.Anything, mock.Anything, mock.Anything)
+}
+
+func TestFile_Open_AppendNotSupported(t *testing.T) {
+	b1 := &test.MockBackend{NameVal: "b1"}
+
+	cache := vfs.NewCache()
+	cache.Upsert("append.txt", vfs.Metadata{Name: "append.txt", Path: "append.txt", Backends: []string{"b1"}}, "b1")
+
+	fs := &RepliFS{
+		Cache:             cache,
+		Backends:          map[string]backend.Backend{"b1": b1},
+		ReplicationFactor: 1,
+		WriteQuorum:       1,
+		Selector:          vfs.NewFirstSelector(nil),
+	}
+
+	root, _ := fs.Root()
+	dir := root.(*Dir)
+	node, _ := dir.Lookup(context.Background(), "append.txt")
+	file := node.(*File)
+
+	h, err := file.Open(context.Background(), &fuse.OpenRequest{Flags: fuse.OpenWriteOnly | fuse.OpenAppend}, &fuse.OpenResponse{})
+	assert.ErrorIs(t, err, syscall.ENOTSUP)
+	assert.Nil(t, h)
+
+	b1.AssertNotCalled(t, "OpenFile", mock.Anything, mock.Anything, mock.Anything, mock.Anything)
+}

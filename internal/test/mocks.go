@@ -71,6 +71,11 @@ func (m *MockBackend) Chtimes(ctx context.Context, path string, atime, mtime tim
 	return args.Error(0)
 }
 
+func (m *MockBackend) Truncate(ctx context.Context, path string, size int64) error {
+	args := m.Called(ctx, path, size)
+	return args.Error(0)
+}
+
 type MockFile struct {
 	mock.Mock
 }
