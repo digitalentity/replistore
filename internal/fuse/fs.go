@@ -1228,12 +1228,13 @@ func (h *FileHandle) Write(ctx context.Context, req *fuse.WriteRequest, resp *fu
 
 	resp.Size = len(req.Data)
 
-	// Update cache size
+	// Update cache size and mtime
 	h.file.node.Mu.Lock()
 	newSize := req.Offset + int64(len(req.Data))
 	if newSize > h.file.node.Meta.Size {
 		h.file.node.Meta.Size = newSize
 	}
+	h.file.node.Meta.ModTime = time.Now()
 	h.file.node.Mu.Unlock()
 
 	return nil
