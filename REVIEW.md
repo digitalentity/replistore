@@ -197,6 +197,8 @@ Every `Lookup` miss in a not-fully-indexed directory triggers a parallel `Stat` 
 Every path ever locked leaves a `Grant` in the `sync.Map` until explicitly released (rpc.go:154). Long-running nodes leak memory proportional to distinct locked paths. **Fix:** periodic janitor that deletes grants past `ExpiresAt + slack`.
 
 ### M6. Cluster RPC and mDNS membership are completely unauthenticated
+
+> **Status: PARTIALLY FIXED** in `dcf5a7b` — lock channel now HMAC-authenticated (UDP + JWS/HS256 with mandatory `cluster_secret`); discovery membership is gated by SMB credentials since `2dac188`. Remaining: fencing tokens are still derived (not random) and replayed renewals can extend a dead holder lease (documented, capture-required).
 Any host on the LAN can register as a peer, grant/deny locks, call `RequestLock` with another node's `NodeID` to hijack a lease, or `ReleaseLock` it (token is guessable: `<lamport>-<nodeID>`). For a system coordinating writes to shared storage this is a meaningful integrity risk even on a "trusted" LAN. **Fix:** pre-shared cluster secret — HMAC over RPC payloads at minimum, or mutual TLS on the RPC listener; make fencing tokens random (crypto/rand) rather than derived.
 
 ### M7. Health checks and reconnects ignore their context deadlines
@@ -225,6 +227,8 @@ POSIX `rename` must atomically replace an existing target. SMB2 rename fails if 
 
 ### M13. `CallWithContext` leaks goroutines and writes into reply values after abandonment
 
+> **Note:** the fixed `CallWithContext` was subsequently removed entirely by the UDP transport (`dcf5a7b`).
+
 > **Status: FIXED** in `c082690`
 On ctx timeout the spawned goroutine keeps running `client.Call` and will write into `reply` after the caller has moved on (rpc.go:223). Currently callers only read replies on the success path, but it's a latent data race; the goroutine also pins the connection until the call completes. **Fix:** close the client on ctx expiry (unblocks `Call`), and heap-allocate a private reply that is copied out only on the success path.
 
@@ -233,7 +237,7 @@ On ctx timeout the spawned goroutine keeps running `client.Call` and will write 
 ## 4. Low-severity / consistency nits
 
 - **L1.** `Acquire`'s lock-acquisition timeout (3 s, lock.go:69) is hardcoded and shorter than SMB stalls it may sit behind; make TTL, renewal cadence, and acquire timeout configurable together (they're coupled).
-- **L2.** Per-open-file renewal goroutines each dial every granted peer every 2.5 s — O(open files × peers) TCP dials. Batch renewals per peer connection, or share one RPC client per peer.
+- **L2.** Per-open-file renewal goroutines each dial every granted peer every 2.5 s — O(open files × peers) TCP dials. Batch renewals per peer connection, or share one RPC client per peer. — **FIXED** in `dcf5a7b`: transport moved to per-call UDP datagrams; no connections to pool.
 - **L3.** `splitPath`/`split` (cache.go:299) reimplement `strings.Split`; replace, and use `path.Join` instead of ad-hoc concatenation (three different sites build child paths slightly differently).
 - **L4.** `Node.FullyIndexed` field name is misaligned in the struct (`gofmt` drift) — file appears to have never been gofmt'd; run `gofmt`/`go vet` in CI.
 - **L5.** Shutdown path (main.go:143) unmounts and `os.Exit(0)` without closing SMB backends or releasing held locks; rely-on-TTL is fine for locks, but backends deserve a `Close()` sweep, and `cancel()` should precede `fuse.Unmount` to stop background scans racing the unmount.
