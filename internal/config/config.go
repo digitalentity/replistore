@@ -26,6 +26,7 @@ type Config struct {
 	RepairConcurrency    int             `yaml:"repair_concurrency"`
 	ListenAddr           string          `yaml:"listen_addr"`
 	AdvertiseAddr        string          `yaml:"advertise_addr"`
+	ClusterSecret        string          `yaml:"cluster_secret"`
 	ExpectedClusterSize  int             `yaml:"expected_cluster_size"`
 	Backends             []BackendConfig `yaml:"backends"`
 }
@@ -53,6 +54,12 @@ func LoadConfig(path string) (*Config, error) {
 		host, _, err := net.SplitHostPort(cfg.AdvertiseAddr)
 		if err != nil || host == "" {
 			return nil, fmt.Errorf("advertise_addr %q is not a valid host:port address", cfg.AdvertiseAddr)
+		}
+		if cfg.ClusterSecret == "" {
+			return nil, fmt.Errorf("cluster_secret must be set when listen_addr is set: lock datagrams between nodes are authenticated with HMAC-SHA256 using this shared secret")
+		}
+		if len(cfg.ClusterSecret) < 16 {
+			return nil, fmt.Errorf("cluster_secret must be at least 16 characters long (got %d)", len(cfg.ClusterSecret))
 		}
 	} else if cfg.ExpectedClusterSize <= 0 {
 		// Single node, no clustering: the value is unused.

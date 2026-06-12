@@ -81,6 +81,17 @@ This document outlines a roadmap for evolving RepliStore from a functional proto
 - Membership now implicitly requires SMB credentials (improvement over open multicast); the lock RPC channel itself remains unauthenticated (REVIEW.md M6).
 - Removes the `grandcat/zeroconf` dependency. Discovery latency becomes the poll interval (~10 s), acceptable for quasi-static membership.
 
+### 6.5. Datagram Lock Transport (UDP + HMAC, replaces net/rpc over TCP) — ACCEPTED 2026-06-11
+**Current Issue:** lock RPC uses `net/rpc` over a fresh TCP connection per request: a handshake per lock operation, renewal dials to every granted peer every 2.5 s per held lock, TIME_WAIT/ephemeral-port churn, kernel-paced failure detection, and a completely unauthenticated channel.
+
+**Design:** the lock protocol is lease-based, idempotent per `(NodeID, LockID)`, and quorum-tolerant of non-response — the textbook profile for datagram transport. TCP's reliability layer only duplicates (more slowly) what the protocol already provides.
+- **Wire format:** each datagram is a JWS compact serialization (JWT-style), HS256: `base64url(header) "." base64url(claims) "." base64url(HMAC-SHA256(secret, header "." claims))`. Signing the *encoded segments* (per JWS) rather than JSON structures avoids canonicalization pitfalls entirely. Claims: `{"v": 1, "typ": "request_lock" | "renew_lock" | "release_lock" (responses suffixed "_resp"), "rid": "<16-hex crypto/rand request ID>", "body": { ...lock message... }}`. The verifier compares the header segment byte-for-byte against the pinned constant `{"alg":"HS256","typ":"JWT"}` — the algorithm field is never parsed from the wire, which forecloses `alg`-confusion/`none` attacks. No `exp`/`iat` claims: lease TTLs handle expiry, and timestamp claims would reintroduce cross-node clock comparison. Implemented with the standard library only (one fixed algorithm needs no JWT dependency).
+- **Authentication:** HMAC-SHA256 with a mandatory `cluster_secret` (min 16 chars, required when `listen_addr` is set). Datagrams with bad signatures are dropped silently. This closes the lock-channel part of REVIEW.md M6.
+- **Client:** per-call connected UDP socket (kernel rejects datagrams from other sources); `crypto/rand` request IDs; retransmit with backoff (200/400/800 ms…) under the caller's context deadline; first MAC-valid response with a matching request ID wins. Handlers are idempotent, so retransmitted requests are harmless.
+- **Server:** single UDP socket, stateless: read → verify MAC → dispatch to the unchanged `RequestLock`/`RenewLock`/`ReleaseLock` handlers → reply to the source address echoing the request ID.
+- **Replay considerations:** replayed requests are idempotent no-ops (LockID/fencing-token matching), except a replayed `Renew`, which can extend a dead holder's lease — a minor, capture-required DoS, accepted and documented (the alternative is timestamp windows, i.e. cross-node clock comparison, which this codebase deliberately avoids).
+- Lock semantics (quorum from `expected_cluster_size`, lease TTLs, LockID idempotency) are untouched: transport swap only. Removes `net/rpc` usage and the per-request connection churn.
+
 ## 7. Reliability & Data Recovery
 
 ### 7.1. Repair Manager Optimizations

@@ -1,10 +1,8 @@
 package cluster
 
 import (
-	"context"
 	"fmt"
 	"net"
-	"net/rpc"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -86,10 +84,11 @@ type LockManager struct {
 	Clock               *LamportClock
 	LeaseTTL            time.Duration
 	ExpectedClusterSize int
+	Secret              []byte // shared cluster secret for HMAC-signing lock datagrams
 
 	grants   sync.Map // path (string) -> Grant
 	log      *logrus.Entry
-	ln       net.Listener
+	conn     *net.UDPConn
 	stopCh   chan struct{}
 	stopOnce sync.Once
 }
@@ -105,32 +104,21 @@ func NewLockManager(nodeID string) *LockManager {
 }
 
 func (m *LockManager) Start(address string) (string, error) {
-	ln, err := net.Listen("tcp", address)
+	laddr, err := net.ResolveUDPAddr("udp", address)
 	if err != nil {
 		return "", err
 	}
-	m.ln = ln
-	actualAddr := ln.Addr().String()
-
-	s := rpc.NewServer()
-	// Export this LockManager instance as "LockManager" service
-	if err := s.RegisterName("LockManager", m); err != nil {
+	conn, err := net.ListenUDP("udp", laddr)
+	if err != nil {
 		return "", err
 	}
+	m.conn = conn
+	actualAddr := conn.LocalAddr().String()
 
-	go func() {
-		for {
-			conn, err := m.ln.Accept()
-			if err != nil {
-				return
-			}
-			go s.ServeConn(conn)
-		}
-	}()
-
+	go m.serveLoop()
 	go m.janitorLoop()
 
-	m.log.Infof("Lock RPC server listening on %s", actualAddr)
+	m.log.Infof("Lock UDP server listening on %s", actualAddr)
 	return actualAddr, nil
 }
 
@@ -138,8 +126,8 @@ func (m *LockManager) Stop() {
 	m.stopOnce.Do(func() {
 		close(m.stopCh)
 	})
-	if m.ln != nil {
-		m.ln.Close()
+	if m.conn != nil {
+		m.conn.Close()
 	}
 }
 
@@ -260,35 +248,4 @@ func (m *LockManager) ReleaseLock(req LockRelease, resp *LockStatus) error {
 	m.grants.Delete(path)
 	*resp = LockOK
 	return nil
-}
-
-// --- RPC Helpers ---
-
-func DialWithContext(ctx context.Context, network, address string) (*rpc.Client, error) {
-	d := net.Dialer{}
-	conn, err := d.DialContext(ctx, network, address)
-	if err != nil {
-		return nil, err
-	}
-	return rpc.NewClient(conn), nil
-}
-
-// CallWithContext invokes serviceMethod on client, honoring ctx cancellation.
-//
-// If ctx expires before the call completes, the client is closed to unblock
-// the pending call, and CallWithContext waits for the call to settle before
-// returning so that reply is never written to after this function returns.
-// Callers must therefore treat the client as dead after a ctx error; clients
-// in this codebase are dialed per request, so this is safe (a subsequent
-// deferred Close simply returns rpc.ErrShutdown).
-func CallWithContext(ctx context.Context, client *rpc.Client, serviceMethod string, args interface{}, reply interface{}) error {
-	call := client.Go(serviceMethod, args, reply, make(chan *rpc.Call, 1))
-	select {
-	case <-ctx.Done():
-		_ = client.Close() // unblocks the pending call; conn is per-request in this codebase
-		<-call.Done        // wait for the call to settle so reply is never written after return
-		return ctx.Err()
-	case <-call.Done:
-		return call.Error
-	}
 }

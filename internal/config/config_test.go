@@ -77,6 +77,7 @@ listen_addr: "0.0.0.0:7000"
 mount_point: "/tmp/test"
 listen_addr: "0.0.0.0:7000"
 advertise_addr: "192.168.1.50:7000"
+cluster_secret: "a-valid-shared-secret"
 expected_cluster_size: 2
 `)
 		cfg, err := config.LoadConfig(path)
@@ -147,6 +148,7 @@ expected_cluster_size: 2
 mount_point: "/tmp/test"
 listen_addr: "0.0.0.0:7000"
 advertise_addr: "192.168.1.50:7000"
+cluster_secret: "a-valid-shared-secret"
 expected_cluster_size: 2
 `)
 		cfg, err := config.LoadConfig(path)
@@ -155,6 +157,66 @@ expected_cluster_size: 2
 	})
 
 	t.Run("no listen_addr does not require advertise_addr", func(t *testing.T) {
+		path := writeConfig(t, `
+mount_point: "/tmp/test"
+`)
+		_, err := config.LoadConfig(path)
+		assert.NoError(t, err)
+	})
+}
+
+func TestLoadConfig_ClusterSecret(t *testing.T) {
+	writeConfig := func(t *testing.T, content string) string {
+		t.Helper()
+		tmpFile, err := os.CreateTemp("", "config.yaml")
+		assert.NoError(t, err)
+		t.Cleanup(func() { os.Remove(tmpFile.Name()) })
+
+		_, err = tmpFile.WriteString(content)
+		assert.NoError(t, err)
+		tmpFile.Close()
+		return tmpFile.Name()
+	}
+
+	t.Run("listen_addr set without cluster_secret returns error", func(t *testing.T) {
+		path := writeConfig(t, `
+mount_point: "/tmp/test"
+listen_addr: "0.0.0.0:7000"
+advertise_addr: "192.168.1.50:7000"
+expected_cluster_size: 2
+`)
+		_, err := config.LoadConfig(path)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "cluster_secret must be set")
+	})
+
+	t.Run("cluster_secret shorter than 16 characters returns error", func(t *testing.T) {
+		path := writeConfig(t, `
+mount_point: "/tmp/test"
+listen_addr: "0.0.0.0:7000"
+advertise_addr: "192.168.1.50:7000"
+cluster_secret: "too-short"
+expected_cluster_size: 2
+`)
+		_, err := config.LoadConfig(path)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "at least 16 characters")
+	})
+
+	t.Run("valid cluster_secret is ok", func(t *testing.T) {
+		path := writeConfig(t, `
+mount_point: "/tmp/test"
+listen_addr: "0.0.0.0:7000"
+advertise_addr: "192.168.1.50:7000"
+cluster_secret: "a-valid-shared-secret"
+expected_cluster_size: 2
+`)
+		cfg, err := config.LoadConfig(path)
+		assert.NoError(t, err)
+		assert.Equal(t, "a-valid-shared-secret", cfg.ClusterSecret)
+	})
+
+	t.Run("no listen_addr does not require cluster_secret", func(t *testing.T) {
 		path := writeConfig(t, `
 mount_point: "/tmp/test"
 `)

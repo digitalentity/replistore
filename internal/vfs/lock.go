@@ -144,14 +144,8 @@ func (l *DistributedLock) tryAcquire(ctx context.Context) error {
 	for _, p := range peers {
 		p := p
 		g.Go(func() error {
-			client, err := cluster.DialWithContext(gCtx, "tcp", p.Address)
-			if err != nil {
-				return nil
-			}
-			defer client.Close()
-
 			var resp cluster.LockResponse
-			err = cluster.CallWithContext(gCtx, client, "LockManager.RequestLock", req, &resp)
+			err := cluster.CallUDP(gCtx, l.Manager.Secret, p.Address, cluster.TypRequestLock, req, &resp)
 			if err == nil && resp.Status == cluster.LockOK {
 				mu.Lock()
 				successes++
@@ -251,12 +245,7 @@ func (l *DistributedLock) renew(peers []string) bool {
 				if !ok {
 					return nil
 				}
-				client, dialErr := cluster.DialWithContext(gCtx, "tcp", p.Address)
-				if dialErr != nil {
-					return nil
-				}
-				defer client.Close()
-				err = cluster.CallWithContext(gCtx, client, "LockManager.RenewLock", req, &status)
+				err = cluster.CallUDP(gCtx, l.Manager.Secret, p.Address, cluster.TypRenewLock, req, &status)
 			}
 
 			if err == nil && status == cluster.LockOK {
@@ -295,12 +284,7 @@ func (l *DistributedLock) rollback(peers []string, token string) {
 				if !ok {
 					return nil
 				}
-				client, err := cluster.DialWithContext(gCtx, "tcp", p.Address)
-				if err != nil {
-					return nil
-				}
-				defer client.Close()
-				_ = cluster.CallWithContext(gCtx, client, "LockManager.ReleaseLock", req, &status)
+				_ = cluster.CallUDP(gCtx, l.Manager.Secret, p.Address, cluster.TypReleaseLock, req, &status)
 			}
 			return nil
 		})

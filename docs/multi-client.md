@@ -17,11 +17,12 @@ When configured with `listen_addr`, RepliStore instances form a cluster:
 To enable clustering, add the following to each node's `config.yaml`:
 
 ```yaml
-listen_addr: ":5050"      # Internal RPC server port
+listen_addr: ":5050"      # Internal lock server port (UDP)
 advertise_addr: "192.168.1.50:5050" # Required: host:port peers use to reach this node
+cluster_secret: "<16+ char shared secret>"  # Required: same value on all nodes
 ```
 
-Ensure all nodes can reach the SMB backends (for discovery) and each other's `advertise_addr` (for RPC communication).
+Ensure all nodes can reach the SMB backends (for discovery) and each other's `advertise_addr` (lock messages are exchanged as UDP datagrams authenticated with HMAC in JWT/JWS format, signed with `cluster_secret`).
 
 ---
 

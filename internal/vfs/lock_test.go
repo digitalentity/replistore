@@ -10,19 +10,26 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
+// testClusterSecret is shared by every LockManager in these tests so signed
+// lock datagrams verify across "nodes".
+var testClusterSecret = []byte("vfs-test-secret-at-least-16-chars")
+
 func TestDistributedLock_AcquireQuorum(t *testing.T) {
 	// Setup 3 nodes
 	n1 := cluster.NewLockManager("node1")
+	n1.Secret = testClusterSecret
 	n1.ExpectedClusterSize = 3
 	_, _ = n1.Start("127.0.0.1:0")
 	defer n1.Stop()
 
 	n2 := cluster.NewLockManager("node2")
+	n2.Secret = testClusterSecret
 	n2.ExpectedClusterSize = 3
 	addr2, _ := n2.Start("127.0.0.1:0")
 	defer n2.Stop()
 
 	n3 := cluster.NewLockManager("node3")
+	n3.Secret = testClusterSecret
 	n3.ExpectedClusterSize = 3
 	addr3, _ := n3.Start("127.0.0.1:0")
 	defer n3.Stop()
@@ -48,11 +55,14 @@ func TestDistributedLock_AcquireQuorum(t *testing.T) {
 
 func TestDistributedLock_AcquireQuorumFailure(t *testing.T) {
 	n1 := cluster.NewLockManager("node1")
+	n1.Secret = testClusterSecret
 	n1.ExpectedClusterSize = 2
 	_, _ = n1.Start("127.0.0.1:0")
 	defer n1.Stop()
 
-	// node2 is "down" (no server started)
+	// node2 is "down": an unused UDP port with no listener. CallUDP must
+	// keep retrying until its context expires, so the acquisition fails by
+	// timeout rather than a fast connection error.
 	addr2 := "127.0.0.1:65535"
 
 	disco1 := cluster.NewDiscovery("node1", "", nil)
@@ -72,6 +82,7 @@ func TestDistributedLock_AcquireQuorumFailure(t *testing.T) {
 
 func TestDistributedLock_Renewal(t *testing.T) {
 	n1 := cluster.NewLockManager("node1")
+	n1.Secret = testClusterSecret
 	n1.ExpectedClusterSize = 1
 	n1.LeaseTTL = 500 * time.Millisecond
 	_, _ = n1.Start("127.0.0.1:0")
@@ -95,6 +106,7 @@ func TestDistributedLock_Renewal(t *testing.T) {
 
 func TestDistributedLock_SameNodeMutualExclusion(t *testing.T) {
 	n1 := cluster.NewLockManager("node1")
+	n1.Secret = testClusterSecret
 	n1.ExpectedClusterSize = 1
 	_, _ = n1.Start("127.0.0.1:0")
 	defer n1.Stop()
@@ -126,11 +138,13 @@ func TestDistributedLock_SameNodeMutualExclusion(t *testing.T) {
 
 func TestDistributedLock_ExpectedClusterSizeQuorum(t *testing.T) {
 	n1 := cluster.NewLockManager("node1")
+	n1.Secret = testClusterSecret
 	n1.ExpectedClusterSize = 5
 	_, _ = n1.Start("127.0.0.1:0")
 	defer n1.Stop()
 
 	n2 := cluster.NewLockManager("node2")
+	n2.Secret = testClusterSecret
 	n2.ExpectedClusterSize = 5
 	addr2, _ := n2.Start("127.0.0.1:0")
 	defer n2.Stop()
@@ -153,6 +167,7 @@ func TestDistributedLock_ExpectedClusterSizeQuorum(t *testing.T) {
 
 func TestDistributedLock_AcquireRetriesAfterContention(t *testing.T) {
 	n1 := cluster.NewLockManager("node1")
+	n1.Secret = testClusterSecret
 	n1.ExpectedClusterSize = 1
 	n1.LeaseTTL = 100 * time.Millisecond
 	_, _ = n1.Start("127.0.0.1:0")
