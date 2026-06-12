@@ -2,6 +2,19 @@
 
 Reviewed at commit `af0541f` (2026-06-10). Scope: full source tree (`internal/`, `cmd/`), with emphasis on logic flaws, inconsistent design decisions, and missed edge cases in the replication, caching, and distributed-locking layers.
 
+## Status summary (as of `c1ec0fd`, 2026-06-12)
+
+All findings below carry inline status annotations. Tally: **8/8 critical** fixed or mitigated to their SMB-imposed limits, **9/9 high** fixed (2 with documented residuals), **10/13 medium** fixed or partial, **3/8 low** addressed.
+
+Architecture changes made during remediation (beyond the original findings):
+- **Backend-based node discovery** replaced mDNS (`2dac188`): peers register at `.replistore/peers/<nodeID>.json` on every backend; no multicast/L2 requirement; `advertise_addr` mandatory.
+- **UDP lock transport** replaced net/rpc-over-TCP (`dcf5a7b`): JWS-compact (HS256) datagrams signed with the mandatory `cluster_secret`; pinned header; crypto/rand request IDs; retransmit with backoff.
+- **Version-metadata substrate** (`41f3fa5`, `b1800e1`, `4fff8cf`, `87355f5`): per-file generation sidecars under `.replistore/meta/`, tombstones under `.replistore/tombstones/`, repair-time sha256 sums; the reserved tree is hidden from the mount (`1c0c463`).
+
+Remaining open items, roughly by value: directory tombstones (C6-dirs); read-quorum/staleness semantics for lazy fetches (C8 residual); M2 negative-lookup cache; M3 reconcile-sweep race; M4 orphaned cache nodes under open handles; M7 ctx-aware backend reconnects; M11 rename-over-existing-target atomicity; M12 rmdir emptiness check in the unified view; H4 renewal grace period; L1/L3/L5/L6/L7 nits. The test suite is mock-based throughout — a real-cluster smoke test of the sidecar/tombstone machinery is advised before production use.
+
+---
+
 Severity legend:
 - **CRITICAL** — can lose or corrupt data, or silently violates the system's stated consistency guarantees.
 - **HIGH** — incorrect behavior visible to applications, or guarantees that hold only under lucky timing.
@@ -133,6 +146,8 @@ Replica metadata reconciliation (`Cache.Upsert`, `syncAll`, `FetchEntry` — int
 
 ### H4. Lease renewal is brittle: one failed round = lock lost; quorum denominator drifts from the granted set
 
+> **Status: PARTIALLY FIXED** in `881277e` — renewal quorum now derives from `expected_cluster_size`, never the live peer list, so the denominator no longer drifts. Remaining: a single renewal round missing quorum still declares the lock lost immediately (no retry until the lease deadline actually passes).
+
 `startRenewal` declares the lock lost on the *first* renewal round that misses quorum (lock.go:156) — a single transient network blip longer than `LeaseTTL/2 = 2.5s` kills an active write handle. Also, `renew` recomputes quorum from the *current* peer count (lock.go:174) while only ever contacting the original `grantedPeers`; if membership grows after acquisition, quorum can exceed the contactable set and the lock is unrenewable by construction.
 
 **Proposed solution:** renew on a faster cadence (`TTL/3`) and only declare the lock lost when the lease deadline actually passes without a successful quorum round (track `lastRenewed`). Compute renewal quorum against the same denominator used at acquisition (`ExpectedClusterSize`), never against the live peer list.
@@ -243,20 +258,20 @@ On ctx timeout the spawned goroutine keeps running `client.Call` and will write 
 - **L1.** `Acquire`'s lock-acquisition timeout (3 s, lock.go:69) is hardcoded and shorter than SMB stalls it may sit behind; make TTL, renewal cadence, and acquire timeout configurable together (they're coupled).
 - **L2.** Per-open-file renewal goroutines each dial every granted peer every 2.5 s — O(open files × peers) TCP dials. Batch renewals per peer connection, or share one RPC client per peer. — **FIXED** in `dcf5a7b`: transport moved to per-call UDP datagrams; no connections to pool.
 - **L3.** `splitPath`/`split` (cache.go:299) reimplement `strings.Split`; replace, and use `path.Join` instead of ad-hoc concatenation (three different sites build child paths slightly differently).
-- **L4.** `Node.FullyIndexed` field name is misaligned in the struct (`gofmt` drift) — file appears to have never been gofmt'd; run `gofmt`/`go vet` in CI.
+- **L4.** `Node.FullyIndexed` field name is misaligned in the struct (`gofmt` drift) — file appears to have never been gofmt'd; run `gofmt`/`go vet` in CI. — **MOSTLY FIXED**: all touched files were gofmt'd along the way; only `internal/backend/backend_test.go` and `internal/backend/monitor.go` remain unformatted, and CI enforcement is still absent.
 - **L5.** Shutdown path (main.go:143) unmounts and `os.Exit(0)` without closing SMB backends or releasing held locks; rely-on-TTL is fine for locks, but backends deserve a `Close()` sweep, and `cancel()` should precede `fuse.Unmount` to stop background scans racing the unmount.
 - **L6.** `Dir.Attr`/`File.Attr` never set `Valid`, `Uid`, `Gid`, or `Nlink`; the kernel default attr-cache hides cross-node updates for an unspecified duration — set `a.Valid` explicitly to a value consistent with the staleness budget.
 - **L7.** `markAllIndexed` runs even when `Warmup` had per-backend scan errors; with one backend unscanned, directories are still marked authoritative (mini-C8). Gate it on per-backend success, or per-directory success tracking.
-- **L8.** README example config omits `write_quorum` and `expected_cluster_size` — the two settings whose defaults are most dangerous (C1; WQ defaults to RF, making any single backend outage block writes — a surprising availability default worth calling out in docs).
+- **L8.** README example config omits `write_quorum` and `expected_cluster_size` — the two settings whose defaults are most dangerous (C1; WQ defaults to RF, making any single backend outage block writes — a surprising availability default worth calling out in docs). — **FIXED** in `191e663`: README and config.yaml now show `write_quorum` and all four cluster fields.
 
 ---
 
 ## 5. Cross-cutting design recommendations (ordered by leverage)
 
-1. **Introduce RepliStore-owned per-file version metadata** (generation counter + checksum, in ADS or a sidecar tree). This single mechanism replaces mtime-LWW (C4), enables tombstones (C6), gives repair a convergence criterion, detects torn replicas (C4.3, H9), and provides a substrate for real fencing (C3). Nearly every critical finding traces back to "the system trusts backend mtimes as version vectors, and they aren't."
+1. **[DONE — 41f3fa5/b1800e1/4fff8cf/87355f5]** **Introduce RepliStore-owned per-file version metadata** (generation counter + checksum, in ADS or a sidecar tree). This single mechanism replaces mtime-LWW (C4), enables tombstones (C6), gives repair a convergence criterion, detects torn replicas (C4.3, H9), and provides a substrate for real fencing (C3). Nearly every critical finding traces back to "the system trusts backend mtimes as version vectors, and they aren't."
 
    > **DECISION (2026-06-11): sidecar tree.** Version metadata will live in a `.replistore/meta/` sidecar tree on each backend (one metadata file per data file), not in Alternate Data Streams. Rationale: ADS requires `vfs_streams_xattr` on Samba and is silently unsupported on some NAS firmware, while plain files work on every SMB server this tool targets; deployment safety outweighs the extra round-trip and visible clutter. Implementation sequence: generation counter on write → tombstones on delete/rename (C6) → checksums on repair (C4) → fencing check (C3).
-2. **Make the DLM honest:** mandatory cluster size (C1), per-acquisition lock IDs (C2), expiry-checked renewal (H5), retry with backoff (H2), canonical lock ordering (H1). These are small, local fixes.
-3. **Add an in-process path-lock table** under all mutating ops and repair/heal (H7, C2) — cheap and removes a whole class of single-node races.
-4. **Separate "error" from "absent" everywhere** metadata is fetched (C8, L7) and adopt read-quorum semantics for authoritative answers.
-5. **Union semantics for directories** (C5) — directories are CRDT-like grow-sets, not LWW registers.
+2. **[DONE]** **Make the DLM honest:** mandatory cluster size (C1), per-acquisition lock IDs (C2), expiry-checked renewal (H5), retry with backoff (H2), canonical lock ordering (H1). These are small, local fixes.
+3. **[DONE — 2497fb1]** **Add an in-process path-lock table** under all mutating ops and repair/heal (H7, C2) — cheap and removes a whole class of single-node races.
+4. **[DONE for fetch paths — 68b1d53; read-quorum semantics still open]** **Separate "error" from "absent" everywhere** metadata is fetched (C8, L7) and adopt read-quorum semantics for authoritative answers.
+5. **[DONE — 0849288]** **Union semantics for directories** (C5) — directories are CRDT-like grow-sets, not LWW registers.
