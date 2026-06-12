@@ -37,6 +37,8 @@ The documentation (docs/multi-client.md §4) promises majority-based split-brain
 
 ### C3. Fencing tokens never reach the storage layer; lease-validity checks are racy
 
+> **Status: PARTIALLY FIXED** in `1dc5624` — lease re-checked post-write before acknowledging (pragmatic option); true storage-level fencing remains impossible over plain SMB. Docs corrected.
+
 Docs claim ("Fencing and Node Recovery", docs/multi-client.md) that a node whose lease expires "will automatically abort pending backend writes, preventing it from corrupting files written by a new owner." In reality the only protection is `if h.lock != nil && !h.lock.IsValid()` at the *top* of `FileHandle.Write` (internal/fuse/fs.go:832). Between that check and the SMB `WriteAt` completing, the lease can expire and a new owner can be granted the lock; the stale holder's write still lands. SMB offers no fencing primitive, so the token (`<lamport>-<nodeID>`) fences nothing — it is only used to authenticate renew/release RPCs.
 
 This is the classic stale-lock-holder problem (Kleppmann's "How to do distributed locking"); with leases but no fencing at the resource, mutual exclusion is best-effort only.
@@ -48,7 +50,7 @@ This is the classic stale-lock-holder problem (Kleppmann's "How to do distribute
 
 ### C4. Last-writer-wins on `(mtime, size)` makes anti-entropy non-convergent: perpetual repair churn and clock-skew data loss
 
-> **Status: PARTIALLY FIXED** in `12b76c5` — mitigation: mtime preserved on repair/heal copies; versioning/checksums still open
+> **Status: FIXED** in `12b76c5`+`41f3fa5`+`b1800e1`+`87355f5` — mtime preserved on copies; per-file generation sidecars arbitrate reconciliation (higher gen wins, equal gen+size unions regardless of mtime); repair records sha256 sums and flags same-generation divergent replicas. Residual: equal-gen different-size still falls back to mtime LWW.
 
 Replica metadata reconciliation (`Cache.Upsert`, `syncAll`, `FetchEntry` — internal/vfs/cache.go:84, 170, 457) declares the replica with the newest `ModTime` the sole winner and drops all others from `Meta.Backends`. But:
 
@@ -73,6 +75,8 @@ Replica metadata reconciliation (`Cache.Upsert`, `syncAll`, `FetchEntry` — int
 **Proposed solution:** treat directories as union types: in all three reconciliation sites, when `IsDir`, always *merge* backend lists and ignore mtime/size entirely (keep the newest mtime for display only). Directory-level mutations (`Mkdir`, `Rename`, `Remove`) should fan out to **all** configured backends (Mkdir already does), not to `Meta.Backends`.
 
 ### C6. No tombstones: deletes and renames resurrect from any backend that missed the operation
+
+> **Status: FIXED** in `4fff8cf` — tombstones at .replistore/tombstones/<path> with quorum-gated deletes, sync/lazy-fetch suppression, repair-driven zombie cleanup and GC. Residual: directory deletions (TODO C6-dirs).
 
 `Remove` deletes only from the backends in `Meta.Backends` (already a lossy subset, see C4/C5) and requires only `write_quorum` successes. Any replica that was offline, failed the delete, or was dropped from the list by LWW still holds the file. The next `syncAll`/`FetchEntry` happily re-adds it to the namespace. Same for `Rename`: the old path resurrects from backends where the rename or the async orphan-cleanup `Remove` (fs.go:494) failed. For an eventually-consistent system with no oplog, deletion without tombstones is structurally unsound — "deleted" is indistinguishable from "not yet replicated".
 
