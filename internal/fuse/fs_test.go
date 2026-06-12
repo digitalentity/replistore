@@ -1152,3 +1152,66 @@ func TestFile_Open_AppendNotSupported(t *testing.T) {
 
 	b1.AssertNotCalled(t, "OpenFile", mock.Anything, mock.Anything, mock.Anything, mock.Anything)
 }
+
+func TestReservedPath_LookupReturnsENOENT(t *testing.T) {
+	// No backend expectations: lookup of the reserved dir must not hit backends.
+	b1 := &test.MockBackend{NameVal: "b1"}
+
+	cache := vfs.NewCache()
+	fs := &RepliFS{
+		Cache:    cache,
+		Backends: map[string]backend.Backend{"b1": b1},
+		Selector: vfs.NewRandomSelector(nil),
+	}
+	root, _ := fs.Root()
+	dir := root.(*Dir)
+
+	node, err := dir.Lookup(context.Background(), ".replistore")
+	assert.ErrorIs(t, err, syscall.ENOENT)
+	assert.Nil(t, node)
+
+	b1.AssertNotCalled(t, "Stat", mock.Anything, mock.Anything)
+}
+
+func TestReservedPath_MkdirReturnsEACCES(t *testing.T) {
+	b1 := &test.MockBackend{NameVal: "b1"}
+
+	cache := vfs.NewCache()
+	fs := &RepliFS{
+		Cache:             cache,
+		Backends:          map[string]backend.Backend{"b1": b1},
+		ReplicationFactor: 1,
+		WriteQuorum:       1,
+		Selector:          vfs.NewRandomSelector(nil),
+	}
+	root, _ := fs.Root()
+	dir := root.(*Dir)
+
+	node, err := dir.Mkdir(context.Background(), &fuse.MkdirRequest{Name: ".replistore", Mode: os.ModeDir | 0755})
+	assert.ErrorIs(t, err, syscall.EACCES)
+	assert.Nil(t, node)
+
+	b1.AssertNotCalled(t, "Mkdir", mock.Anything, mock.Anything, mock.Anything)
+}
+
+func TestReservedPath_CreateReturnsEACCES(t *testing.T) {
+	b1 := &test.MockBackend{NameVal: "b1"}
+
+	cache := vfs.NewCache()
+	fs := &RepliFS{
+		Cache:             cache,
+		Backends:          map[string]backend.Backend{"b1": b1},
+		ReplicationFactor: 1,
+		WriteQuorum:       1,
+		Selector:          vfs.NewRandomSelector(nil),
+	}
+	root, _ := fs.Root()
+	dir := root.(*Dir)
+
+	node, handle, err := dir.Create(context.Background(), &fuse.CreateRequest{Name: ".replistore", Mode: 0644}, &fuse.CreateResponse{})
+	assert.ErrorIs(t, err, syscall.EACCES)
+	assert.Nil(t, node)
+	assert.Nil(t, handle)
+
+	b1.AssertNotCalled(t, "OpenFile", mock.Anything, mock.Anything, mock.Anything, mock.Anything)
+}

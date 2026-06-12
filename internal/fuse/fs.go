@@ -122,17 +122,21 @@ func (d *Dir) Lookup(ctx context.Context, name string) (fs.Node, error) {
 	path := d.node.Meta.Path
 	d.node.Mu.RUnlock()
 
+	childPath := name
+	if path != "" {
+		childPath = path + "/" + name
+	}
+	if vfs.IsReservedPath(childPath) {
+		// Cluster-internal state is invisible through the mount.
+		return nil, syscall.ENOENT
+	}
+
 	if !ok {
 		if fullyIndexed {
 			return nil, syscall.ENOENT
 		}
 
 		// Try lazy fetch
-		childPath := name
-		if path != "" {
-			childPath = path + "/" + name
-		}
-
 		logrus.Debugf("Lazy fetching metadata for %s", childPath)
 		node, err := d.fs.Cache.FetchEntry(ctx, childPath, d.fs.getBackendList())
 		if err != nil {
@@ -205,6 +209,10 @@ func (d *Dir) Create(ctx context.Context, req *fuse.CreateRequest, resp *fuse.Cr
 	path := parentPath + "/" + req.Name
 	if parentPath == "" {
 		path = req.Name
+	}
+	if vfs.IsReservedPath(path) {
+		// Cluster-internal state must not be touched through the mount.
+		return nil, nil, syscall.EACCES
 	}
 
 	// Local serialization of same-path mutations. Held until the backend
@@ -362,6 +370,10 @@ func (d *Dir) Mkdir(ctx context.Context, req *fuse.MkdirRequest) (fs.Node, error
 	path := parentPath + "/" + req.Name
 	if parentPath == "" {
 		path = req.Name
+	}
+	if vfs.IsReservedPath(path) {
+		// Cluster-internal state must not be touched through the mount.
+		return nil, syscall.EACCES
 	}
 
 	// Local serialization of same-path mutations.
@@ -564,6 +576,10 @@ func (d *Dir) Rename(ctx context.Context, req *fuse.RenameRequest, newDir fs.Nod
 	newPath := targetParentPath + "/" + req.NewName
 	if targetParentPath == "" {
 		newPath = req.NewName
+	}
+	if vfs.IsReservedPath(oldPath) || vfs.IsReservedPath(newPath) {
+		// Renaming into or out of the reserved tree must be impossible.
+		return syscall.EACCES
 	}
 
 	// Locking for BOTH paths. Acquire in lexicographic order so crossing

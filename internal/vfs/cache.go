@@ -18,6 +18,18 @@ import (
 // treated as a definitive "does not exist".
 var ErrUnavailable = errors.New("vfs: no backend available for authoritative answer")
 
+// ReservedDir is the directory on each backend that holds RepliStore's
+// cluster-internal state (peer registry, version metadata). It is never
+// exposed through the unified namespace.
+const ReservedDir = ".replistore"
+
+// IsReservedPath reports whether path (relative, slash-separated, as used
+// throughout the cache) is the reserved RepliStore state directory or
+// anything inside it.
+func IsReservedPath(path string) bool {
+	return path == ReservedDir || strings.HasPrefix(path, ReservedDir+"/")
+}
+
 type Metadata struct {
 	Name     string
 	Path     string // Relative path from share root
@@ -201,6 +213,12 @@ func (c *Cache) syncAll(ctx context.Context, backends []backend.Backend) {
 			logrus.Debugf("Background syncing backend: %s", b.GetName())
 			seenPaths := make(map[string]bool)
 			err := b.Walk(gCtx, "", func(path string, info backend.FileInfo) error {
+				if IsReservedPath(path) {
+					// Cluster-internal state is never indexed, so it must not
+					// appear in seenPaths either (Reconcile only sweeps paths
+					// that are in the cache).
+					return nil
+				}
 				seenPaths[path] = true
 				meta := Metadata{
 					Name:    info.Name,
@@ -441,6 +459,10 @@ func (c *Cache) FetchEntry(ctx context.Context, path string, backends []backend.
 	if path == "" || path == "/" {
 		return c.Root, nil
 	}
+	if IsReservedPath(path) {
+		// Cluster-internal state is invisible in the unified namespace.
+		return nil, os.ErrNotExist
+	}
 
 	var stateMu sync.Mutex
 	var bestMeta Metadata // backend presence tracked in bestMeta.Backends
@@ -535,6 +557,11 @@ func (c *Cache) FetchDir(ctx context.Context, path string, backends []backend.Ba
 			definitiveCount++
 			stateMu.Unlock()
 			for _, info := range entries {
+				if path == "" && info.Name == ReservedDir {
+					// Cluster-internal state is invisible in the unified
+					// namespace. Only the root can contain the reserved dir.
+					continue
+				}
 				childPath := strings.TrimPrefix(path+"/"+info.Name, "/")
 				c.Upsert(childPath, Metadata{
 					Name:    info.Name,
@@ -598,6 +625,10 @@ func (c *Cache) Warmup(ctx context.Context, backends []backend.Backend) {
 		g.Go(func() error {
 			logrus.Infof("Scanning backend: %s", b.GetName())
 			err := b.Walk(gCtx, "", func(path string, info backend.FileInfo) error {
+				if IsReservedPath(path) {
+					// Cluster-internal state is never indexed.
+					return nil
+				}
 				c.Upsert(path, Metadata{
 					Name:    info.Name,
 					Size:    info.Size,

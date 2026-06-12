@@ -401,3 +401,57 @@ func TestCache_UpsertLatestWins(t *testing.T) {
 	assert.Equal(t, []string{"b5"}, node.Meta.Backends)
 	assert.Equal(t, int64(150), node.Meta.Size)
 }
+
+func TestCache_Warmup_SkipsReservedPaths(t *testing.T) {
+	ctx := context.Background()
+	cache := vfs.NewCache()
+
+	b1 := &test.MockBackend{NameVal: "b1"}
+	b1.On("Walk", mock.Anything, "", mock.Anything).Run(func(args mock.Arguments) {
+		fn := args.Get(2).(func(path string, info backend.FileInfo) error)
+		now := time.Now()
+		assert.NoError(t, fn("data.txt", backend.FileInfo{Name: "data.txt", Size: 10, ModTime: now}))
+		assert.NoError(t, fn(".replistore", backend.FileInfo{Name: ".replistore", IsDir: true, ModTime: now}))
+		assert.NoError(t, fn(".replistore/peers", backend.FileInfo{Name: "peers", IsDir: true, ModTime: now}))
+		assert.NoError(t, fn(".replistore/peers/x.json", backend.FileInfo{Name: "x.json", Size: 42, ModTime: now}))
+	}).Return(nil)
+
+	cache.Warmup(ctx, []backend.Backend{b1})
+
+	_, ok := cache.Get("data.txt")
+	assert.True(t, ok, "regular file should be indexed")
+
+	for _, p := range []string{".replistore", ".replistore/peers", ".replistore/peers/x.json"} {
+		_, ok := cache.Get(p)
+		assert.False(t, ok, "reserved path %s must not be in cache", p)
+	}
+	b1.AssertExpectations(t)
+}
+
+func TestCache_FetchEntry_ReservedPath(t *testing.T) {
+	ctx := context.Background()
+	cache := vfs.NewCache()
+
+	// No Stat expectation: the backend must never be contacted.
+	b1 := &test.MockBackend{NameVal: "b1"}
+
+	node, err := cache.FetchEntry(ctx, ".replistore/peers/x.json", []backend.Backend{b1})
+	assert.ErrorIs(t, err, os.ErrNotExist)
+	assert.Nil(t, node)
+
+	node, err = cache.FetchEntry(ctx, ".replistore", []backend.Backend{b1})
+	assert.ErrorIs(t, err, os.ErrNotExist)
+	assert.Nil(t, node)
+
+	b1.AssertNotCalled(t, "Stat", mock.Anything, mock.Anything)
+}
+
+func TestIsReservedPath(t *testing.T) {
+	assert.True(t, vfs.IsReservedPath(".replistore"))
+	assert.True(t, vfs.IsReservedPath(".replistore/peers"))
+	assert.True(t, vfs.IsReservedPath(".replistore/peers/x.json"))
+	assert.False(t, vfs.IsReservedPath(""))
+	assert.False(t, vfs.IsReservedPath(".replistore2"))
+	assert.False(t, vfs.IsReservedPath("dir/.replistore"))
+	assert.False(t, vfs.IsReservedPath("data.txt"))
+}
