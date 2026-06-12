@@ -2,9 +2,12 @@ package fuse
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"io"
 	"os"
+	"sync/atomic"
 	"time"
 
 	"github.com/digitalentity/replistore/internal/backend"
@@ -17,6 +20,12 @@ type RepairManager struct {
 	fs          *RepliFS
 	interval    time.Duration
 	concurrency int
+
+	// divergenceCount counts same-generation replica pairs observed with
+	// different non-empty content sums during repair (REVIEW.md C4).
+	// Incremented atomically; a diagnostic counter intended to feed future
+	// metrics.
+	divergenceCount int64
 }
 
 func NewRepairManager(fs *RepliFS, interval time.Duration, concurrency int) *RepairManager {
@@ -285,9 +294,33 @@ func (m *RepairManager) repairNode(ctx context.Context, node *vfs.Node) error {
 	}
 	defer srcFile.Close()
 
+	// Source version sidecar, read once: it seeds the target sidecars,
+	// anchors divergence detection, and receives the content sum computed
+	// while copying. A missing sidecar means a legacy (pre-versioning) file.
+	srcSC, srcSCErr := vfs.ReadSidecar(ctx, sourceBackend, path)
+	if srcSCErr != nil && !errors.Is(srcSCErr, os.ErrNotExist) {
+		logrus.Warnf("Failed to read sidecar for %s from %s: %v", path, sourceName, srcSCErr)
+	}
+
 	// For each target, open and copy
 	for _, targetName := range targets {
 		targetBackend := m.fs.Backends[targetName]
+
+		// Divergence detection (REVIEW.md C4): if the target already holds a
+		// replica at the same generation as the source but with a different
+		// non-empty content sum, the replicas have divergent content (crash
+		// artifact or bit rot). The source still wins, exactly as before —
+		// the checksum only makes the event visible.
+		if srcSCErr == nil && srcSC.Sum != "" {
+			if _, statErr := targetBackend.Stat(ctx, path); statErr == nil {
+				if tsc, tErr := vfs.ReadSidecar(ctx, targetBackend, path); tErr == nil &&
+					tsc.Gen == srcSC.Gen && tsc.Sum != "" && tsc.Sum != srcSC.Sum {
+					atomic.AddInt64(&m.divergenceCount, 1)
+					logrus.Errorf("Divergent replicas of %s at generation %d: source %s has sum %s, target %s has sum %s; overwriting target from source",
+						path, srcSC.Gen, sourceName, srcSC.Sum, targetName, tsc.Sum)
+				}
+			}
+		}
 
 		dstFile, err := targetBackend.OpenFile(ctx, path, os.O_CREATE|os.O_TRUNC|os.O_RDWR, node.Meta.Mode)
 		if err != nil {
@@ -295,8 +328,11 @@ func (m *RepairManager) repairNode(ctx context.Context, node *vfs.Node) error {
 			continue
 		}
 
-		// Simple implementation: sequential copy for each target
-		if _, err := io.Copy(&offsetWriter{ctx: ctx, f: dstFile}, &offsetReader{ctx: ctx, f: srcFile}); err != nil {
+		// Simple implementation: sequential copy for each target. The stream
+		// is hashed in flight so the new replica's sidecar can record a
+		// content sum (recomputed per target; cheap relative to the copy).
+		hasher := sha256.New()
+		if _, err := io.Copy(&offsetWriter{ctx: ctx, f: dstFile}, io.TeeReader(&offsetReader{ctx: ctx, f: srcFile}, hasher)); err != nil {
 			_ = dstFile.Close()
 			logrus.Warnf("Copy failed for %s to %s: %v", path, targetName, err)
 			continue
@@ -313,19 +349,26 @@ func (m *RepairManager) repairNode(ctx context.Context, node *vfs.Node) error {
 		}
 
 		// Replicate the source's version sidecar so the new copy reports the
-		// same generation. A missing sidecar means a legacy (pre-versioning)
-		// file — nothing to copy. Sidecar failures don't fail the repair: the
-		// target just reports generation 0 until the next write.
-		sc, scErr := vfs.ReadSidecar(ctx, sourceBackend, path)
-		switch {
-		case scErr == nil:
+		// same generation, stamping in the content sum just computed. A
+		// missing sidecar means a legacy (pre-versioning) file — nothing to
+		// copy and nowhere to record the sum. Sidecar failures don't fail the
+		// repair: the target just reports generation 0 until the next write.
+		if srcSCErr == nil {
+			sum := "sha256:" + hex.EncodeToString(hasher.Sum(nil))
+			sc := srcSC
+			sc.Sum = sum
 			if err := vfs.WriteSidecar(ctx, targetBackend, path, sc); err != nil {
 				logrus.Warnf("Failed to copy sidecar for %s to %s: %v", path, targetName, err)
 			}
-		case errors.Is(scErr, os.ErrNotExist):
-			// Legacy file without a sidecar; skip.
-		default:
-			logrus.Warnf("Failed to read sidecar for %s from %s: %v", path, sourceName, scErr)
+			// The source content was just read in full, so record what we saw
+			// on the source too if its sum was unknown or stale. Non-fatal.
+			if srcSC.Sum != sum {
+				if err := vfs.WriteSidecar(ctx, sourceBackend, path, sc); err != nil {
+					logrus.Warnf("Failed to record content sum for %s on %s: %v", path, sourceName, err)
+				} else {
+					srcSC.Sum = sum
+				}
+			}
 		}
 
 		// Update metadata

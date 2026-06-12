@@ -2,9 +2,11 @@ package fuse
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"io"
 	"os"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -66,6 +68,9 @@ func TestRepairManager_RepairNode(t *testing.T) {
 	}).Return(len(scPayload), io.EOF)
 	srcSidecar.On("Close").Return(nil)
 	scTarget := expectSidecarWrite(b2, "repair.txt")
+	// The source's sidecar had no content sum, so repair records the sum of
+	// the bytes it just read on the source as well.
+	scSource := expectSidecarWrite(b1, "repair.txt")
 
 	err := mgr.repairNode(context.Background(), node)
 	assert.NoError(t, err)
@@ -75,11 +80,20 @@ func TestRepairManager_RepairNode(t *testing.T) {
 	assert.ElementsMatch(t, []string{"b1", "b2"}, node.Meta.Backends)
 	node.Mu.RUnlock()
 
-	// The target received the source's generation, not a new one.
+	// The target received the source's generation, not a new one, plus the
+	// content sum of the copied bytes.
+	wantSum := "sha256:" + fmt.Sprintf("%x", sha256.Sum256(data))
 	written, count := scTarget.get()
 	assert.Equal(t, 1, count)
 	assert.Equal(t, int64(7), written.Gen)
 	assert.Equal(t, "node-x", written.Writer)
+	assert.Equal(t, wantSum, written.Sum)
+
+	// The source's sidecar was updated with the same sum (it was empty).
+	srcWritten, srcCount := scSource.get()
+	assert.Equal(t, 1, srcCount)
+	assert.Equal(t, int64(7), srcWritten.Gen)
+	assert.Equal(t, wantSum, srcWritten.Sum)
 
 	b1.AssertExpectations(t)
 	b2.AssertExpectations(t)
@@ -135,11 +149,102 @@ func TestRepairManager_RepairNode_ChtimesErrorStillSucceeds(t *testing.T) {
 	assert.ElementsMatch(t, []string{"b1", "b2"}, node.Meta.Backends)
 	node.Mu.RUnlock()
 
-	// No sidecar write may reach the target for a legacy file.
+	// No sidecar write may reach the target for a legacy file, and no content
+	// sum is recorded on the source either (there is no sidecar to put it in).
 	b2.AssertNotCalled(t, "OpenFile", mock.Anything, vfs.SidecarPath("repair.txt"), os.O_CREATE|os.O_TRUNC|os.O_RDWR, os.FileMode(0644))
+	b1.AssertNotCalled(t, "OpenFile", mock.Anything, vfs.SidecarPath("repair.txt"), os.O_CREATE|os.O_TRUNC|os.O_RDWR, os.FileMode(0644))
 
 	b1.AssertExpectations(t)
 	b2.AssertExpectations(t)
+}
+
+func TestRepairManager_RepairNode_DetectsDivergentReplicas(t *testing.T) {
+	b1 := &test.MockBackend{NameVal: "b1"}
+	b2 := &test.MockBackend{NameVal: "b2"}
+
+	mockFile1 := &test.MockFile{}
+	mockFile2 := &test.MockFile{}
+
+	cache := vfs.NewCache()
+	// The cache only knows about the b1 replica, but b2 also holds the file
+	// (a stale same-generation replica with different content).
+	cache.Upsert("repair.txt", vfs.Metadata{Name: "repair.txt", Path: "repair.txt", Backends: []string{"b1"}, Mode: 0644}, "b1")
+
+	fs := &RepliFS{
+		Cache:             cache,
+		Backends:          map[string]backend.Backend{"b1": b1, "b2": b2},
+		ReplicationFactor: 2,
+		Selector:          vfs.NewFirstSelector(nil),
+	}
+
+	mgr := NewRepairManager(fs, time.Hour, 1)
+
+	node, _ := cache.Get("repair.txt")
+
+	data := []byte("repair data")
+	srcSum := "sha256:" + fmt.Sprintf("%x", sha256.Sum256(data))
+	divergentSum := "sha256:" + fmt.Sprintf("%x", sha256.Sum256([]byte("different content")))
+
+	b1.On("OpenFile", mock.Anything, "repair.txt", os.O_RDONLY, mock.Anything).Return(mockFile1, nil)
+	mockFile1.On("ReadAt", mock.Anything, mock.Anything, int64(0)).Run(func(args mock.Arguments) {
+		copy(args.Get(1).([]byte), data)
+	}).Return(len(data), io.EOF)
+	mockFile1.On("Close").Return(nil)
+
+	// Source sidecar: gen 7 with the (matching) content sum.
+	srcSidecar := &test.MockFile{}
+	srcPayload := []byte(fmt.Sprintf(`{"v":1,"gen":7,"writer":"node-x","deleted":false,"sum":"%s"}`, srcSum))
+	b1.On("OpenFile", mock.Anything, vfs.SidecarPath("repair.txt"), os.O_RDONLY, os.FileMode(0)).Return(srcSidecar, nil)
+	srcSidecar.On("ReadAt", mock.Anything, mock.Anything, int64(0)).Run(func(args mock.Arguments) {
+		copy(args.Get(1).([]byte), srcPayload)
+	}).Return(len(srcPayload), io.EOF)
+	srcSidecar.On("Close").Return(nil)
+
+	// Target already holds the file at the SAME generation with a DIFFERENT
+	// non-empty sum: divergence must be detected before the overwrite.
+	b2.On("Stat", mock.Anything, "repair.txt").Return(backend.FileInfo{Name: "repair.txt", Size: 17}, nil)
+	tgtSidecar := &test.MockFile{}
+	tgtPayload := []byte(fmt.Sprintf(`{"v":1,"gen":7,"writer":"node-y","deleted":false,"sum":"%s"}`, divergentSum))
+	b2.On("OpenFile", mock.Anything, vfs.SidecarPath("repair.txt"), os.O_RDONLY, os.FileMode(0)).Return(tgtSidecar, nil)
+	tgtSidecar.On("ReadAt", mock.Anything, mock.Anything, int64(0)).Run(func(args mock.Arguments) {
+		copy(args.Get(1).([]byte), tgtPayload)
+	}).Return(len(tgtPayload), io.EOF)
+	tgtSidecar.On("Close").Return(nil)
+
+	// Repair still overwrites the target from the source.
+	b2.On("OpenFile", mock.Anything, "repair.txt", os.O_CREATE|os.O_TRUNC|os.O_RDWR, os.FileMode(0644)).Return(mockFile2, nil)
+	mockFile2.On("WriteAt", mock.Anything, data, int64(0)).Return(len(data), nil)
+	mockFile2.On("Close").Return(nil)
+
+	srcModTime := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	b1.On("Stat", mock.Anything, "repair.txt").Return(backend.FileInfo{Name: "repair.txt", Size: int64(len(data)), ModTime: srcModTime}, nil)
+	b2.On("Chtimes", mock.Anything, "repair.txt", srcModTime, srcModTime).Return(nil)
+
+	scTarget := expectSidecarWrite(b2, "repair.txt")
+
+	err := mgr.repairNode(context.Background(), node)
+	assert.NoError(t, err)
+
+	// The divergence was counted exactly once.
+	assert.Equal(t, int64(1), atomic.LoadInt64(&mgr.divergenceCount))
+
+	node.Mu.RLock()
+	assert.ElementsMatch(t, []string{"b1", "b2"}, node.Meta.Backends)
+	node.Mu.RUnlock()
+
+	// The target's sidecar now carries the source's generation and sum.
+	written, count := scTarget.get()
+	assert.Equal(t, 1, count)
+	assert.Equal(t, int64(7), written.Gen)
+	assert.Equal(t, srcSum, written.Sum)
+
+	// The source's sum already matched what was read, so it is not rewritten.
+	b1.AssertNotCalled(t, "OpenFile", mock.Anything, vfs.SidecarPath("repair.txt"), os.O_CREATE|os.O_TRUNC|os.O_RDWR, os.FileMode(0644))
+
+	b1.AssertExpectations(t)
+	b2.AssertExpectations(t)
+	srcSidecar.AssertExpectations(t)
+	tgtSidecar.AssertExpectations(t)
 }
 
 func TestOffsetReader_Read(t *testing.T) {

@@ -37,6 +37,14 @@ type Sidecar struct {
 	Gen     int64  `json:"gen"`     // generation counter, bumped per write session under the path lock
 	Writer  string `json:"writer"`  // node that produced this generation (diagnostics only)
 	Deleted bool   `json:"deleted"` // tombstone marker (written by delete/rename, Phase 2)
+
+	// Sum is the content checksum of the replica, "sha256:<hex>"; empty
+	// means the content hash is unknown. Writers blank it on every
+	// generation bump (random-access FUSE writes make continuous hashing
+	// infeasible); repair fills it in while copying the stream. Two
+	// same-generation replicas with different non-empty sums hold divergent
+	// content (crash artifacts or bit rot).
+	Sum string `json:"sum,omitempty"`
 }
 
 // sidecarFormatVersion is the only sidecar format version this build

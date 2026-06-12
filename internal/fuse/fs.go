@@ -1213,6 +1213,10 @@ func (f *File) Open(ctx context.Context, req *fuse.OpenRequest, resp *fuse.OpenR
 				}
 
 				// Copy the data from the source file to the target file.
+				// Content checksums are deliberately not computed here
+				// (unlike RepairManager.repairNode): the post-heal generation
+				// bump below blanks Sidecar.Sum anyway, since the write
+				// session is about to mutate the content.
 				reader := &offsetReader{ctx: ctx, f: srcFile}
 				writer := &offsetWriter{ctx: ctx, f: dstFile}
 				if _, err := io.Copy(writer, reader); err != nil {
