@@ -1,7 +1,17 @@
 mount_point: "/tmp/replistore_mount"
 replication_factor: 2
-expected_cluster_size: 1
+write_quorum: 1
 cache_refresh_interval: "5m"
+repair_interval: "1h"
+repair_concurrency: 2
+
+# Optional: P2P clustering. When listen_addr is set, the other three
+# cluster fields become mandatory.
+# listen_addr: ":5050"                  # UDP port for the lock server
+# advertise_addr: "192.168.1.50:5050"   # host:port peers use to reach this node
+# cluster_secret: "change-me-16chars+"  # shared HMAC secret, same on all nodes, min 16 chars
+# expected_cluster_size: 2              # total nodes in the cluster (quorum = n/2+1)
+
 backends:
   - name: "nas-01"
     address: "127.0.0.1:445"

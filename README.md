@@ -6,7 +6,7 @@ RepliStore is a distributed, FUSE-based replicated storage system written in Go.
 
 - **SMB2/3 Native Connectivity:** Directly manages connections to remote shares without requiring OS-level mounting.
 - **FUSE Interface:** Provides a standard filesystem interface to the operating system.
-- **Peer-to-Peer (P2P) Distributed Locking:** Robust cross-node consistency using mDNS discovery and a masterless quorum algorithm.
+- **Peer-to-Peer (P2P) Distributed Locking:** Masterless quorum locking over HMAC-authenticated UDP datagrams, with node discovery through the shared backends (no multicast or shared L2 required).
 - **File-Level Replication:** Configurable replication factor (RF) ensuring data redundancy across multiple backends.
 - **Quorum-Based Write Consistency:** Configurable write quorum (WQ) to ensure that file writes and creations are acknowledged by a minimum number of backends.
 - **Background Repair:** Automatic background worker that detects and restores degraded files (files with missing replicas).
@@ -65,10 +65,15 @@ Create a `config.yaml` file (see example below):
 ```yaml
 mount_point: "/mnt/replistore"
 replication_factor: 2
+write_quorum: 1          # backends that must ack a write (defaults to replication_factor)
 cache_refresh_interval: "5m"
 
-# Optional: Enable P2P Cluster
-listen_addr: ":5050"
+# Optional: Enable P2P Cluster. When listen_addr is set, the other three
+# cluster fields are required.
+listen_addr: ":5050"                  # UDP port for the lock server
+advertise_addr: "192.168.1.50:5050"   # host:port peers use to reach this node
+cluster_secret: "change-me-16chars+"  # shared HMAC secret, same on all nodes (min 16 chars)
+expected_cluster_size: 2              # total nodes in the cluster
 
 backends:
   - name: "nas-01"
