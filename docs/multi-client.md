@@ -41,7 +41,7 @@ The background **Repair Manager** also utilizes the DLM. Before repairing a degr
 ### 4. Fencing and Node Recovery
 Locks are granted as **Leases** with a short Time-To-Live (TTL).
 - If a node crashes, its locks naturally expire and are reclaimed by the cluster.
-- **Fencing Tokens:** If a node's network is slow and its lease expires, it will automatically abort pending backend writes, preventing it from corrupting files written by a new owner.
+- **Lease validation:** lease validity is checked before each write *and re-checked after the backend writes complete, before acknowledging to the application* — a write that landed under an expired lease is reported as an I/O error. Note the honest limitation: SMB offers no true fencing primitive, so a write already in flight when the lease expires can still reach the backend; the post-write check shrinks that window to milliseconds but cannot eliminate it.
 
 ---
 

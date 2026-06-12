@@ -1483,6 +1483,19 @@ func (h *FileHandle) Write(ctx context.Context, req *fuse.WriteRequest, resp *fu
 		h.cleanupFailedBackends(failures)
 	}
 
+	// Re-check the lease AFTER the backend writes complete, before
+	// acknowledging to the kernel. The pre-write check above is racy: the
+	// lease can expire while the SMB writes are in flight and a new owner may
+	// have been granted the lock (REVIEW C3). SMB offers no fencing
+	// primitive, so this post-write check is the strongest guarantee
+	// available — it shrinks the stale-holder window from a full I/O
+	// duration to the gap between the last WriteAt and this line. A write
+	// that landed under a lost lease is reported as an error so the
+	// application does not build on unfenced state.
+	if h.lock != nil && !h.lock.IsValid() {
+		return syscall.EIO
+	}
+
 	resp.Size = len(req.Data)
 
 	// Update cache size and mtime
