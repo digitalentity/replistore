@@ -2,6 +2,7 @@ package fuse
 
 import (
 	"context"
+	"errors"
 	"io"
 	"os"
 	"time"
@@ -200,6 +201,22 @@ func (m *RepairManager) repairNode(ctx context.Context, node *vfs.Node) error {
 		mtime := sourceModTime(ctx, sourceBackend, path, cachedModTime)
 		if err := targetBackend.Chtimes(ctx, path, mtime, mtime); err != nil {
 			logrus.Warnf("Failed to preserve mtime for %s on %s: %v", path, targetName, err)
+		}
+
+		// Replicate the source's version sidecar so the new copy reports the
+		// same generation. A missing sidecar means a legacy (pre-versioning)
+		// file — nothing to copy. Sidecar failures don't fail the repair: the
+		// target just reports generation 0 until the next write.
+		sc, scErr := vfs.ReadSidecar(ctx, sourceBackend, path)
+		switch {
+		case scErr == nil:
+			if err := vfs.WriteSidecar(ctx, targetBackend, path, sc); err != nil {
+				logrus.Warnf("Failed to copy sidecar for %s to %s: %v", path, targetName, err)
+			}
+		case errors.Is(scErr, os.ErrNotExist):
+			// Legacy file without a sidecar; skip.
+		default:
+			logrus.Warnf("Failed to read sidecar for %s from %s: %v", path, sourceName, scErr)
 		}
 
 		// Update metadata

@@ -2,9 +2,12 @@ package fuse
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
+	gopath "path"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -16,6 +19,53 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 )
+
+// sidecarCapture records sidecar writes registered via expectSidecarWrite.
+type sidecarCapture struct {
+	mu    sync.Mutex
+	count int
+	last  vfs.Sidecar
+}
+
+func (c *sidecarCapture) get() (vfs.Sidecar, int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.last, c.count
+}
+
+// expectSidecarWrite registers permissive (.Maybe()) expectations for sidecar
+// writes of dataPath on b — MkdirAll + OpenFile + WriteAt + Close — and
+// captures what was written. Permissive so tests that aren't about sidecars
+// stay minimal.
+func expectSidecarWrite(b *test.MockBackend, dataPath string) *sidecarCapture {
+	c := &sidecarCapture{}
+	f := &test.MockFile{}
+	sp := vfs.SidecarPath(dataPath)
+	b.On("MkdirAll", mock.Anything, gopath.Dir(sp), os.FileMode(0755)).Return(nil).Maybe()
+	b.On("OpenFile", mock.Anything, sp, os.O_CREATE|os.O_TRUNC|os.O_RDWR, os.FileMode(0644)).Return(f, nil).Maybe()
+	f.On("WriteAt", mock.Anything, mock.Anything, int64(0)).Run(func(args mock.Arguments) {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		c.count++
+		_ = json.Unmarshal(args.Get(1).([]byte), &c.last)
+	}).Return(0, nil).Maybe()
+	f.On("Close").Return(nil).Maybe()
+	return c
+}
+
+// expectSidecarRename registers permissive expectations for the sidecar move
+// that accompanies a file rename.
+func expectSidecarRename(b *test.MockBackend, oldPath, newPath string) {
+	oldSC, newSC := vfs.SidecarPath(oldPath), vfs.SidecarPath(newPath)
+	b.On("MkdirAll", mock.Anything, gopath.Dir(newSC), os.FileMode(0755)).Return(nil).Maybe()
+	b.On("Rename", mock.Anything, oldSC, newSC).Return(nil).Maybe()
+}
+
+// expectSidecarRemove registers a permissive expectation for sidecar deletion
+// of dataPath on b.
+func expectSidecarRemove(b *test.MockBackend, dataPath string) {
+	b.On("Remove", mock.Anything, vfs.SidecarPath(dataPath)).Return(nil).Maybe()
+}
 
 func TestFS_Lookup(t *testing.T) {
 	cache := vfs.NewCache()
@@ -64,12 +114,14 @@ func TestDir_Create(t *testing.T) {
 		ReplicationFactor: 1,
 		WriteQuorum:       1,
 		Selector:          vfs.NewRandomSelector(nil),
+		NodeID:            "node-test",
 	}
 
 	root, _ := fs.Root()
 	dir := root.(*Dir)
 
 	b1.On("OpenFile", mock.Anything, "new.txt", os.O_CREATE|os.O_EXCL|os.O_RDWR, os.FileMode(0644)).Return(mockFile, nil)
+	sc := expectSidecarWrite(b1, "new.txt")
 
 	req := &fuse.CreateRequest{Name: "new.txt", Mode: 0644}
 	resp := &fuse.CreateResponse{}
@@ -78,6 +130,17 @@ func TestDir_Create(t *testing.T) {
 	assert.NoError(t, err)
 	assert.NotNil(t, node)
 	assert.NotNil(t, handle)
+
+	// Create must stamp generation 1 on the new replica and in the cache.
+	written, count := sc.get()
+	assert.Equal(t, 1, count)
+	assert.Equal(t, int64(1), written.Gen)
+	assert.Equal(t, "node-test", written.Writer)
+
+	file := node.(*File)
+	file.node.Mu.RLock()
+	assert.Equal(t, int64(1), file.node.Meta.Gen)
+	file.node.Mu.RUnlock()
 
 	b1.AssertExpectations(t)
 }
@@ -103,6 +166,7 @@ func TestFile_Write(t *testing.T) {
 	file := node.(*File)
 
 	b1.On("OpenFile", mock.Anything, "test.txt", mock.Anything, mock.Anything).Return(mockFile, nil)
+	expectSidecarWrite(b1, "test.txt")
 
 	h, err := file.Open(context.Background(), &fuse.OpenRequest{Flags: fuse.OpenReadWrite}, &fuse.OpenResponse{})
 	assert.NoError(t, err)
@@ -256,6 +320,8 @@ func TestFile_Write_Quorum(t *testing.T) {
 
 	b1.On("OpenFile", mock.Anything, "quorum.txt", mock.Anything, mock.Anything).Return(mockFile1, nil)
 	b2.On("OpenFile", mock.Anything, "quorum.txt", mock.Anything, mock.Anything).Return(mockFile2, nil)
+	expectSidecarWrite(b1, "quorum.txt")
+	expectSidecarWrite(b2, "quorum.txt")
 
 	h, err := file.Open(context.Background(), &fuse.OpenRequest{Flags: fuse.OpenReadWrite}, &fuse.OpenResponse{})
 	assert.NoError(t, err)
@@ -320,10 +386,12 @@ func TestFile_Fsync_WithWriteHandle(t *testing.T) {
 	node, _ := dir.Lookup(context.Background(), "sync.txt")
 	file := node.(*File)
 
-	// Exactly one open per backend: node-level Fsync must sync the write
-	// handle's already-open files, not open fresh ones.
+	// Exactly one open per backend for the data file: node-level Fsync must
+	// sync the write handle's already-open files, not open fresh ones.
 	b1.On("OpenFile", mock.Anything, "sync.txt", mock.Anything, mock.Anything).Return(mockFile1, nil).Once()
 	b2.On("OpenFile", mock.Anything, "sync.txt", mock.Anything, mock.Anything).Return(mockFile2, nil).Once()
+	expectSidecarWrite(b1, "sync.txt")
+	expectSidecarWrite(b2, "sync.txt")
 
 	h, _ := file.Open(context.Background(), &fuse.OpenRequest{Flags: fuse.OpenReadWrite}, &fuse.OpenResponse{})
 	assert.NotNil(t, h)
@@ -339,8 +407,11 @@ func TestFile_Fsync_WithWriteHandle(t *testing.T) {
 
 	err := file.Fsync(context.Background(), &fuse.FsyncRequest{})
 	assert.NoError(t, err)
-	b1.AssertNumberOfCalls(t, "OpenFile", 1)
-	b2.AssertNumberOfCalls(t, "OpenFile", 1)
+	// 2 OpenFile calls per backend: the data file (once, at Open) and the
+	// sidecar write that stamps the new generation. Fsync itself must not
+	// open anything.
+	b1.AssertNumberOfCalls(t, "OpenFile", 2)
+	b2.AssertNumberOfCalls(t, "OpenFile", 2)
 
 	file.node.Mu.RLock()
 	assert.Equal(t, []string{"b1"}, file.node.Meta.Backends)
@@ -629,6 +700,8 @@ func TestRemove_FileNotExistCountsAsSuccess(t *testing.T) {
 	b1.On("Remove", mock.Anything, "gone.txt").Return(nil)
 	// Idempotent delete: already-absent file counts towards quorum.
 	b2.On("Remove", mock.Anything, "gone.txt").Return(os.ErrNotExist)
+	expectSidecarRemove(b1, "gone.txt")
+	expectSidecarRemove(b2, "gone.txt")
 
 	req := &fuse.RemoveRequest{Name: "gone.txt"}
 	err := dir.Remove(context.Background(), req)
@@ -666,6 +739,8 @@ func TestFile_Write_QuorumFailure(t *testing.T) {
 
 	b1.On("OpenFile", mock.Anything, "quorum_fail.txt", mock.Anything, mock.Anything).Return(mockFile1, nil)
 	b2.On("OpenFile", mock.Anything, "quorum_fail.txt", mock.Anything, mock.Anything).Return(mockFile2, nil)
+	expectSidecarWrite(b1, "quorum_fail.txt")
+	expectSidecarWrite(b2, "quorum_fail.txt")
 
 	h, err := file.Open(context.Background(), &fuse.OpenRequest{Flags: fuse.OpenReadWrite}, &fuse.OpenResponse{})
 	assert.NoError(t, err)
@@ -842,6 +917,10 @@ func TestFile_Open_HealDegraded(t *testing.T) {
 	b1.On("OpenFile", mock.Anything, "degraded.txt", mock.Anything, mock.Anything).Return(b1WriteFile, nil)
 	b2.On("OpenFile", mock.Anything, "degraded.txt", mock.Anything, mock.Anything).Return(b2WriteFile, nil)
 
+	// The post-heal generation bump writes sidecars to ALL backends.
+	sc1 := expectSidecarWrite(b1, "degraded.txt")
+	sc2 := expectSidecarWrite(b2, "degraded.txt")
+
 	h, err := file.Open(context.Background(), &fuse.OpenRequest{Flags: fuse.OpenReadWrite}, &fuse.OpenResponse{})
 	assert.NoError(t, err)
 	assert.NotNil(t, h)
@@ -849,7 +928,16 @@ func TestFile_Open_HealDegraded(t *testing.T) {
 	// Verify that the file's VFS cache node now lists ["b1", "b2"] as backends
 	file.node.Mu.RLock()
 	assert.ElementsMatch(t, []string{"b1", "b2"}, file.node.Meta.Backends)
+	assert.Equal(t, int64(1), file.node.Meta.Gen)
 	file.node.Mu.RUnlock()
+
+	// One generation bump, stamped on every replica including the healed one.
+	w1, n1 := sc1.get()
+	w2, n2 := sc2.get()
+	assert.Equal(t, 1, n1)
+	assert.Equal(t, 1, n2)
+	assert.Equal(t, int64(1), w1.Gen)
+	assert.Equal(t, int64(1), w2.Gen)
 
 	b1.AssertExpectations(t)
 	b2.AssertExpectations(t)
@@ -878,6 +966,7 @@ func TestDir_Create_MkdirAllParent(t *testing.T) {
 
 	b1.On("MkdirAll", mock.Anything, "parent", os.FileMode(0755)).Return(nil)
 	b1.On("OpenFile", mock.Anything, "parent/new.txt", os.O_CREATE|os.O_EXCL|os.O_RDWR, os.FileMode(0644)).Return(mockFile, nil)
+	expectSidecarWrite(b1, "parent/new.txt")
 
 	req := &fuse.CreateRequest{Name: "new.txt", Mode: 0644}
 	resp := &fuse.CreateResponse{}
@@ -986,6 +1075,8 @@ func TestFile_Setattr_Truncate(t *testing.T) {
 
 	b1.On("Truncate", mock.Anything, "trunc.txt", int64(10)).Return(nil)
 	b2.On("Truncate", mock.Anything, "trunc.txt", int64(10)).Return(nil)
+	sc1 := expectSidecarWrite(b1, "trunc.txt")
+	sc2 := expectSidecarWrite(b2, "trunc.txt")
 
 	req := &fuse.SetattrRequest{Valid: fuse.SetattrSize, Size: 10}
 	resp := &fuse.SetattrResponse{}
@@ -997,7 +1088,16 @@ func TestFile_Setattr_Truncate(t *testing.T) {
 	file.node.Mu.RLock()
 	assert.Equal(t, int64(10), file.node.Meta.Size)
 	assert.ElementsMatch(t, []string{"b1", "b2"}, file.node.Meta.Backends)
+	assert.Equal(t, int64(1), file.node.Meta.Gen)
 	file.node.Mu.RUnlock()
+
+	// Truncate bumps the generation on every surviving replica.
+	w1, n1 := sc1.get()
+	w2, n2 := sc2.get()
+	assert.Equal(t, 1, n1)
+	assert.Equal(t, 1, n2)
+	assert.Equal(t, int64(1), w1.Gen)
+	assert.Equal(t, int64(1), w2.Gen)
 
 	b1.AssertExpectations(t)
 	b2.AssertExpectations(t)
@@ -1065,6 +1165,8 @@ func TestFile_Setattr_Truncate_PartialFailureEvictsBackend(t *testing.T) {
 
 	b1.On("Truncate", mock.Anything, "trunc_part.txt", int64(5)).Return(nil)
 	b2.On("Truncate", mock.Anything, "trunc_part.txt", int64(5)).Return(fmt.Errorf("disk error"))
+	// The generation bump only goes to the surviving backend.
+	expectSidecarWrite(b1, "trunc_part.txt")
 
 	// The wrong-length replica must be removed from the failed backend
 	// asynchronously.
@@ -1214,4 +1316,56 @@ func TestReservedPath_CreateReturnsEACCES(t *testing.T) {
 	assert.Nil(t, handle)
 
 	b1.AssertNotCalled(t, "OpenFile", mock.Anything, mock.Anything, mock.Anything, mock.Anything)
+}
+
+func TestFile_Open_WriteBumpsGeneration(t *testing.T) {
+	b1 := &test.MockBackend{NameVal: "b1"}
+	b2 := &test.MockBackend{NameVal: "b2"}
+	mockFile1 := &test.MockFile{}
+	mockFile2 := &test.MockFile{}
+
+	cache := vfs.NewCache()
+	cache.Upsert("gen.txt", vfs.Metadata{Name: "gen.txt", Path: "gen.txt", Backends: []string{"b1", "b2"}, Gen: 3}, "b1")
+	cache.Upsert("gen.txt", vfs.Metadata{Name: "gen.txt", Path: "gen.txt", Backends: []string{"b1", "b2"}, Gen: 3}, "b2")
+
+	fs := &RepliFS{
+		Cache:             cache,
+		Backends:          map[string]backend.Backend{"b1": b1, "b2": b2},
+		ReplicationFactor: 2,
+		WriteQuorum:       2,
+		Selector:          vfs.NewFirstSelector(nil),
+		NodeID:            "node-test",
+	}
+
+	root, _ := fs.Root()
+	dir := root.(*Dir)
+	node, _ := dir.Lookup(context.Background(), "gen.txt")
+	file := node.(*File)
+
+	// Seed the cached generation; Upsert merge semantics are out of scope.
+	file.node.Mu.Lock()
+	file.node.Meta.Gen = 3
+	file.node.Mu.Unlock()
+
+	b1.On("OpenFile", mock.Anything, "gen.txt", mock.Anything, mock.Anything).Return(mockFile1, nil)
+	b2.On("OpenFile", mock.Anything, "gen.txt", mock.Anything, mock.Anything).Return(mockFile2, nil)
+	sc1 := expectSidecarWrite(b1, "gen.txt")
+	sc2 := expectSidecarWrite(b2, "gen.txt")
+
+	h, err := file.Open(context.Background(), &fuse.OpenRequest{Flags: fuse.OpenReadWrite}, &fuse.OpenResponse{})
+	assert.NoError(t, err)
+	assert.NotNil(t, h)
+
+	// One bump per write session: gen 3 -> 4, written to every handle backend.
+	w1, n1 := sc1.get()
+	w2, n2 := sc2.get()
+	assert.Equal(t, 1, n1)
+	assert.Equal(t, 1, n2)
+	assert.Equal(t, int64(4), w1.Gen)
+	assert.Equal(t, int64(4), w2.Gen)
+	assert.Equal(t, "node-test", w1.Writer)
+
+	file.node.Mu.RLock()
+	assert.Equal(t, int64(4), file.node.Meta.Gen)
+	file.node.Mu.RUnlock()
 }

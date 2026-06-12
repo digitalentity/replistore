@@ -56,6 +56,16 @@ func TestRepairManager_RepairNode(t *testing.T) {
 	b1.On("Stat", mock.Anything, "repair.txt").Return(backend.FileInfo{Name: "repair.txt", Size: int64(len(data)), ModTime: srcModTime}, nil)
 	b2.On("Chtimes", mock.Anything, "repair.txt", srcModTime, srcModTime).Return(nil)
 
+	// The source's sidecar (gen 7) must be replicated to the target.
+	srcSidecar := &test.MockFile{}
+	scPayload := []byte(`{"v":1,"gen":7,"writer":"node-x","deleted":false}`)
+	b1.On("OpenFile", mock.Anything, vfs.SidecarPath("repair.txt"), os.O_RDONLY, os.FileMode(0)).Return(srcSidecar, nil)
+	srcSidecar.On("ReadAt", mock.Anything, mock.Anything, int64(0)).Run(func(args mock.Arguments) {
+		copy(args.Get(1).([]byte), scPayload)
+	}).Return(len(scPayload), io.EOF)
+	srcSidecar.On("Close").Return(nil)
+	scTarget := expectSidecarWrite(b2, "repair.txt")
+
 	err := mgr.repairNode(context.Background(), node)
 	assert.NoError(t, err)
 
@@ -64,8 +74,15 @@ func TestRepairManager_RepairNode(t *testing.T) {
 	assert.ElementsMatch(t, []string{"b1", "b2"}, node.Meta.Backends)
 	node.Mu.RUnlock()
 
+	// The target received the source's generation, not a new one.
+	written, count := scTarget.get()
+	assert.Equal(t, 1, count)
+	assert.Equal(t, int64(7), written.Gen)
+	assert.Equal(t, "node-x", written.Writer)
+
 	b1.AssertExpectations(t)
 	b2.AssertExpectations(t)
+	srcSidecar.AssertExpectations(t)
 }
 
 func TestRepairManager_RepairNode_ChtimesErrorStillSucceeds(t *testing.T) {
@@ -106,6 +123,9 @@ func TestRepairManager_RepairNode_ChtimesErrorStillSucceeds(t *testing.T) {
 	b1.On("Stat", mock.Anything, "repair.txt").Return(backend.FileInfo{}, io.ErrUnexpectedEOF)
 	b2.On("Chtimes", mock.Anything, "repair.txt", mock.Anything, mock.Anything).Return(io.ErrUnexpectedEOF)
 
+	// Legacy file: the source has no sidecar, so none is written to the target.
+	b1.On("OpenFile", mock.Anything, vfs.SidecarPath("repair.txt"), os.O_RDONLY, os.FileMode(0)).Return(nil, os.ErrNotExist)
+
 	err := mgr.repairNode(context.Background(), node)
 	assert.NoError(t, err)
 
@@ -113,6 +133,9 @@ func TestRepairManager_RepairNode_ChtimesErrorStillSucceeds(t *testing.T) {
 	node.Mu.RLock()
 	assert.ElementsMatch(t, []string{"b1", "b2"}, node.Meta.Backends)
 	node.Mu.RUnlock()
+
+	// No sidecar write may reach the target for a legacy file.
+	b2.AssertNotCalled(t, "OpenFile", mock.Anything, vfs.SidecarPath("repair.txt"), os.O_CREATE|os.O_TRUNC|os.O_RDWR, os.FileMode(0644))
 
 	b1.AssertExpectations(t)
 	b2.AssertExpectations(t)

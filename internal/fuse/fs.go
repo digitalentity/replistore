@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	gopath "path"
 	"sync"
 	"syscall"
 	"time"
@@ -27,6 +28,11 @@ type RepliFS struct {
 	Selector          vfs.BackendSelector
 	LockManager       *cluster.LockManager
 	Discovery         *cluster.Discovery
+
+	// NodeID identifies this node as the writer in version sidecars
+	// (diagnostics only). Set from main; an empty string is fine when
+	// clustering is off — sidecar correctness depends only on Gen.
+	NodeID string
 
 	// pathLocks serializes same-path mutations within this process. The
 	// distributed lock manager (when enabled) only arbitrates between nodes
@@ -90,6 +96,29 @@ func (f *RepliFS) removeStaleReplica(path string, backendName string) {
 		}
 		logrus.Warnf("Failed to remove stale replica %s from backend %s: %v", path, backendName, lastErr)
 	}()
+}
+
+// writeSidecars writes sc to path's sidecar on the named backends in
+// parallel, best-effort. Best-effort rationale: a replica whose sidecar write
+// failed reports generation 0 and therefore loses reconciliation against the
+// replicas carrying the new generation, after which it gets repaired — no
+// data loss.
+func (f *RepliFS) writeSidecars(ctx context.Context, path string, sc vfs.Sidecar, backendNames []string) {
+	var wg sync.WaitGroup
+	for _, bName := range backendNames {
+		b, ok := f.Backends[bName]
+		if !ok {
+			continue
+		}
+		wg.Add(1)
+		go func(bName string, b backend.Backend) {
+			defer wg.Done()
+			if err := vfs.WriteSidecar(ctx, b, path, sc); err != nil {
+				logrus.Warnf("Failed to write sidecar (gen %d) for %s on backend %s: %v", sc.Gen, path, bName, err)
+			}
+		}(bName, b)
+	}
+	wg.Wait()
 }
 
 func (f *RepliFS) getBackendList() []backend.Backend {
@@ -299,6 +328,12 @@ func (d *Dir) Create(ctx context.Context, req *fuse.CreateRequest, resp *fuse.Cr
 		return nil, nil, fmt.Errorf("could not reach write quorum: %d/%d", len(successfulBackends), d.fs.WriteQuorum)
 	}
 
+	// Stamp generation 1 on every replica this create produced (done before
+	// re-acquiring the VFS lock — sidecar writes are backend I/O). If the
+	// conflict check below loses the race, the orphaned sidecars are harmless
+	// and get superseded by the winner's writes or by Phase 2 tombstones.
+	d.fs.writeSidecars(ctx, path, vfs.Sidecar{Gen: 1, Writer: d.fs.NodeID}, successfulBackends)
+
 	// Re-acquire lock to update VFS
 	d.node.Mu.Lock()
 	defer d.node.Mu.Unlock()
@@ -331,6 +366,7 @@ func (d *Dir) Create(ctx context.Context, req *fuse.CreateRequest, resp *fuse.Cr
 		Path:     path,
 		Mode:     req.Mode,
 		Backends: successfulBackends,
+		Gen:      1,
 	}
 
 	child := &vfs.Node{
@@ -531,6 +567,22 @@ func (d *Dir) Remove(ctx context.Context, req *fuse.RemoveRequest) error {
 		return fmt.Errorf("could not reach write quorum for remove: %d/%d", successes, d.fs.WriteQuorum)
 	}
 
+	if !isDir {
+		// Best-effort sidecar cleanup on the backends that held the file.
+		// Directories have no sidecars.
+		// TODO(C6): Phase 2 replaces this deletion with a tombstone sidecar so
+		// a missed delete cannot resurrect the file via background sync.
+		for _, bName := range backends {
+			b, okB := d.fs.Backends[bName]
+			if !okB {
+				continue
+			}
+			if err := vfs.RemoveSidecar(ctx, b, path); err != nil {
+				logrus.Warnf("Failed to remove sidecar for %s on backend %s: %v", path, bName, err)
+			}
+		}
+	}
+
 	d.node.Mu.Lock()
 	delete(d.node.Children, req.Name)
 	d.node.Mu.Unlock()
@@ -665,6 +717,28 @@ func (d *Dir) Rename(ctx context.Context, req *fuse.RenameRequest, newDir fs.Nod
 		}
 		return syscall.EIO
 	}
+
+	if !isDir {
+		// Move the sidecar along with the file, best-effort per successful
+		// backend. A failed sidecar rename (e.g. legacy file with no sidecar)
+		// just leaves the new path at generation 0.
+		// TODO(C6): Phase 2 additionally writes a tombstone at the old path.
+		oldSC := vfs.SidecarPath(oldPath)
+		newSC := vfs.SidecarPath(newPath)
+		for _, bName := range successful {
+			b := d.fs.Backends[bName]
+			if err := b.MkdirAll(ctx, gopath.Dir(newSC), 0755); err != nil {
+				logrus.Debugf("Failed to create sidecar parent dir for %s on %s: %v", newSC, bName, err)
+			}
+			if err := b.Rename(ctx, oldSC, newSC); err != nil {
+				logrus.Debugf("Failed to rename sidecar %s -> %s on %s: %v", oldSC, newSC, bName, err)
+			}
+		}
+	}
+	// TODO(meta-dir-rename): the sidecar tree mirrors the data tree, so
+	// renaming a data directory D leaves the sidecars under
+	// .replistore/meta/D stale (replicas of moved files report generation 0
+	// until rewritten). To be addressed together with tombstones in Phase 2.
 
 	// Update Cache
 	if !d.fs.Cache.Rename(oldPath, newPath) {
@@ -890,7 +964,15 @@ func (f *File) Setattr(ctx context.Context, req *fuse.SetattrRequest, resp *fuse
 	}
 	f.node.Meta.Size = size
 	f.node.Meta.ModTime = time.Now()
+	// Truncate is a content mutation: bump the generation once, under the
+	// path/distributed lock held above.
+	newGen := f.node.Meta.Gen + 1
+	f.node.Meta.Gen = newGen
+	surviving := make([]string, len(f.node.Meta.Backends))
+	copy(surviving, f.node.Meta.Backends)
 	f.node.Mu.Unlock()
+
+	f.fs.writeSidecars(ctx, path, vfs.Sidecar{Gen: newGen, Writer: f.fs.NodeID}, surviving)
 
 	for _, bName := range failures {
 		f.fs.removeStaleReplica(path, bName)
@@ -1050,6 +1132,18 @@ func (f *File) Open(ctx context.Context, req *fuse.OpenRequest, resp *fuse.OpenR
 				backends = append(backends, targetName)
 			}
 		}
+
+		// Generation bump: exactly once per write session, under the path and
+		// distributed locks held above. Ordering matters: the inline heal
+		// copies above replicate the data at the OLD generation; this single
+		// bump+write then stamps the NEW generation onto ALL replicas
+		// (including freshly healed targets), so the heal loop needs no
+		// per-target sidecar copy of its own.
+		f.node.Mu.Lock()
+		newGen := f.node.Meta.Gen + 1
+		f.node.Meta.Gen = newGen
+		f.node.Mu.Unlock()
+		f.fs.writeSidecars(ctx, path, vfs.Sidecar{Gen: newGen, Writer: f.fs.NodeID}, backends)
 	}
 
 	// Unlock I/O: Open outside of lock (already done since we RUnlocked above)

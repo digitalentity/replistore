@@ -49,15 +49,18 @@ func main() {
 		logrus.Fatal("No backends connected")
 	}
 
+	// Node identity: cluster node ID when clustering is enabled, and the
+	// writer identity recorded in version sidecars either way.
+	nodeID, _ := os.Hostname()
+	if nodeID == "" {
+		nodeID = "replistore-" + time.Now().Format("150405")
+	}
+
 	// Initialize P2P Lock Manager and Discovery
 	var lockMgr *cluster.LockManager
 	var disco *cluster.Discovery
 
 	if cfg.ListenAddr != "" {
-		nodeID, _ := os.Hostname()
-		if nodeID == "" {
-			nodeID = "replistore-" + time.Now().Format("150405")
-		}
 
 		lockMgr = cluster.NewLockManager(nodeID)
 		lockMgr.ExpectedClusterSize = cfg.ExpectedClusterSize
@@ -116,6 +119,7 @@ func main() {
 		Selector:          vfs.NewRandomSelector(monitor),
 		LockManager:       lockMgr,
 		Discovery:         disco,
+		NodeID:            nodeID,
 	}
 
 	// Initialize and start Repair Manager

@@ -38,6 +38,7 @@ type Metadata struct {
 	ModTime  time.Time
 	IsDir    bool
 	Backends []string // Names of backends containing this file
+	Gen      int64    // version generation from the sidecar; 0 = legacy/unknown
 }
 
 type Node struct {
