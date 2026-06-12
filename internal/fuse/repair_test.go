@@ -2,6 +2,7 @@ package fuse
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"os"
 	"testing"
@@ -185,4 +186,145 @@ func TestOffsetWriter_Write(t *testing.T) {
 	n, err = writer.Write([]byte(" world"))
 	assert.NoError(t, err)
 	assert.Equal(t, 6, n)
+}
+
+// mockTombstoneTree makes b's tombstone tree enumerate (and serve) a tombstone
+// at the given generation for each path; an empty map means no tombstone tree.
+func mockTombstoneTree(b *test.MockBackend, tombs map[string]int64) {
+	if len(tombs) == 0 {
+		b.On("Walk", mock.Anything, ".replistore/tombstones", mock.Anything).Return(os.ErrNotExist)
+		return
+	}
+	b.On("Walk", mock.Anything, ".replistore/tombstones", mock.Anything).Run(func(args mock.Arguments) {
+		fn := args.Get(2).(func(string, backend.FileInfo) error)
+		for path := range tombs {
+			_ = fn(vfs.TombstonePath(path), backend.FileInfo{Name: path + ".json"})
+		}
+	}).Return(nil)
+	for path, gen := range tombs {
+		payload := []byte(fmt.Sprintf(`{"v":1,"gen":%d,"writer":"w","deleted":true}`, gen))
+		f := &test.MockFile{}
+		f.On("ReadAt", mock.Anything, mock.Anything, int64(0)).Run(func(args mock.Arguments) {
+			copy(args.Get(1).([]byte), payload)
+		}).Return(len(payload), io.EOF)
+		f.On("Close").Return(nil)
+		b.On("OpenFile", mock.Anything, vfs.TombstonePath(path), os.O_RDONLY, os.FileMode(0)).Return(f, nil)
+	}
+}
+
+// mockSidecarGen makes b serve a sidecar with the given generation for path.
+func mockSidecarGen(b *test.MockBackend, path string, gen int64) {
+	payload := []byte(fmt.Sprintf(`{"v":1,"gen":%d,"writer":"w","deleted":false}`, gen))
+	f := &test.MockFile{}
+	f.On("ReadAt", mock.Anything, mock.Anything, int64(0)).Run(func(args mock.Arguments) {
+		copy(args.Get(1).([]byte), payload)
+	}).Return(len(payload), io.EOF)
+	f.On("Close").Return(nil)
+	b.On("OpenFile", mock.Anything, vfs.SidecarPath(path), os.O_RDONLY, os.FileMode(0)).Return(f, nil)
+}
+
+func newTombstoneTestManager(b1, b2 *test.MockBackend) *RepairManager {
+	fs := &RepliFS{
+		Cache:             vfs.NewCache(),
+		Backends:          map[string]backend.Backend{"b1": b1, "b2": b2},
+		ReplicationFactor: 2,
+		WriteQuorum:       1,
+		Selector:          vfs.NewFirstSelector(nil),
+	}
+	return NewRepairManager(fs, time.Hour, 1)
+}
+
+func TestEnforceTombstones_DeletesZombie(t *testing.T) {
+	b1 := &test.MockBackend{NameVal: "b1"}
+	b2 := &test.MockBackend{NameVal: "b2"}
+	mgr := newTombstoneTestManager(b1, b2)
+
+	// b1 still holds the deleted file at gen 2; the tombstone records gen 3.
+	mockTombstoneTree(b1, map[string]int64{"z.txt": 3})
+	mockTombstoneTree(b2, nil)
+	b1.On("Stat", mock.Anything, "z.txt").Return(backend.FileInfo{Name: "z.txt", Size: 5}, nil)
+	mockSidecarGen(b1, "z.txt", 2)
+	b2.On("Stat", mock.Anything, "z.txt").Return(backend.FileInfo{}, os.ErrNotExist)
+
+	// Zombie data and meta sidecar must be removed from b1; with every backend
+	// responding the now-converged tombstone is garbage-collected everywhere.
+	b1.On("Remove", mock.Anything, "z.txt").Return(nil)
+	b1.On("Remove", mock.Anything, vfs.SidecarPath("z.txt")).Return(nil)
+	b1.On("Remove", mock.Anything, vfs.TombstonePath("z.txt")).Return(nil)
+	b2.On("Remove", mock.Anything, vfs.TombstonePath("z.txt")).Return(os.ErrNotExist)
+
+	mgr.enforceTombstones(context.Background())
+
+	b1.AssertExpectations(t)
+	b2.AssertExpectations(t)
+}
+
+func TestEnforceTombstones_GCsWhenAbsentEverywhere(t *testing.T) {
+	b1 := &test.MockBackend{NameVal: "b1"}
+	b2 := &test.MockBackend{NameVal: "b2"}
+	mgr := newTombstoneTestManager(b1, b2)
+
+	mockTombstoneTree(b1, map[string]int64{"gone.txt": 3})
+	mockTombstoneTree(b2, map[string]int64{"gone.txt": 3})
+	b1.On("Stat", mock.Anything, "gone.txt").Return(backend.FileInfo{}, os.ErrNotExist)
+	b2.On("Stat", mock.Anything, "gone.txt").Return(backend.FileInfo{}, os.ErrNotExist)
+
+	b1.On("Remove", mock.Anything, vfs.TombstonePath("gone.txt")).Return(nil)
+	b2.On("Remove", mock.Anything, vfs.TombstonePath("gone.txt")).Return(nil)
+
+	mgr.enforceTombstones(context.Background())
+
+	// No data was present, so no data removal may happen.
+	b1.AssertNotCalled(t, "Remove", mock.Anything, "gone.txt")
+	b2.AssertNotCalled(t, "Remove", mock.Anything, "gone.txt")
+
+	b1.AssertExpectations(t)
+	b2.AssertExpectations(t)
+}
+
+func TestEnforceTombstones_KeepsTombstoneOnBackendError(t *testing.T) {
+	b1 := &test.MockBackend{NameVal: "b1"}
+	b2 := &test.MockBackend{NameVal: "b2"}
+	mgr := newTombstoneTestManager(b1, b2)
+
+	mockTombstoneTree(b1, map[string]int64{"limbo.txt": 3})
+	mockTombstoneTree(b2, nil)
+	b1.On("Stat", mock.Anything, "limbo.txt").Return(backend.FileInfo{}, os.ErrNotExist)
+	// b2 gives no authoritative answer: the tombstone must survive, since b2
+	// may still hold a zombie replica.
+	b2.On("Stat", mock.Anything, "limbo.txt").Return(backend.FileInfo{}, io.ErrUnexpectedEOF)
+
+	mgr.enforceTombstones(context.Background())
+
+	b1.AssertNotCalled(t, "Remove", mock.Anything, vfs.TombstonePath("limbo.txt"))
+	b2.AssertNotCalled(t, "Remove", mock.Anything, vfs.TombstonePath("limbo.txt"))
+
+	b1.AssertExpectations(t)
+	b2.AssertExpectations(t)
+}
+
+func TestEnforceTombstones_RemovesObsoleteTombstone(t *testing.T) {
+	b1 := &test.MockBackend{NameVal: "b1"}
+	b2 := &test.MockBackend{NameVal: "b2"}
+	mgr := newTombstoneTestManager(b1, b2)
+
+	// b1's replica is at gen 5, newer than the recorded deletion at gen 3:
+	// the tombstone is obsolete and must be retired everywhere, the data kept.
+	mockTombstoneTree(b1, map[string]int64{"reborn.txt": 3})
+	mockTombstoneTree(b2, nil)
+	b1.On("Stat", mock.Anything, "reborn.txt").Return(backend.FileInfo{Name: "reborn.txt", Size: 9}, nil)
+	mockSidecarGen(b1, "reborn.txt", 5)
+	b2.On("Stat", mock.Anything, "reborn.txt").Return(backend.FileInfo{}, os.ErrNotExist)
+
+	b1.On("Remove", mock.Anything, vfs.TombstonePath("reborn.txt")).Return(nil)
+	b2.On("Remove", mock.Anything, vfs.TombstonePath("reborn.txt")).Return(os.ErrNotExist)
+
+	mgr.enforceTombstones(context.Background())
+
+	// The newer-generation data must not be touched.
+	b1.AssertNotCalled(t, "Remove", mock.Anything, "reborn.txt")
+	b1.AssertNotCalled(t, "Remove", mock.Anything, vfs.SidecarPath("reborn.txt"))
+
+	b1.AssertExpectations(t)
+	b2.AssertExpectations(t)
 }

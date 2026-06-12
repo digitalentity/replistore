@@ -53,18 +53,46 @@ func expectSidecarWrite(b *test.MockBackend, dataPath string) *sidecarCapture {
 	return c
 }
 
-// expectSidecarRename registers permissive expectations for the sidecar move
-// that accompanies a file rename.
-func expectSidecarRename(b *test.MockBackend, oldPath, newPath string) {
-	oldSC, newSC := vfs.SidecarPath(oldPath), vfs.SidecarPath(newPath)
-	b.On("MkdirAll", mock.Anything, gopath.Dir(newSC), os.FileMode(0755)).Return(nil).Maybe()
-	b.On("Rename", mock.Anything, oldSC, newSC).Return(nil).Maybe()
+// expectTombstoneWrite registers permissive (.Maybe()) expectations for
+// tombstone writes of dataPath on b and captures what was written.
+func expectTombstoneWrite(b *test.MockBackend, dataPath string) *sidecarCapture {
+	c := &sidecarCapture{}
+	f := &test.MockFile{}
+	tp := vfs.TombstonePath(dataPath)
+	b.On("MkdirAll", mock.Anything, gopath.Dir(tp), os.FileMode(0755)).Return(nil).Maybe()
+	b.On("OpenFile", mock.Anything, tp, os.O_CREATE|os.O_TRUNC|os.O_RDWR, os.FileMode(0644)).Return(f, nil).Maybe()
+	f.On("WriteAt", mock.Anything, mock.Anything, int64(0)).Run(func(args mock.Arguments) {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		c.count++
+		_ = json.Unmarshal(args.Get(1).([]byte), &c.last)
+	}).Return(0, nil).Maybe()
+	f.On("Close").Return(nil).Maybe()
+	return c
 }
 
 // expectSidecarRemove registers a permissive expectation for sidecar deletion
 // of dataPath on b.
 func expectSidecarRemove(b *test.MockBackend, dataPath string) {
 	b.On("Remove", mock.Anything, vfs.SidecarPath(dataPath)).Return(nil).Maybe()
+}
+
+// expectNoTombstone makes b report no tombstone for dataPath (used by
+// FetchEntry and the Create/Rename tombstone-generation reads).
+func expectNoTombstone(b *test.MockBackend, dataPath string) {
+	b.On("OpenFile", mock.Anything, vfs.TombstonePath(dataPath), os.O_RDONLY, os.FileMode(0)).Return(nil, os.ErrNotExist)
+}
+
+// expectTombstoneGen makes b serve a tombstone at the given generation for
+// dataPath (used by the Create/Rename tombstone-generation reads).
+func expectTombstoneGen(b *test.MockBackend, dataPath string, gen int64) {
+	payload := []byte(fmt.Sprintf(`{"v":1,"gen":%d,"writer":"w","deleted":true}`, gen))
+	f := &test.MockFile{}
+	f.On("ReadAt", mock.Anything, mock.Anything, int64(0)).Run(func(args mock.Arguments) {
+		copy(args.Get(1).([]byte), payload)
+	}).Return(len(payload), io.EOF)
+	f.On("Close").Return(nil)
+	b.On("OpenFile", mock.Anything, vfs.TombstonePath(dataPath), os.O_RDONLY, os.FileMode(0)).Return(f, nil)
 }
 
 func TestFS_Lookup(t *testing.T) {
@@ -121,6 +149,7 @@ func TestDir_Create(t *testing.T) {
 	dir := root.(*Dir)
 
 	b1.On("OpenFile", mock.Anything, "new.txt", os.O_CREATE|os.O_EXCL|os.O_RDWR, os.FileMode(0644)).Return(mockFile, nil)
+	expectNoTombstone(b1, "new.txt")
 	sc := expectSidecarWrite(b1, "new.txt")
 
 	req := &fuse.CreateRequest{Name: "new.txt", Mode: 0644}
@@ -143,6 +172,63 @@ func TestDir_Create(t *testing.T) {
 	file.node.Mu.RUnlock()
 
 	b1.AssertExpectations(t)
+}
+
+// TestDir_Create_AboveTombstoneGen: creating at a path whose deletion is
+// recorded by a tombstone must start the new lineage ABOVE the tombstone
+// generation, otherwise the next sync/repair pass destroys the fresh file.
+func TestDir_Create_AboveTombstoneGen(t *testing.T) {
+	b1 := &test.MockBackend{NameVal: "b1"}
+	b2 := &test.MockBackend{NameVal: "b2"}
+	mockFile1 := &test.MockFile{}
+	mockFile2 := &test.MockFile{}
+
+	cache := vfs.NewCache()
+	fs := &RepliFS{
+		Cache:             cache,
+		Backends:          map[string]backend.Backend{"b1": b1, "b2": b2},
+		ReplicationFactor: 2,
+		WriteQuorum:       2,
+		Selector:          vfs.NewFirstSelector(nil),
+		NodeID:            "node-test",
+	}
+
+	root, _ := fs.Root()
+	dir := root.(*Dir)
+
+	b1.On("OpenFile", mock.Anything, "reborn.txt", os.O_CREATE|os.O_EXCL|os.O_RDWR, os.FileMode(0644)).Return(mockFile1, nil)
+	b2.On("OpenFile", mock.Anything, "reborn.txt", os.O_CREATE|os.O_EXCL|os.O_RDWR, os.FileMode(0644)).Return(mockFile2, nil)
+
+	// b1 carries a tombstone at gen 3 from a previous deletion; b2 has none.
+	expectTombstoneGen(b1, "reborn.txt", 3)
+	expectNoTombstone(b2, "reborn.txt")
+	sc1 := expectSidecarWrite(b1, "reborn.txt")
+	sc2 := expectSidecarWrite(b2, "reborn.txt")
+
+	req := &fuse.CreateRequest{Name: "reborn.txt", Mode: 0644}
+	resp := &fuse.CreateResponse{}
+	node, handle, err := dir.Create(context.Background(), req, resp)
+
+	assert.NoError(t, err)
+	assert.NotNil(t, node)
+	assert.NotNil(t, handle)
+
+	// The new lineage must start at tombstone gen + 1 = 4, on every replica
+	// and in the cache.
+	w1, n1 := sc1.get()
+	w2, n2 := sc2.get()
+	assert.Equal(t, 1, n1)
+	assert.Equal(t, 1, n2)
+	assert.Equal(t, int64(4), w1.Gen)
+	assert.Equal(t, int64(4), w2.Gen)
+
+	file := node.(*File)
+	file.node.Mu.RLock()
+	assert.Equal(t, int64(4), file.node.Meta.Gen)
+	file.node.Mu.RUnlock()
+
+	b1.AssertExpectations(t)
+	b2.AssertExpectations(t)
 }
 
 func TestFile_Write(t *testing.T) {
@@ -450,9 +536,10 @@ func TestLookup_LazyTrigger(t *testing.T) {
 		Name: "file.txt",
 		Size: 100,
 	}, nil)
-	// FetchEntry reads the sidecar after a successful file Stat; no sidecar
-	// means a legacy gen-0 replica.
+	// FetchEntry reads the sidecar and tombstone after a successful file Stat;
+	// neither exists for a legacy gen-0 replica.
 	b1.On("OpenFile", mock.Anything, vfs.SidecarPath("lazy/file.txt"), os.O_RDONLY, os.FileMode(0)).Return(nil, os.ErrNotExist)
+	expectNoTombstone(b1, "lazy/file.txt")
 
 	node, err := (lazyDir.(*Dir)).Lookup(context.Background(), "file.txt")
 	assert.NoError(t, err)
@@ -633,6 +720,9 @@ func TestRemove_Quorum(t *testing.T) {
 	root, _ := fs.Root()
 	dir := root.(*Dir)
 
+	// The tombstone quorum succeeds; the failure is in the data removal.
+	expectTombstoneWrite(b1, "remove.txt")
+	expectTombstoneWrite(b2, "remove.txt")
 	b1.On("Remove", mock.Anything, "remove.txt").Return(nil)
 	b2.On("Remove", mock.Anything, "remove.txt").Return(fmt.Errorf("not found"))
 
@@ -700,6 +790,8 @@ func TestRemove_FileNotExistCountsAsSuccess(t *testing.T) {
 	root, _ := fs.Root()
 	dir := root.(*Dir)
 
+	expectTombstoneWrite(b1, "gone.txt")
+	expectTombstoneWrite(b2, "gone.txt")
 	b1.On("Remove", mock.Anything, "gone.txt").Return(nil)
 	// Idempotent delete: already-absent file counts towards quorum.
 	b2.On("Remove", mock.Anything, "gone.txt").Return(os.ErrNotExist)
@@ -842,9 +934,12 @@ func TestDir_Create_AlreadyExistsOnBackends(t *testing.T) {
 	info := backend.FileInfo{Name: "exists.txt", Size: 42, Mode: 0644, ModTime: time.Now()}
 	b1.On("Stat", mock.Anything, "exists.txt").Return(info, nil)
 	b2.On("Stat", mock.Anything, "exists.txt").Return(info, nil)
-	// FetchEntry reads sidecars after successful file Stats; none exist here.
+	// FetchEntry reads sidecars and tombstones after successful file Stats;
+	// none exist here.
 	b1.On("OpenFile", mock.Anything, vfs.SidecarPath("exists.txt"), os.O_RDONLY, os.FileMode(0)).Return(nil, os.ErrNotExist)
 	b2.On("OpenFile", mock.Anything, vfs.SidecarPath("exists.txt"), os.O_RDONLY, os.FileMode(0)).Return(nil, os.ErrNotExist)
+	expectNoTombstone(b1, "exists.txt")
+	expectNoTombstone(b2, "exists.txt")
 
 	req := &fuse.CreateRequest{Name: "exists.txt", Mode: 0644}
 	resp := &fuse.CreateResponse{}
@@ -972,6 +1067,7 @@ func TestDir_Create_MkdirAllParent(t *testing.T) {
 
 	b1.On("MkdirAll", mock.Anything, "parent", os.FileMode(0755)).Return(nil)
 	b1.On("OpenFile", mock.Anything, "parent/new.txt", os.O_CREATE|os.O_EXCL|os.O_RDWR, os.FileMode(0644)).Return(mockFile, nil)
+	expectNoTombstone(b1, "parent/new.txt")
 	expectSidecarWrite(b1, "parent/new.txt")
 
 	req := &fuse.CreateRequest{Name: "new.txt", Mode: 0644}
@@ -1374,4 +1470,237 @@ func TestFile_Open_WriteBumpsGeneration(t *testing.T) {
 	file.node.Mu.RLock()
 	assert.Equal(t, int64(4), file.node.Meta.Gen)
 	file.node.Mu.RUnlock()
+}
+
+func TestRemove_WritesTombstonesToAllBackends(t *testing.T) {
+	b1 := &test.MockBackend{NameVal: "b1"}
+	b2 := &test.MockBackend{NameVal: "b2"}
+
+	cache := vfs.NewCache()
+	// The file's replicas live only on b1, but the tombstone must reach ALL
+	// configured backends so the deletion sticks everywhere.
+	cache.Upsert("kill.txt", vfs.Metadata{Name: "kill.txt", Path: "kill.txt", Backends: []string{"b1"}, Gen: 3}, "b1")
+	node, _ := cache.Get("kill.txt")
+	node.Mu.Lock()
+	node.Meta.Gen = 3
+	node.Mu.Unlock()
+
+	fs := &RepliFS{
+		Cache:             cache,
+		Backends:          map[string]backend.Backend{"b1": b1, "b2": b2},
+		ReplicationFactor: 2,
+		WriteQuorum:       1, // data removal can only succeed on b1
+		Selector:          vfs.NewRandomSelector(nil),
+		NodeID:            "node-test",
+	}
+
+	root, _ := fs.Root()
+	dir := root.(*Dir)
+
+	tc1 := expectTombstoneWrite(b1, "kill.txt")
+	tc2 := expectTombstoneWrite(b2, "kill.txt")
+	b1.On("Remove", mock.Anything, "kill.txt").Return(nil)
+	expectSidecarRemove(b1, "kill.txt")
+
+	err := dir.Remove(context.Background(), &fuse.RemoveRequest{Name: "kill.txt"})
+	assert.NoError(t, err)
+
+	// Tombstones carry the deletion generation (node gen + 1) on EVERY backend.
+	w1, n1 := tc1.get()
+	w2, n2 := tc2.get()
+	assert.Equal(t, 1, n1)
+	assert.Equal(t, 1, n2)
+	assert.Equal(t, int64(4), w1.Gen)
+	assert.Equal(t, int64(4), w2.Gen)
+	assert.True(t, w1.Deleted)
+	assert.True(t, w2.Deleted)
+	assert.Equal(t, "node-test", w1.Writer)
+
+	_, ok := cache.Get("kill.txt")
+	assert.False(t, ok)
+
+	b1.AssertExpectations(t)
+	b2.AssertExpectations(t)
+}
+
+func TestRemove_TombstoneQuorumFailureKeepsData(t *testing.T) {
+	b1 := &test.MockBackend{NameVal: "b1"}
+	b2 := &test.MockBackend{NameVal: "b2"}
+
+	cache := vfs.NewCache()
+	cache.Upsert("safe.txt", vfs.Metadata{Name: "safe.txt", Path: "safe.txt", Backends: []string{"b1", "b2"}}, "b1")
+	cache.Upsert("safe.txt", vfs.Metadata{Name: "safe.txt", Path: "safe.txt", Backends: []string{"b1", "b2"}}, "b2")
+
+	fs := &RepliFS{
+		Cache:             cache,
+		Backends:          map[string]backend.Backend{"b1": b1, "b2": b2},
+		ReplicationFactor: 2,
+		WriteQuorum:       2, // Strict quorum
+		Selector:          vfs.NewRandomSelector(nil),
+	}
+
+	root, _ := fs.Root()
+	dir := root.(*Dir)
+
+	// b1's tombstone write succeeds, b2's fails at the mkdir: 1/2 < quorum.
+	expectTombstoneWrite(b1, "safe.txt")
+	b2.On("MkdirAll", mock.Anything, gopath.Dir(vfs.TombstonePath("safe.txt")), os.FileMode(0755)).Return(fmt.Errorf("backend down"))
+
+	err := dir.Remove(context.Background(), &fuse.RemoveRequest{Name: "safe.txt"})
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "tombstone")
+
+	// Without a durable deletion record, NO data may be destroyed.
+	b1.AssertNotCalled(t, "Remove", mock.Anything, "safe.txt")
+	b2.AssertNotCalled(t, "Remove", mock.Anything, "safe.txt")
+
+	// The file must still be in the cache.
+	_, ok := cache.Get("safe.txt")
+	assert.True(t, ok)
+
+	b1.AssertExpectations(t)
+	b2.AssertExpectations(t)
+}
+
+func TestRename_TombstonesOldPathAndWritesFreshSidecar(t *testing.T) {
+	b1 := &test.MockBackend{NameVal: "b1"}
+	b2 := &test.MockBackend{NameVal: "b2"}
+
+	cache := vfs.NewCache()
+	cache.Upsert("old.txt", vfs.Metadata{Name: "old.txt", Path: "old.txt", Backends: []string{"b1"}, Gen: 3}, "b1")
+	node, _ := cache.Get("old.txt")
+	node.Mu.Lock()
+	node.Meta.Gen = 3
+	node.Mu.Unlock()
+
+	fs := &RepliFS{
+		Cache:             cache,
+		Backends:          map[string]backend.Backend{"b1": b1, "b2": b2},
+		ReplicationFactor: 2,
+		WriteQuorum:       1,
+		Selector:          vfs.NewFirstSelector(nil),
+		NodeID:            "node-test",
+	}
+
+	root, _ := fs.Root()
+	dir := root.(*Dir)
+
+	// The data rename only happens on the backend holding the file.
+	b1.On("MkdirAll", mock.Anything, "", os.FileMode(0755)).Return(nil)
+	b1.On("Rename", mock.Anything, "old.txt", "new.txt").Return(nil)
+
+	// Old path is tombstoned on ALL backends (best-effort), the new path gets
+	// a fresh sidecar on the successful backends, and the orphaned old sidecar
+	// is cleaned up.
+	tc1 := expectTombstoneWrite(b1, "old.txt")
+	tc2 := expectTombstoneWrite(b2, "old.txt")
+	sc1 := expectSidecarWrite(b1, "new.txt")
+	expectSidecarRemove(b1, "old.txt")
+	// The target path carries no tombstone on either backend.
+	expectNoTombstone(b1, "new.txt")
+	expectNoTombstone(b2, "new.txt")
+
+	err := dir.Rename(context.Background(), &fuse.RenameRequest{OldName: "old.txt", NewName: "new.txt"}, root)
+	assert.NoError(t, err)
+
+	// Tombstones at the deletion generation (gen + 1) everywhere.
+	w1, n1 := tc1.get()
+	w2, n2 := tc2.get()
+	assert.Equal(t, 1, n1)
+	assert.Equal(t, 1, n2)
+	assert.Equal(t, int64(4), w1.Gen)
+	assert.Equal(t, int64(4), w2.Gen)
+	assert.True(t, w1.Deleted)
+	assert.True(t, w2.Deleted)
+
+	// Fresh sidecar at the new path starts the new lineage at gen + 1.
+	ws, ns := sc1.get()
+	assert.Equal(t, 1, ns)
+	assert.Equal(t, int64(4), ws.Gen)
+	assert.False(t, ws.Deleted)
+	assert.Equal(t, "node-test", ws.Writer)
+
+	// The data sidecar must NOT be moved by rename anymore.
+	b1.AssertNotCalled(t, "Rename", mock.Anything, vfs.SidecarPath("old.txt"), vfs.SidecarPath("new.txt"))
+
+	// The cache reflects the new path and the bumped generation.
+	_, ok := cache.Get("old.txt")
+	assert.False(t, ok)
+	renamed, ok := cache.Get("new.txt")
+	assert.True(t, ok)
+	renamed.Mu.RLock()
+	assert.Equal(t, int64(4), renamed.Meta.Gen)
+	renamed.Mu.RUnlock()
+
+	b1.AssertExpectations(t)
+	b2.AssertExpectations(t)
+}
+
+// TestRename_OntoTombstonedTargetStartsAboveTombstone: renaming onto a target
+// path whose deletion is recorded by a tombstone must start the new-path
+// lineage above that tombstone, while the OLD path's tombstone stays in the
+// source lineage (source gen + 1).
+func TestRename_OntoTombstonedTargetStartsAboveTombstone(t *testing.T) {
+	b1 := &test.MockBackend{NameVal: "b1"}
+	b2 := &test.MockBackend{NameVal: "b2"}
+
+	cache := vfs.NewCache()
+	cache.Upsert("old.txt", vfs.Metadata{Name: "old.txt", Path: "old.txt", Backends: []string{"b1"}}, "b1")
+	node, _ := cache.Get("old.txt")
+	node.Mu.Lock()
+	node.Meta.Gen = 2 // source lineage at gen 2
+	node.Mu.Unlock()
+
+	fs := &RepliFS{
+		Cache:             cache,
+		Backends:          map[string]backend.Backend{"b1": b1, "b2": b2},
+		ReplicationFactor: 2,
+		WriteQuorum:       1,
+		Selector:          vfs.NewFirstSelector(nil),
+		NodeID:            "node-test",
+	}
+
+	root, _ := fs.Root()
+	dir := root.(*Dir)
+
+	b1.On("MkdirAll", mock.Anything, "", os.FileMode(0755)).Return(nil)
+	b1.On("Rename", mock.Anything, "old.txt", "new.txt").Return(nil)
+
+	tc1 := expectTombstoneWrite(b1, "old.txt")
+	tc2 := expectTombstoneWrite(b2, "old.txt")
+	sc1 := expectSidecarWrite(b1, "new.txt")
+	expectSidecarRemove(b1, "old.txt")
+
+	// The target path was previously deleted at gen 5 (tombstone on b2 only).
+	expectNoTombstone(b1, "new.txt")
+	expectTombstoneGen(b2, "new.txt", 5)
+
+	err := dir.Rename(context.Background(), &fuse.RenameRequest{OldName: "old.txt", NewName: "new.txt"}, root)
+	assert.NoError(t, err)
+
+	// Old-path tombstone stays in the source lineage: source gen + 1 = 3.
+	w1, n1 := tc1.get()
+	w2, n2 := tc2.get()
+	assert.Equal(t, 1, n1)
+	assert.Equal(t, 1, n2)
+	assert.Equal(t, int64(3), w1.Gen)
+	assert.Equal(t, int64(3), w2.Gen)
+	assert.True(t, w1.Deleted)
+	assert.True(t, w2.Deleted)
+
+	// New-path sidecar starts above the target tombstone: max(2, 5) + 1 = 6.
+	ws, ns := sc1.get()
+	assert.Equal(t, 1, ns)
+	assert.Equal(t, int64(6), ws.Gen)
+	assert.False(t, ws.Deleted)
+
+	// The cache node carries the new-path generation.
+	renamed, ok := cache.Get("new.txt")
+	assert.True(t, ok)
+	renamed.Mu.RLock()
+	assert.Equal(t, int64(6), renamed.Meta.Gen)
+	renamed.Mu.RUnlock()
+
+	b1.AssertExpectations(t)
+	b2.AssertExpectations(t)
 }

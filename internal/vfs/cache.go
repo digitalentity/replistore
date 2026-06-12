@@ -261,19 +261,106 @@ func (c *Cache) StartSync(ctx context.Context, backends []backend.Backend, inter
 // phases:
 //
 //	A. Walk every backend in parallel, collecting per-backend metadata
-//	   (presence only — walks see FileInfo, never sidecars).
+//	   (presence only — walks see FileInfo, never sidecars). Alongside, the
+//	   tombstone trees of all backends are gathered (cost proportional to
+//	   live tombstones).
 //	B. Fold the per-backend candidates into one winning Metadata per path.
-//	   Sidecars are read only for genuine file conflicts (different sizes),
-//	   so the steady-state pass costs zero sidecar reads.
-//	C. Upsert the resolved metadata (including its Gen) into the cache.
+//	   Sidecars are read only for genuine file conflicts (different sizes)
+//	   or tombstoned paths, so the steady-state pass costs zero sidecar
+//	   reads. Candidates at or below a path's tombstone generation are
+//	   zombies and are dropped; a path with no surviving candidate is dead.
+//	C. Upsert the resolved metadata (including its Gen) into the cache and
+//	   evict dead paths. The eviction is explicit because a dead path's data
+//	   still exists on the zombie backend, so Reconcile's per-backend sweep
+//	   (which only removes paths that vanished from a backend) never fires.
 func (c *Cache) syncAll(ctx context.Context, backends []backend.Backend) {
+	tombstones := GatherTombstones(ctx, backends)
 	perBackend := c.walkBackends(ctx, backends)
-	resolved := resolveGlobalState(ctx, perBackend, backendsByName(backends))
+	resolved, dead := resolveGlobalState(ctx, perBackend, backendsByName(backends), tombstones)
 
 	for path, meta := range resolved {
 		c.UpsertMulti(path, *meta, meta.Backends)
 	}
+	for _, path := range dead {
+		c.evict(path)
+	}
 	c.markAllIndexed(c.Root)
+}
+
+// evict unlinks the node at path from its parent. Used when sync determines a
+// path is dead (every replica is at or below the path's tombstone generation):
+// Reconcile's per-backend sweep only removes paths that vanished from a
+// backend, and a zombie replica is still physically present, so the eviction
+// must be explicit. Evicting an uncached or root path is a no-op.
+func (c *Cache) evict(path string) {
+	parts := splitPath(path)
+	if len(parts) == 0 {
+		return
+	}
+
+	c.Mu.Lock()
+	defer c.Mu.Unlock()
+
+	parent, ok := c.getWithLock(strings.Join(parts[:len(parts)-1], "/"))
+	if !ok {
+		return
+	}
+	parent.Mu.Lock()
+	delete(parent.Children, parts[len(parts)-1])
+	parent.Mu.Unlock()
+}
+
+// listTombstones walks backend b's tombstone tree and reads every tombstone,
+// returning data path → tombstone generation. A missing tombstone tree means
+// no recorded deletions (empty map); other walk errors only log, keeping
+// partial results. The cost is proportional to the number of live tombstones,
+// not to the size of the data tree.
+func listTombstones(ctx context.Context, b backend.Backend) map[string]int64 {
+	res := make(map[string]int64)
+	err := b.Walk(ctx, tombstonesDir, func(p string, info backend.FileInfo) error {
+		if info.IsDir || !strings.HasSuffix(p, ".json") {
+			return nil
+		}
+		dataPath := strings.TrimSuffix(strings.TrimPrefix(p, tombstonesDir+"/"), ".json")
+		sc, err := ReadTombstone(ctx, b, dataPath)
+		if err != nil {
+			logrus.Debugf("vfs: tombstone read for %q on %s failed: %v", dataPath, b.GetName(), err)
+			return nil
+		}
+		if sc.Deleted {
+			res[dataPath] = sc.Gen
+		}
+		return nil
+	})
+	if err != nil && !os.IsNotExist(err) && !errors.Is(err, os.ErrNotExist) {
+		logrus.Debugf("vfs: tombstone walk on %s failed: %v", b.GetName(), err)
+	}
+	return res
+}
+
+// GatherTombstones lists the tombstone trees of all backends in parallel and
+// merges them, keeping the maximum recorded deletion generation per path.
+func GatherTombstones(ctx context.Context, backends []backend.Backend) map[string]int64 {
+	var mu sync.Mutex
+	merged := make(map[string]int64)
+
+	g, gCtx := errgroup.WithContext(ctx)
+	for _, b := range backends {
+		b := b
+		g.Go(func() error {
+			tombs := listTombstones(gCtx, b)
+			mu.Lock()
+			defer mu.Unlock()
+			for path, gen := range tombs {
+				if gen > merged[path] {
+					merged[path] = gen
+				}
+			}
+			return nil
+		})
+	}
+	_ = g.Wait()
+	return merged
 }
 
 // backendsByName indexes backends by their name for conflict-time sidecar
@@ -337,8 +424,16 @@ func (c *Cache) walkBackends(ctx context.Context, backends []backend.Backend) ma
 // resolveGlobalState is syncAll's phase B: the per-backend walk results are
 // folded into one winning Metadata per path via mergeMeta. Sidecars are
 // consulted only for paths where file candidates disagree on size (and no
-// directory is involved — directories win type conflicts on presence alone).
-func resolveGlobalState(ctx context.Context, perBackend map[string]map[string]Metadata, byName map[string]backend.Backend) map[string]*Metadata {
+// directory is involved — directories win type conflicts on presence alone)
+// or that carry a tombstone.
+//
+// tombstones maps path → max recorded deletion generation. For a tombstoned
+// file path the candidates' generations are loaded and every candidate at or
+// below the tombstone generation is dropped as a zombie; if no candidate
+// survives the path is dead and is returned in the second result instead of
+// being resolved. Candidates strictly above the tombstone generation are a
+// genuinely newer write and resolve normally.
+func resolveGlobalState(ctx context.Context, perBackend map[string]map[string]Metadata, byName map[string]backend.Backend, tombstones map[string]int64) (map[string]*Metadata, []string) {
 	candidates := make(map[string][]Metadata)
 	for _, state := range perBackend {
 		for path, meta := range state {
@@ -347,13 +442,48 @@ func resolveGlobalState(ctx context.Context, perBackend map[string]map[string]Me
 	}
 
 	resolved := make(map[string]*Metadata, len(candidates))
+	var dead []string
 	for path, cands := range candidates {
-		if isFileConflict(cands) {
+		if tombGen, ok := tombstones[path]; ok && !anyDir(cands) {
+			loadGenerations(ctx, path, cands, byName)
+			cands = dropZombies(cands, tombGen)
+			if len(cands) == 0 {
+				dead = append(dead, path)
+				continue
+			}
+		} else if isFileConflict(cands) {
 			loadGenerations(ctx, path, cands, byName)
 		}
 		resolved[path] = foldCandidates(cands)
 	}
-	return resolved
+	return resolved, dead
+}
+
+// anyDir reports whether any candidate is a directory. Only FILE tombstones
+// exist in this phase, so a path occupied by a directory anywhere ignores
+// tombstones entirely. TODO(C6-dirs): directory deletions still rely on the
+// all-backends fan-out in Dir.Remove and can resurrect from an offline
+// backend.
+func anyDir(cands []Metadata) bool {
+	for _, m := range cands {
+		if m.IsDir {
+			return true
+		}
+	}
+	return false
+}
+
+// dropZombies returns the candidates whose generation is strictly above the
+// tombstone generation; the rest are zombie replicas of a deleted version.
+// Generations must already be loaded.
+func dropZombies(cands []Metadata, tombGen int64) []Metadata {
+	live := cands[:0]
+	for _, m := range cands {
+		if m.Gen > tombGen {
+			live = append(live, m)
+		}
+	}
+	return live
 }
 
 // isFileConflict reports whether the candidates for one path form a real file
@@ -615,6 +745,8 @@ func (c *Cache) FetchEntry(ctx context.Context, path string, backends []backend.
 	var bestMeta Metadata // backend presence tracked in bestMeta.Backends
 	var found bool
 	var notExistCount int
+	var tombFound bool
+	var maxTombGen int64
 
 	g, gCtx := errgroup.WithContext(ctx)
 	for _, b := range backends {
@@ -643,6 +775,20 @@ func (c *Cache) FetchEntry(ctx context.Context, path string, backends []backend.
 				// One extra read for a single path is cheap and gives
 				// mergeMeta real version knowledge (missing sidecar → Gen 0).
 				meta.Gen = sidecarGen(gCtx, b, path)
+				// Read the tombstone alongside the sidecar: a replica at or
+				// below the recorded deletion generation is a zombie and must
+				// not be admitted (REVIEW.md C6).
+				switch tsc, terr := ReadTombstone(gCtx, b, path); {
+				case terr == nil && tsc.Deleted:
+					stateMu.Lock()
+					if !tombFound || tsc.Gen > maxTombGen {
+						tombFound = true
+						maxTombGen = tsc.Gen
+					}
+					stateMu.Unlock()
+				case terr != nil && !os.IsNotExist(terr) && !errors.Is(terr, os.ErrNotExist):
+					logrus.Debugf("vfs: tombstone read for %q on %s failed: %v", path, b.GetName(), terr)
+				}
 			}
 
 			stateMu.Lock()
@@ -669,6 +815,12 @@ func (c *Cache) FetchEntry(ctx context.Context, path string, backends []backend.
 		// Every backend errored non-definitively (or there were no backends):
 		// we have no authoritative answer.
 		return nil, ErrUnavailable
+	}
+
+	if !bestMeta.IsDir && tombFound && maxTombGen >= bestMeta.Gen {
+		// The winning replica is a zombie of a deleted version: the recorded
+		// deletion generation is at least as new as anything found.
+		return nil, os.ErrNotExist
 	}
 
 	c.UpsertMulti(path, bestMeta, bestMeta.Backends)

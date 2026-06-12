@@ -47,9 +47,11 @@ func TestCache_FetchEntry(t *testing.T) {
 		ModTime: now,
 	}, nil)
 
-	// No sidecars anywhere: all replicas report Gen 0 (legacy).
+	// No sidecars and no tombstones anywhere: all replicas report Gen 0
+	// (legacy) and no deletion is recorded.
 	for _, b := range []*test.MockBackend{b1, b2, b3} {
 		b.On("OpenFile", mock.Anything, vfs.SidecarPath(path), os.O_RDONLY, os.FileMode(0)).Return(nil, os.ErrNotExist)
+		b.On("OpenFile", mock.Anything, vfs.TombstonePath(path), os.O_RDONLY, os.FileMode(0)).Return(nil, os.ErrNotExist)
 	}
 
 	backends := []backend.Backend{b1, b2, b3}

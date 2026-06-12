@@ -27,7 +27,11 @@ import (
 )
 
 // Sidecar is the per-file version metadata stored at
-// .replistore/meta/<path>.json on each backend that holds a replica.
+// .replistore/meta/<path>.json on each backend that holds a replica. The same
+// document format, with Deleted set, serves as the tombstone stored at
+// .replistore/tombstones/<path>.json (REVIEW.md C6): a tombstone records that
+// the path was deleted at generation Gen, so any replica at Gen or below is a
+// zombie that must not be re-admitted.
 type Sidecar struct {
 	V       int    `json:"v"`       // format version, 1
 	Gen     int64  `json:"gen"`     // generation counter, bumped per write session under the path lock
@@ -39,9 +43,20 @@ type Sidecar struct {
 // understands.
 const sidecarFormatVersion = 1
 
+// tombstonesDir is the subtree of the reserved directory that holds deletion
+// tombstones. Tombstones live in their own tree (not next to the meta
+// sidecars) so sync can enumerate all recorded deletions at a cost
+// proportional to the number of live tombstones, not the size of the tree.
+const tombstonesDir = ReservedDir + "/tombstones"
+
 // SidecarPath maps a data path to the path of its sidecar on a backend.
 func SidecarPath(path string) string {
 	return ReservedDir + "/meta/" + path + ".json"
+}
+
+// TombstonePath maps a data path to the path of its tombstone on a backend.
+func TombstonePath(path string) string {
+	return tombstonesDir + "/" + path + ".json"
 }
 
 // ReadSidecar reads and decodes the sidecar of path from backend b. A missing
@@ -49,8 +64,20 @@ func SidecarPath(path string) string {
 // errors.Is(err, os.ErrNotExist)), which callers interpret as generation 0
 // (legacy file).
 func ReadSidecar(ctx context.Context, b backend.Backend, path string) (Sidecar, error) {
+	return readMetaDoc(ctx, b, SidecarPath(path))
+}
+
+// ReadTombstone reads and decodes the tombstone of path from backend b. A
+// missing tombstone surfaces as the backend's not-exist error (satisfying
+// errors.Is(err, os.ErrNotExist)) — the path has no recorded deletion.
+func ReadTombstone(ctx context.Context, b backend.Backend, path string) (Sidecar, error) {
+	return readMetaDoc(ctx, b, TombstonePath(path))
+}
+
+// readMetaDoc is the shared open/read/decode machinery behind ReadSidecar and
+// ReadTombstone.
+func readMetaDoc(ctx context.Context, b backend.Backend, scPath string) (Sidecar, error) {
 	var sc Sidecar
-	scPath := SidecarPath(path)
 
 	f, err := b.OpenFile(ctx, scPath, os.O_RDONLY, 0)
 	if err != nil {
@@ -94,13 +121,26 @@ func sidecarGen(ctx context.Context, b backend.Backend, path string) int64 {
 // creating the sidecar's parent directories as needed. The format version is
 // set internally.
 func WriteSidecar(ctx context.Context, b backend.Backend, path string, sc Sidecar) error {
+	return writeMetaDoc(ctx, b, SidecarPath(path), sc)
+}
+
+// WriteTombstone encodes sc and writes it as path's tombstone on backend b,
+// creating parent directories as needed. Deleted is forced to true and the
+// format version is set internally.
+func WriteTombstone(ctx context.Context, b backend.Backend, path string, sc Sidecar) error {
+	sc.Deleted = true
+	return writeMetaDoc(ctx, b, TombstonePath(path), sc)
+}
+
+// writeMetaDoc is the shared mkdir/encode/write machinery behind WriteSidecar
+// and WriteTombstone.
+func writeMetaDoc(ctx context.Context, b backend.Backend, scPath string, sc Sidecar) error {
 	sc.V = sidecarFormatVersion
 	data, err := json.Marshal(sc)
 	if err != nil {
 		return err
 	}
 
-	scPath := SidecarPath(path)
 	if dir := gopath.Dir(scPath); dir != "." {
 		if err := b.MkdirAll(ctx, dir, 0755); err != nil {
 			return fmt.Errorf("sidecar dir %s on %s: %w", dir, b.GetName(), err)
@@ -121,7 +161,19 @@ func WriteSidecar(ctx context.Context, b backend.Backend, path string, sc Sideca
 // RemoveSidecar deletes path's sidecar from backend b. An already-absent
 // sidecar counts as success (idempotent remove).
 func RemoveSidecar(ctx context.Context, b backend.Backend, path string) error {
-	err := b.Remove(ctx, SidecarPath(path))
+	return removeMetaDoc(ctx, b, SidecarPath(path))
+}
+
+// RemoveTombstone deletes path's tombstone from backend b. An already-absent
+// tombstone counts as success (idempotent remove).
+func RemoveTombstone(ctx context.Context, b backend.Backend, path string) error {
+	return removeMetaDoc(ctx, b, TombstonePath(path))
+}
+
+// removeMetaDoc is the shared idempotent-remove machinery behind
+// RemoveSidecar and RemoveTombstone.
+func removeMetaDoc(ctx context.Context, b backend.Backend, scPath string) error {
+	err := b.Remove(ctx, scPath)
 	if err == nil || os.IsNotExist(err) || errors.Is(err, os.ErrNotExist) {
 		return nil
 	}

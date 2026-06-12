@@ -33,9 +33,12 @@ func TestDir_Rename_Simple(t *testing.T) {
 
 	b1.On("MkdirAll", mock.Anything, "", os.FileMode(0755)).Return(nil)
 	b1.On("Rename", mock.Anything, "old.txt", "new.txt").Return(nil)
-	// The sidecar moves with the file.
-	b1.On("MkdirAll", mock.Anything, ".replistore/meta", os.FileMode(0755)).Return(nil)
-	b1.On("Rename", mock.Anything, vfs.SidecarPath("old.txt"), vfs.SidecarPath("new.txt")).Return(nil)
+	// The old path is tombstoned, the new path gets a fresh sidecar and the
+	// orphaned old sidecar is cleaned up. The target path carries no tombstone.
+	expectTombstoneWrite(b1, "old.txt")
+	expectNoTombstone(b1, "new.txt")
+	expectSidecarWrite(b1, "new.txt")
+	expectSidecarRemove(b1, "old.txt")
 
 	req := &fuse.RenameRequest{OldName: "old.txt", NewName: "new.txt"}
 	err := root.Rename(context.Background(), req, root)
@@ -78,7 +81,10 @@ func TestDir_Rename_CrossDir(t *testing.T) {
 
 	b1.On("MkdirAll", mock.Anything, "dir2", os.FileMode(0755)).Return(nil)
 	b1.On("Rename", mock.Anything, "dir1/old.txt", "dir2/new.txt").Return(nil)
-	expectSidecarRename(b1, "dir1/old.txt", "dir2/new.txt")
+	expectTombstoneWrite(b1, "dir1/old.txt")
+	expectNoTombstone(b1, "dir2/new.txt")
+	expectSidecarWrite(b1, "dir2/new.txt")
+	expectSidecarRemove(b1, "dir1/old.txt")
 
 	req := &fuse.RenameRequest{OldName: "old.txt", NewName: "new.txt"}
 	err := d1.Rename(context.Background(), req, d2)
@@ -200,8 +206,15 @@ func TestDir_Rename_Quorum(t *testing.T) {
 	// b1 succeeds, b2 fails
 	b1.On("MkdirAll", mock.Anything, "", os.FileMode(0755)).Return(nil)
 	b1.On("Rename", mock.Anything, "old.txt", "new.txt").Return(nil)
-	// Sidecar rename happens only on the successful backend.
-	expectSidecarRename(b1, "old.txt", "new.txt")
+	// The old-path tombstone goes to ALL backends (best-effort); the fresh
+	// new-path sidecar only to the successful one. The target path carries no
+	// tombstone on either backend.
+	expectTombstoneWrite(b1, "old.txt")
+	expectTombstoneWrite(b2, "old.txt")
+	expectNoTombstone(b1, "new.txt")
+	expectNoTombstone(b2, "new.txt")
+	expectSidecarWrite(b1, "new.txt")
+	expectSidecarRemove(b1, "old.txt")
 
 	b2.On("MkdirAll", mock.Anything, "", os.FileMode(0755)).Return(nil)
 	b2.On("Rename", mock.Anything, "old.txt", "new.txt").Return(os.ErrPermission)

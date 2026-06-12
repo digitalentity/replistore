@@ -60,6 +60,8 @@ func (m *RepairManager) performScrub(ctx context.Context) {
 		defer lock.Release()
 	}
 
+	m.enforceTombstones(ctx)
+
 	logrus.Info("Starting background repair scrub...")
 	degraded := m.fs.Cache.FindDegraded(m.fs.ReplicationFactor)
 	if len(degraded) == 0 {
@@ -83,6 +85,113 @@ func (m *RepairManager) performScrub(ctx context.Context) {
 	}
 	_ = g.Wait()
 	logrus.Info("Background repair scrub completed")
+}
+
+// enforceTombstones makes recorded deletions stick (REVIEW.md C6): for every
+// tombstone found on any backend it deletes zombie replicas (data at or below
+// the tombstone generation), retires tombstones that a genuinely newer write
+// has obsoleted, and garbage-collects tombstones whose path is absent on every
+// responding backend. Runs under the global repair lock.
+// TODO(C6-dirs): only file tombstones exist; directory deletions are not
+// enforced here.
+func (m *RepairManager) enforceTombstones(ctx context.Context) {
+	tombstones := vfs.GatherTombstones(ctx, m.fs.getBackendList())
+	for path, tombGen := range tombstones {
+		m.enforceTombstone(ctx, path, tombGen)
+	}
+}
+
+// enforceTombstone applies one path's tombstone (at generation tombGen)
+// against every backend. See enforceTombstones for the rules.
+func (m *RepairManager) enforceTombstone(ctx context.Context, path string, tombGen int64) {
+	// Serialize against concurrent local mutations of this path before any
+	// backend I/O: Dir.Create writes data before its sidecar, and a replica
+	// seen in that gap looks like a gen-0 zombie that enforcement would
+	// delete mid-creation. Local path lock first, then the distributed lock
+	// (same ordering invariant and pattern as repairNode).
+	unlock := m.fs.pathLocks.lock(path)
+	defer unlock()
+
+	lock, err := m.fs.acquireLock(ctx, path)
+	if err != nil {
+		// Another node is working on this path; skip it this cycle.
+		logrus.Debugf("Tombstone enforcement: could not lock %s, skipping: %v", path, err)
+		return
+	}
+	if lock != nil {
+		defer lock.Release()
+	}
+
+	var failed bool   // some backend gave no authoritative answer or a removal failed
+	var obsolete bool // a replica newer than the tombstone exists
+
+	for name, b := range m.fs.Backends {
+		info, err := b.Stat(ctx, path)
+		if err != nil {
+			if os.IsNotExist(err) || errors.Is(err, os.ErrNotExist) {
+				continue // definitively absent here
+			}
+			logrus.Debugf("Tombstone enforcement: stat of %s on %s failed: %v", path, name, err)
+			failed = true
+			continue
+		}
+		if info.IsDir {
+			// A directory occupies the path; file tombstones don't apply to
+			// directories (TODO(C6-dirs)). Keep the tombstone untouched.
+			failed = true
+			continue
+		}
+
+		gen := int64(0) // missing sidecar = legacy replica at generation 0
+		if sc, scErr := vfs.ReadSidecar(ctx, b, path); scErr == nil {
+			gen = sc.Gen
+		} else if !errors.Is(scErr, os.ErrNotExist) && !os.IsNotExist(scErr) {
+			logrus.Debugf("Tombstone enforcement: sidecar read of %s on %s failed: %v", path, name, scErr)
+			failed = true
+			continue
+		}
+
+		if gen > tombGen {
+			// A write newer than the deletion: the tombstone is obsolete.
+			obsolete = true
+			continue
+		}
+
+		// Zombie replica of the deleted version: remove data and meta sidecar.
+		logrus.Infof("Tombstone enforcement: removing zombie replica of %s (gen %d <= tombstone gen %d) from %s", path, gen, tombGen, name)
+		if err := b.Remove(ctx, path); err != nil && !os.IsNotExist(err) && !errors.Is(err, os.ErrNotExist) {
+			logrus.Warnf("Tombstone enforcement: failed to remove zombie %s from %s: %v", path, name, err)
+			failed = true
+			continue
+		}
+		if err := vfs.RemoveSidecar(ctx, b, path); err != nil {
+			logrus.Warnf("Tombstone enforcement: failed to remove sidecar of %s on %s: %v", path, name, err)
+		}
+	}
+
+	switch {
+	case obsolete:
+		// A newer-generation replica exists, so the tombstone must not keep
+		// killing it: retire the tombstone everywhere.
+		m.removeTombstones(ctx, path)
+	case !failed:
+		// The path is absent on every backend and all of them responded: the
+		// deletion has fully converged, garbage-collect the tombstone. (Zombies
+		// removed just above count: they are gone now.)
+		m.removeTombstones(ctx, path)
+	default:
+		// Some backend gave no authoritative answer: keep the tombstone so the
+		// deletion can still be enforced once that backend is reachable.
+	}
+}
+
+// removeTombstones deletes path's tombstone from every backend, best-effort.
+func (m *RepairManager) removeTombstones(ctx context.Context, path string) {
+	for name, b := range m.fs.Backends {
+		if err := vfs.RemoveTombstone(ctx, b, path); err != nil {
+			logrus.Warnf("Failed to remove tombstone of %s from %s: %v", path, name, err)
+		}
+	}
 }
 
 func (m *RepairManager) repairNode(ctx context.Context, node *vfs.Node) error {
