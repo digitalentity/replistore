@@ -71,9 +71,32 @@ func NewCache() *Cache {
 // mergeMeta reconciles incoming metadata (present on incomingBackends) into
 // existing.
 //
-// Files use last-writer-wins semantics: a strictly newer ModTime, or an equal
-// ModTime with a larger Size, replaces the backend list; an identical version
-// unions the backend lists; a stale version is ignored.
+// File merge rules (generation-aware). Generations are comparable only when
+// both sides carry one (both Gen > 0) or neither does (both Gen == 0, legacy
+// replicas):
+//
+//  1. Higher Gen wins outright: its meta and backend set replace the existing
+//     ones, regardless of ModTime/Size. A lower Gen is ignored. (Server-
+//     stamped mtimes are untrustworthy version vectors — REVIEW C4 — so a
+//     skewed clock can no longer promote a stale replica.)
+//  2. Equal Gen, equal Size: the same version observed on different backends —
+//     union the backend sets and keep the newest ModTime for display only.
+//     This kills post-write churn: replicated writes leave equal-gen
+//     equal-size replicas with divergent server-stamped mtimes, which must
+//     merge, not split. With both sides at Gen 0 this also merges
+//     same-size-different-mtime legacy replicas (accepted C4 mitigation).
+//  3. Equal Gen, different Size: fall back to (ModTime, Size) last-writer-wins
+//     — a strictly newer ModTime, or an equal ModTime with a larger Size,
+//     replaces the backend set; a stale version is ignored. (Crash mid-write;
+//     checksums will improve this later.)
+//
+// Mixed knowledge (exactly one side has Gen 0): a Gen-0 meta is usually a
+// report taken without sidecar knowledge (Warmup/FetchDir/Upsert see only
+// FileInfo), not proof of an older version, so generations cannot be
+// compared. The legacy (ModTime, Size) rules of case 3 (including the
+// same-version union on equal ModTime and Size) decide the outcome, but the
+// node's stored Gen is never downgraded: the result keeps the maximum of the
+// two Gens.
 //
 // Directories are presence-sets, not LWW registers: a directory's ModTime
 // legitimately differs per backend (it changes whenever children change), so
@@ -110,6 +133,36 @@ func mergeMeta(existing *Metadata, incoming Metadata, incomingBackends []string)
 		return
 	}
 
+	maxGen := existing.Gen
+	if incoming.Gen > maxGen {
+		maxGen = incoming.Gen
+	}
+
+	// Generations are comparable only when both sides have one (or neither
+	// does); a lone Gen 0 just means "observed without sidecar knowledge".
+	if (existing.Gen > 0) == (incoming.Gen > 0) {
+		switch {
+		case incoming.Gen > existing.Gen:
+			// Rule 1: higher generation wins outright.
+			existing.Size = incoming.Size
+			existing.ModTime = incoming.ModTime
+			existing.Gen = incoming.Gen
+			existing.Backends = append([]string(nil), incomingBackends...)
+			return
+		case incoming.Gen < existing.Gen:
+			// Rule 1: lower generation is ignored.
+			return
+		case incoming.Size == existing.Size:
+			// Rule 2: same version on more backends; newest mtime for display.
+			existing.Backends = unionBackends(existing.Backends, incomingBackends)
+			if incoming.ModTime.After(existing.ModTime) {
+				existing.ModTime = incoming.ModTime
+			}
+			return
+		}
+		// Rule 3: equal Gen, different Size — fall through to (mtime, size) LWW.
+	}
+
 	isNewer := incoming.ModTime.After(existing.ModTime)
 	isSameTime := incoming.ModTime.Equal(existing.ModTime)
 	isLarger := incoming.Size > existing.Size
@@ -127,6 +180,8 @@ func mergeMeta(existing *Metadata, incoming Metadata, incomingBackends []string)
 	default:
 		// Stale version: ignored.
 	}
+	// Never downgrade the node's stored generation (mixed-knowledge rule).
+	existing.Gen = maxGen
 }
 
 // unionBackends returns the deduplicated union of two backend name lists,
@@ -202,14 +257,49 @@ func (c *Cache) StartSync(ctx context.Context, backends []backend.Backend, inter
 	}()
 }
 
+// syncAll performs one full reconciliation pass over all backends in three
+// phases:
+//
+//	A. Walk every backend in parallel, collecting per-backend metadata
+//	   (presence only — walks see FileInfo, never sidecars).
+//	B. Fold the per-backend candidates into one winning Metadata per path.
+//	   Sidecars are read only for genuine file conflicts (different sizes),
+//	   so the steady-state pass costs zero sidecar reads.
+//	C. Upsert the resolved metadata (including its Gen) into the cache.
 func (c *Cache) syncAll(ctx context.Context, backends []backend.Backend) {
-	// globalState entries carry their backend presence in Meta.Backends.
-	globalState := make(map[string]*Metadata)
-	var stateMu sync.Mutex
+	perBackend := c.walkBackends(ctx, backends)
+	resolved := resolveGlobalState(ctx, perBackend, backendsByName(backends))
+
+	for path, meta := range resolved {
+		c.UpsertMulti(path, *meta, meta.Backends)
+	}
+	c.markAllIndexed(c.Root)
+}
+
+// backendsByName indexes backends by their name for conflict-time sidecar
+// reads.
+func backendsByName(backends []backend.Backend) map[string]backend.Backend {
+	m := make(map[string]backend.Backend, len(backends))
+	for _, b := range backends {
+		m[b.GetName()] = b
+	}
+	return m
+}
+
+// walkBackends is syncAll's phase A: every backend's tree is walked in
+// parallel, collecting the observed Metadata per path (Backends holds just
+// that backend, Gen is unknown/0). Walk errors only log — partial results are
+// kept — and Reconcile sweeps vanished paths only for backends whose walk
+// succeeded, as before.
+func (c *Cache) walkBackends(ctx context.Context, backends []backend.Backend) map[string]map[string]Metadata {
+	perBackend := make(map[string]map[string]Metadata, len(backends))
+	for _, b := range backends {
+		perBackend[b.GetName()] = make(map[string]Metadata)
+	}
 
 	g, gCtx := errgroup.WithContext(ctx)
 	for _, b := range backends {
-		b := b
+		state := perBackend[b.GetName()] // each goroutine writes only its own map
 		g.Go(func() error {
 			logrus.Debugf("Background syncing backend: %s", b.GetName())
 			seenPaths := make(map[string]bool)
@@ -221,26 +311,15 @@ func (c *Cache) syncAll(ctx context.Context, backends []backend.Backend) {
 					return nil
 				}
 				seenPaths[path] = true
-				meta := Metadata{
-					Name:    info.Name,
-					Size:    info.Size,
-					Mode:    info.Mode,
-					ModTime: info.ModTime,
-					IsDir:   info.IsDir,
+				state[path] = Metadata{
+					Name:     info.Name,
+					Path:     path,
+					Size:     info.Size,
+					Mode:     info.Mode,
+					ModTime:  info.ModTime,
+					IsDir:    info.IsDir,
+					Backends: []string{b.GetName()},
 				}
-
-				stateMu.Lock()
-				defer stateMu.Unlock()
-
-				s, ok := globalState[path]
-				if !ok {
-					m := meta
-					m.Backends = []string{b.GetName()}
-					globalState[path] = &m
-					return nil
-				}
-
-				mergeMeta(s, meta, []string{b.GetName()})
 				return nil
 			})
 			if err != nil {
@@ -252,12 +331,79 @@ func (c *Cache) syncAll(ctx context.Context, backends []backend.Backend) {
 		})
 	}
 	_ = g.Wait()
+	return perBackend
+}
 
-	// Update cache with global winners
-	for path, s := range globalState {
-		c.UpsertMulti(path, *s, s.Backends)
+// resolveGlobalState is syncAll's phase B: the per-backend walk results are
+// folded into one winning Metadata per path via mergeMeta. Sidecars are
+// consulted only for paths where file candidates disagree on size (and no
+// directory is involved — directories win type conflicts on presence alone).
+func resolveGlobalState(ctx context.Context, perBackend map[string]map[string]Metadata, byName map[string]backend.Backend) map[string]*Metadata {
+	candidates := make(map[string][]Metadata)
+	for _, state := range perBackend {
+		for path, meta := range state {
+			candidates[path] = append(candidates[path], meta)
+		}
 	}
-	c.markAllIndexed(c.Root)
+
+	resolved := make(map[string]*Metadata, len(candidates))
+	for path, cands := range candidates {
+		if isFileConflict(cands) {
+			loadGenerations(ctx, path, cands, byName)
+		}
+		resolved[path] = foldCandidates(cands)
+	}
+	return resolved
+}
+
+// isFileConflict reports whether the candidates for one path form a real file
+// conflict that generations must arbitrate: all candidates are files and at
+// least two disagree on size. Directory candidates never need sidecars (the
+// dir-wins rule resolves on presence), and same-size file replicas merge as
+// one version without sidecar reads — the overwhelmingly common case.
+func isFileConflict(cands []Metadata) bool {
+	if len(cands) < 2 {
+		return false
+	}
+	conflict := false
+	for _, m := range cands {
+		if m.IsDir {
+			return false
+		}
+		if m.Size != cands[0].Size {
+			conflict = true
+		}
+	}
+	return conflict
+}
+
+// loadGenerations reads, in parallel, path's sidecar on each candidate's
+// backend and stamps the candidate's Gen (0 on a missing sidecar or error).
+func loadGenerations(ctx context.Context, path string, cands []Metadata, byName map[string]backend.Backend) {
+	var wg sync.WaitGroup
+	for i := range cands {
+		b, ok := byName[cands[i].Backends[0]]
+		if !ok {
+			continue
+		}
+		wg.Add(1)
+		go func(m *Metadata) {
+			defer wg.Done()
+			m.Gen = sidecarGen(ctx, b, path)
+		}(&cands[i])
+	}
+	wg.Wait()
+}
+
+// foldCandidates reduces a path's candidates to the winning Metadata by
+// folding them through mergeMeta.
+func foldCandidates(cands []Metadata) *Metadata {
+	res := cands[0]
+	res.Backends = append([]string(nil), cands[0].Backends...)
+	for _, m := range cands[1:] {
+		mergeMeta(&res, m, m.Backends)
+	}
+	return &res
 }
 
 func (c *Cache) UpsertMulti(path string, meta Metadata, backends []string) {
@@ -492,6 +638,11 @@ func (c *Cache) FetchEntry(ctx context.Context, path string, backends []backend.
 				ModTime: info.ModTime,
 				IsDir:   info.IsDir,
 				Path:    path,
+			}
+			if !info.IsDir {
+				// One extra read for a single path is cheap and gives
+				// mergeMeta real version knowledge (missing sidecar → Gen 0).
+				meta.Gen = sidecarGen(gCtx, b, path)
 			}
 
 			stateMu.Lock()

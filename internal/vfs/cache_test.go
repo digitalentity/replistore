@@ -47,6 +47,11 @@ func TestCache_FetchEntry(t *testing.T) {
 		ModTime: now,
 	}, nil)
 
+	// No sidecars anywhere: all replicas report Gen 0 (legacy).
+	for _, b := range []*test.MockBackend{b1, b2, b3} {
+		b.On("OpenFile", mock.Anything, vfs.SidecarPath(path), os.O_RDONLY, os.FileMode(0)).Return(nil, os.ErrNotExist)
+	}
+
 	backends := []backend.Backend{b1, b2, b3}
 
 	node, err := cache.FetchEntry(ctx, path, backends)
@@ -378,22 +383,23 @@ func TestCache_UpsertLatestWins(t *testing.T) {
 	// 1. Initial version on b1
 	cache.Upsert("file.txt", vfs.Metadata{Name: "file.txt", Size: 100, ModTime: now}, "b1")
 
-	// 2. Newer version on b2
+	// 2. Same size, newer mtime on b2: under gen-aware merging (both Gen 0)
+	// equal size means same version — backends union, newest mtime kept.
 	cache.Upsert("file.txt", vfs.Metadata{Name: "file.txt", Size: 100, ModTime: now.Add(time.Hour)}, "b2")
 
 	node, _ := cache.Get("file.txt")
-	assert.Equal(t, []string{"b2"}, node.Meta.Backends)
+	assert.ElementsMatch(t, []string{"b1", "b2"}, node.Meta.Backends)
 	assert.Equal(t, now.Add(time.Hour), node.Meta.ModTime)
 
-	// 3. Stale version on b3 (ignored)
+	// 3. Different size with stale mtime on b3 (ignored)
 	cache.Upsert("file.txt", vfs.Metadata{Name: "file.txt", Size: 200, ModTime: now}, "b3")
 	node, _ = cache.Get("file.txt")
-	assert.Equal(t, []string{"b2"}, node.Meta.Backends)
+	assert.ElementsMatch(t, []string{"b1", "b2"}, node.Meta.Backends)
 
 	// 4. Same version on b4 (added)
 	cache.Upsert("file.txt", vfs.Metadata{Name: "file.txt", Size: 100, ModTime: now.Add(time.Hour)}, "b4")
 	node, _ = cache.Get("file.txt")
-	assert.ElementsMatch(t, []string{"b2", "b4"}, node.Meta.Backends)
+	assert.ElementsMatch(t, []string{"b1", "b2", "b4"}, node.Meta.Backends)
 
 	// 5. Larger size at same time wins (added)
 	cache.Upsert("file.txt", vfs.Metadata{Name: "file.txt", Size: 150, ModTime: now.Add(time.Hour)}, "b5")

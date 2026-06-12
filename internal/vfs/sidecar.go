@@ -23,6 +23,7 @@ import (
 	gopath "path"
 
 	"github.com/digitalentity/replistore/internal/backend"
+	"github.com/sirupsen/logrus"
 )
 
 // Sidecar is the per-file version metadata stored at
@@ -72,6 +73,21 @@ func ReadSidecar(ctx context.Context, b backend.Backend, path string) (Sidecar, 
 		return Sidecar{}, fmt.Errorf("sidecar %s on %s: unsupported format version %d", scPath, b.GetName(), sc.V)
 	}
 	return sc, nil
+}
+
+// sidecarGen returns the generation recorded in path's sidecar on backend b.
+// A missing sidecar means a legacy (pre-versioning) replica and reports
+// generation 0; any other error also degrades to generation 0 (with a debug
+// log) so reconciliation can proceed without that backend's version knowledge.
+func sidecarGen(ctx context.Context, b backend.Backend, path string) int64 {
+	sc, err := ReadSidecar(ctx, b, path)
+	if err != nil {
+		if !errors.Is(err, os.ErrNotExist) && !os.IsNotExist(err) {
+			logrus.Debugf("vfs: sidecar read for %q on %s failed: %v", path, b.GetName(), err)
+		}
+		return 0
+	}
+	return sc.Gen
 }
 
 // WriteSidecar encodes sc and writes it to path's sidecar on backend b,

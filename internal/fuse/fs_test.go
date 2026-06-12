@@ -450,6 +450,9 @@ func TestLookup_LazyTrigger(t *testing.T) {
 		Name: "file.txt",
 		Size: 100,
 	}, nil)
+	// FetchEntry reads the sidecar after a successful file Stat; no sidecar
+	// means a legacy gen-0 replica.
+	b1.On("OpenFile", mock.Anything, vfs.SidecarPath("lazy/file.txt"), os.O_RDONLY, os.FileMode(0)).Return(nil, os.ErrNotExist)
 
 	node, err := (lazyDir.(*Dir)).Lookup(context.Background(), "file.txt")
 	assert.NoError(t, err)
@@ -839,6 +842,9 @@ func TestDir_Create_AlreadyExistsOnBackends(t *testing.T) {
 	info := backend.FileInfo{Name: "exists.txt", Size: 42, Mode: 0644, ModTime: time.Now()}
 	b1.On("Stat", mock.Anything, "exists.txt").Return(info, nil)
 	b2.On("Stat", mock.Anything, "exists.txt").Return(info, nil)
+	// FetchEntry reads sidecars after successful file Stats; none exist here.
+	b1.On("OpenFile", mock.Anything, vfs.SidecarPath("exists.txt"), os.O_RDONLY, os.FileMode(0)).Return(nil, os.ErrNotExist)
+	b2.On("OpenFile", mock.Anything, vfs.SidecarPath("exists.txt"), os.O_RDONLY, os.FileMode(0)).Return(nil, os.ErrNotExist)
 
 	req := &fuse.CreateRequest{Name: "exists.txt", Mode: 0644}
 	resp := &fuse.CreateResponse{}
