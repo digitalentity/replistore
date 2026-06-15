@@ -4,14 +4,14 @@ Reviewed at commit `af0541f` (2026-06-10). Scope: full source tree (`internal/`,
 
 ## Status summary (as of `c1ec0fd`, 2026-06-12)
 
-All findings below carry inline status annotations. Tally: **8/8 critical** fixed or mitigated to their SMB-imposed limits, **9/9 high** fixed (2 with documented residuals), **11/13 medium** fixed or partial, **3/8 low** addressed.
+All findings below carry inline status annotations. Tally: **8/8 critical** fixed or mitigated to their SMB-imposed limits, **9/9 high** fixed (2 with documented residuals), **12/13 medium** fixed or partial, **3/8 low** addressed.
 
 Architecture changes made during remediation (beyond the original findings):
 - **Backend-based node discovery** replaced mDNS (`2dac188`): peers register at `.replistore/peers/<nodeID>.json` on every backend; no multicast/L2 requirement; `advertise_addr` mandatory.
 - **UDP lock transport** replaced net/rpc-over-TCP (`dcf5a7b`): JWS-compact (HS256) datagrams signed with the mandatory `cluster_secret`; pinned header; crypto/rand request IDs; retransmit with backoff.
 - **Version-metadata substrate** (`41f3fa5`, `b1800e1`, `4fff8cf`, `87355f5`): per-file generation sidecars under `.replistore/meta/`, tombstones under `.replistore/tombstones/`, repair-time sha256 sums; the reserved tree is hidden from the mount (`1c0c463`).
 
-Remaining open items, roughly by value: directory tombstones (C6-dirs); read-quorum/staleness semantics for lazy fetches (C8 residual); M2 negative-lookup cache; M3 reconcile-sweep race; M7 ctx-aware backend reconnects; M11 rename-over-existing-target atomicity; M12 rmdir emptiness check in the unified view; H4 renewal grace period; L1/L3/L5/L6/L7 nits. The test suite is mock-based throughout — a real-cluster smoke test of the sidecar/tombstone machinery is advised before production use.
+Remaining open items, roughly by value: directory tombstones (C6-dirs); read-quorum/staleness semantics for lazy fetches (C8 residual); M2 negative-lookup cache; M7 ctx-aware backend reconnects; M11 rename-over-existing-target atomicity; M12 rmdir emptiness check in the unified view; H4 renewal grace period; L1/L3/L5/L6/L7 nits. The test suite is mock-based throughout — a real-cluster smoke test of the sidecar/tombstone machinery is advised before production use.
 
 ---
 
@@ -205,6 +205,9 @@ One failed `WriteAt` removes the backend from both the handle and `node.Meta.Bac
 Every `Lookup` miss in a not-fully-indexed directory triggers a parallel `Stat` fan-out to all backends (fs.go:88). Path-probing workloads (compilers, shells walking `$PATH`) hammer every NAS. **Fix:** cache negative entries with a short TTL (e.g., 1–5 s), invalidated by local creates.
 
 ### M3. `Reconcile` sweep races with concurrent creation — live files transiently vanish
+
+> **Status: FIXED** in this remediation
+
 `syncAll` walks each backend, then `Reconcile` removes that backend from any path not seen in the walk (cache.go:263). A file created (locally or remotely) after the walker passed its directory is swept and possibly pruned from the cache, returning `ENOENT` until something re-fetches it. **Fix:** snapshot a walk-start timestamp and skip sweeping nodes whose cache entry was created/updated after it; or sweep only paths whose cached metadata predates the walk.
 
 ### M4. Pruned/replaced nodes orphan open handles

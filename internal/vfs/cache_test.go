@@ -253,7 +253,7 @@ func TestCache_Reconcile(t *testing.T) {
 
 	// 2. Reconcile b1 with file MISSING
 	seenOnB1 := make(map[string]bool)
-	cache.Reconcile("b1", seenOnB1)
+	cache.Reconcile("b1", seenOnB1, time.Now())
 
 	// Result: file should still be there because b2 has it
 	node, ok := cache.Get("dir/file.txt")
@@ -262,7 +262,7 @@ func TestCache_Reconcile(t *testing.T) {
 
 	// 3. Reconcile b2 with file MISSING
 	seenOnB2 := make(map[string]bool)
-	cache.Reconcile("b2", seenOnB2)
+	cache.Reconcile("b2", seenOnB2, time.Now())
 
 	// Result: file and empty directory should be pruned
 	_, ok = cache.Get("dir/file.txt")
@@ -285,7 +285,7 @@ func TestCache_Reconcile_OpenHandles(t *testing.T) {
 
 	// 2. Reconcile b1 with file MISSING
 	seenOnB1 := make(map[string]bool)
-	cache.Reconcile("b1", seenOnB1)
+	cache.Reconcile("b1", seenOnB1, time.Now())
 
 	// Result: file should NOT be pruned because it has an active open handle,
 	// even though it no longer has any backends in metadata.
@@ -297,12 +297,41 @@ func TestCache_Reconcile_OpenHandles(t *testing.T) {
 	node.OpenHandles = 0
 
 	// 3. Reconcile again
-	cache.Reconcile("b1", seenOnB1)
+	cache.Reconcile("b1", seenOnB1, time.Now())
 
 	// Result: file and empty directory should now be pruned
 	_, ok = cache.Get("dir/file.txt")
 	assert.False(t, ok)
 	_, ok = cache.Get("dir")
+	assert.False(t, ok)
+}
+
+func TestCache_Reconcile_SweepRace(t *testing.T) {
+	cache := vfs.NewCache()
+	meta := vfs.Metadata{Name: "file.txt", IsDir: false}
+
+	// 1. Setup: walk starts
+	walkStart := time.Now()
+
+	// Simulate concurrent creation *after* walkStart
+	time.Sleep(2 * time.Millisecond) // ensure timestamp moves forward
+	cache.Upsert("dir/file.txt", meta, "b1")
+
+	// 2. Reconcile b1 with file MISSING in seenPaths (e.g. concurrent creation missed by walk)
+	seenOnB1 := make(map[string]bool)
+	cache.Reconcile("b1", seenOnB1, walkStart)
+
+	// Result: file should NOT be pruned because it was updated after walkStart
+	node, ok := cache.Get("dir/file.txt")
+	assert.True(t, ok)
+	assert.ElementsMatch(t, []string{"b1"}, node.Meta.Backends)
+
+	// 3. Reconcile with walkStart AFTER creation
+	walkStartAfter := time.Now()
+	cache.Reconcile("b1", seenOnB1, walkStartAfter)
+
+	// Result: file should now be pruned because creation is older than walkStart
+	_, ok = cache.Get("dir/file.txt")
 	assert.False(t, ok)
 }
 

@@ -47,7 +47,8 @@ type Node struct {
 	Children     map[string]*Node
 	FullyIndexed bool // true if this directory has been fully scanned from backends
 	Mu           sync.RWMutex
-	OpenHandles  int32 // atomic count of open file handles (read or write)
+	OpenHandles  int32     // atomic count of open file handles (read or write)
+	LastUpdated  time.Time // timestamp when this cache entry was last created or updated
 }
 
 type Cache struct {
@@ -66,6 +67,7 @@ func NewCache() *Cache {
 			},
 			Children:     make(map[string]*Node),
 			FullyIndexed: false,
+			LastUpdated:  time.Now(),
 		},
 	}
 }
@@ -229,12 +231,14 @@ func (c *Cache) Upsert(path string, meta Metadata, backendName string) {
 				Meta:         newMeta,
 				Children:     make(map[string]*Node),
 				FullyIndexed: false,
+				LastUpdated:  time.Now(),
 			}
 			curr.Children[part] = next
 		}
 
 		if i == len(parts)-1 {
 			mergeMeta(&next.Meta, meta, []string{backendName})
+			next.LastUpdated = time.Now()
 		}
 
 		parent := curr
@@ -390,6 +394,7 @@ func (c *Cache) walkBackends(ctx context.Context, backends []backend.Backend) ma
 	for _, b := range backends {
 		state := perBackend[b.GetName()] // each goroutine writes only its own map
 		g.Go(func() error {
+			walkStart := time.Now()
 			logrus.Debugf("Background syncing backend: %s", b.GetName())
 			seenPaths := make(map[string]bool)
 			err := b.Walk(gCtx, "", func(path string, info backend.FileInfo) error {
@@ -415,7 +420,7 @@ func (c *Cache) walkBackends(ctx context.Context, backends []backend.Backend) ma
 				logrus.Errorf("Background sync error on %s: %v", b.GetName(), err)
 				return nil // Don't fail other backends
 			}
-			c.Reconcile(b.GetName(), seenPaths)
+			c.Reconcile(b.GetName(), seenPaths, walkStart)
 			return nil
 		})
 	}
@@ -564,12 +569,14 @@ func (c *Cache) UpsertMulti(path string, meta Metadata, backends []string) {
 				Meta:         newMeta,
 				Children:     make(map[string]*Node),
 				FullyIndexed: false,
+				LastUpdated:  time.Now(),
 			}
 			curr.Children[part] = next
 		}
 
 		if i == len(parts)-1 {
 			mergeMeta(&next.Meta, meta, backends)
+			next.LastUpdated = time.Now()
 		}
 
 		parent := curr
@@ -578,11 +585,11 @@ func (c *Cache) UpsertMulti(path string, meta Metadata, backends []string) {
 	}
 }
 
-func (c *Cache) Reconcile(backendName string, seenPaths map[string]bool) {
-	c.sweep(c.Root, "", backendName, seenPaths)
+func (c *Cache) Reconcile(backendName string, seenPaths map[string]bool, walkStart time.Time) {
+	c.sweep(c.Root, "", backendName, seenPaths, walkStart)
 }
 
-func (c *Cache) sweep(node *Node, path string, backendName string, seenPaths map[string]bool) {
+func (c *Cache) sweep(node *Node, path string, backendName string, seenPaths map[string]bool, walkStart time.Time) {
 	node.Mu.Lock()
 	defer node.Mu.Unlock()
 
@@ -592,18 +599,21 @@ func (c *Cache) sweep(node *Node, path string, backendName string, seenPaths map
 			childPath = path + "/" + name
 		}
 
-		c.sweep(child, childPath, backendName, seenPaths)
+		c.sweep(child, childPath, backendName, seenPaths, walkStart)
 
 		child.Mu.Lock()
-		// If this node was NOT seen on this backend, remove this backend from its metadata
-		if !seenPaths[childPath] {
-			newBackends := make([]string, 0, len(child.Meta.Backends))
-			for _, b := range child.Meta.Backends {
-				if b != backendName {
-					newBackends = append(newBackends, b)
+		// Skip sweeping if the node was created/updated after the walk started (REVIEW M3)
+		if child.LastUpdated.Before(walkStart) {
+			// If this node was NOT seen on this backend, remove this backend from its metadata
+			if !seenPaths[childPath] {
+				newBackends := make([]string, 0, len(child.Meta.Backends))
+				for _, b := range child.Meta.Backends {
+					if b != backendName {
+						newBackends = append(newBackends, b)
+					}
 				}
+				child.Meta.Backends = newBackends
 			}
-			child.Meta.Backends = newBackends
 		}
 
 		// Prune node if it no longer has any backends, no children, and no open handles (REVIEW M4)
@@ -679,6 +689,7 @@ func (c *Cache) Rename(oldPath, newPath string) bool {
 	node.Mu.Lock()
 	node.Meta.Name = destNodeName
 	node.Meta.Path = newPath
+	node.LastUpdated = time.Now()
 	if node.Meta.IsDir {
 		c.updatePaths(node, newPath)
 	}
@@ -723,6 +734,7 @@ func (c *Cache) ensurePathWithLock(path string) *Node {
 				},
 				Children:     make(map[string]*Node),
 				FullyIndexed: false,
+				LastUpdated:  time.Now(),
 			}
 			curr.Children[part] = next
 		}
@@ -901,6 +913,7 @@ func (c *Cache) updatePaths(node *Node, newPath string) {
 	for name, child := range node.Children {
 		child.Mu.Lock()
 		child.Meta.Path = newPath + "/" + name
+		child.LastUpdated = time.Now()
 		if child.Meta.IsDir {
 			c.updatePaths(child, child.Meta.Path)
 		}
