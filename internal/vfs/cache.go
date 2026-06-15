@@ -6,6 +6,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/digitalentity/replistore/internal/backend"
@@ -46,6 +47,7 @@ type Node struct {
 	Children     map[string]*Node
 	FullyIndexed bool // true if this directory has been fully scanned from backends
 	Mu           sync.RWMutex
+	OpenHandles  int32 // atomic count of open file handles (read or write)
 }
 
 type Cache struct {
@@ -604,8 +606,8 @@ func (c *Cache) sweep(node *Node, path string, backendName string, seenPaths map
 			child.Meta.Backends = newBackends
 		}
 
-		// Prune node if it no longer has any backends and no children
-		if len(child.Meta.Backends) == 0 && len(child.Children) == 0 {
+		// Prune node if it no longer has any backends, no children, and no open handles (REVIEW M4)
+		if len(child.Meta.Backends) == 0 && len(child.Children) == 0 && atomic.LoadInt32(&child.OpenHandles) == 0 {
 			delete(node.Children, name)
 		}
 		child.Mu.Unlock()

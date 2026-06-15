@@ -70,7 +70,6 @@ One-liners for the items still open in [REVIEW.md](REVIEW.md); see the finding b
 - **C8 residual:** no read-quorum/staleness semantics for lazy fetches — a single responding backend is treated as authoritative.
 - **M2:** negative lookups are never cached; path-probing workloads fan a `Stat` out to every backend per miss.
 - **M3:** the reconcile sweep races with concurrent creation — a file created mid-walk can transiently vanish from the cache.
-- **M4:** pruned/replaced cache nodes orphan open handles; handle-side metadata updates can mutate a node the tree no longer sees.
 - **M7:** backend reconnects ignore context deadlines; a down backend stalls health checks beyond their budget.
 - **M11:** rename-over-existing-target is not atomic and likely fails (SMB2 rename without the replace flag).
 - **M12:** `Remove` on directories doesn't check emptiness in the unified view; children on non-listed backends can survive.
@@ -84,6 +83,7 @@ The test suite is mock-based throughout; a real-cluster smoke test of the sideca
 
 Major items delivered during the 2026-06 remediation, newest first:
 
+- (Remediation) — M4: active open handles tracked on vfs.Node and checked to prevent cache node pruning during sync.
 - `8266ec7` — `File.Fsync` routed through open write handles; background rename orphan cleanup; `findPeer` optimization.
 - `78c3dfd` — implicit parent-directory creation (`MkdirAll`) on target backends during file/dir creation and rename.
 - `9ebbbe9` — inline healing for degraded files on write open.

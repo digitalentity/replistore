@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -455,6 +456,7 @@ func (d *Dir) Create(ctx context.Context, req *fuse.CreateRequest, resp *fuse.Cr
 	}
 	d.node.Children[req.Name] = child
 	h.file = &File{fs: d.fs, node: child}
+	atomic.AddInt32(&child.OpenHandles, 1)
 	d.fs.handles.register(child, h)
 
 	return h.file, h, nil
@@ -1122,7 +1124,6 @@ func (f *File) Open(ctx context.Context, req *fuse.OpenRequest, resp *fuse.OpenR
 	}
 
 	h := &FileHandle{
-		file:     f,
 		backends: make(map[string]backend.File),
 	}
 
@@ -1344,6 +1345,8 @@ func (f *File) Open(ctx context.Context, req *fuse.OpenRequest, resp *fuse.OpenR
 		f.fs.handles.register(f.node, h)
 	}
 
+	h.file = f
+	atomic.AddInt32(&f.node.OpenHandles, 1)
 	return h, nil
 }
 
@@ -1608,6 +1611,7 @@ func (h *FileHandle) Release(ctx context.Context, req *fuse.ReleaseRequest) erro
 	// read-only handles were never registered; deregister tolerates both.
 	if h.file != nil {
 		h.file.fs.handles.deregister(h.file.node, h)
+		atomic.AddInt32(&h.file.node.OpenHandles, -1)
 	}
 
 	h.mu.Lock()

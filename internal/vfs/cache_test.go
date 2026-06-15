@@ -271,6 +271,41 @@ func TestCache_Reconcile(t *testing.T) {
 	assert.False(t, ok)
 }
 
+func TestCache_Reconcile_OpenHandles(t *testing.T) {
+	cache := vfs.NewCache()
+	meta := vfs.Metadata{Name: "file.txt", IsDir: false}
+
+	// 1. Setup: file on b1
+	cache.Upsert("dir/file.txt", meta, "b1")
+
+	// Get node and increment OpenHandles to simulate an open file handle
+	node, ok := cache.Get("dir/file.txt")
+	assert.True(t, ok)
+	node.OpenHandles = 1
+
+	// 2. Reconcile b1 with file MISSING
+	seenOnB1 := make(map[string]bool)
+	cache.Reconcile("b1", seenOnB1)
+
+	// Result: file should NOT be pruned because it has an active open handle,
+	// even though it no longer has any backends in metadata.
+	node, ok = cache.Get("dir/file.txt")
+	assert.True(t, ok)
+	assert.Empty(t, node.Meta.Backends)
+
+	// Decrement OpenHandles to 0
+	node.OpenHandles = 0
+
+	// 3. Reconcile again
+	cache.Reconcile("b1", seenOnB1)
+
+	// Result: file and empty directory should now be pruned
+	_, ok = cache.Get("dir/file.txt")
+	assert.False(t, ok)
+	_, ok = cache.Get("dir")
+	assert.False(t, ok)
+}
+
 func TestCache_FindDegraded(t *testing.T) {
 	cache := vfs.NewCache()
 

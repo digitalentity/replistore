@@ -1704,3 +1704,55 @@ func TestRename_OntoTombstonedTargetStartsAboveTombstone(t *testing.T) {
 	b1.AssertExpectations(t)
 	b2.AssertExpectations(t)
 }
+
+func TestFile_OpenHandles(t *testing.T) {
+	b1 := &test.MockBackend{NameVal: "b1"}
+	mockFile := &test.MockFile{}
+	mockFile.On("Close").Return(nil).Maybe()
+
+	cache := vfs.NewCache()
+	fs := &RepliFS{
+		Cache:             cache,
+		Backends:          map[string]backend.Backend{"b1": b1},
+		ReplicationFactor: 1,
+		WriteQuorum:       1,
+		Selector:          vfs.NewRandomSelector(nil),
+		NodeID:            "node-test",
+	}
+
+	root, _ := fs.Root()
+	dir := root.(*Dir)
+
+	b1.On("OpenFile", mock.Anything, "new.txt", os.O_CREATE|os.O_EXCL|os.O_RDWR, os.FileMode(0644)).Return(mockFile, nil)
+	expectNoTombstone(b1, "new.txt")
+	_ = expectSidecarWrite(b1, "new.txt")
+
+	// 1. Create file: OpenHandles should become 1
+	req := &fuse.CreateRequest{Name: "new.txt", Mode: 0644}
+	resp := &fuse.CreateResponse{}
+	node, handle, err := dir.Create(context.Background(), req, resp)
+
+	assert.NoError(t, err)
+	file := node.(*File)
+	assert.Equal(t, int32(1), file.node.OpenHandles)
+
+	// 2. Release handle: OpenHandles should become 0
+	err = handle.(*FileHandle).Release(context.Background(), nil)
+	assert.NoError(t, err)
+	assert.Equal(t, int32(0), file.node.OpenHandles)
+
+	// 3. Open existing file for read-only: OpenHandles should become 1
+	b1.On("OpenFile", mock.Anything, "new.txt", os.O_RDONLY, os.FileMode(0)).Return(mockFile, nil)
+	openReq := &fuse.OpenRequest{Flags: fuse.OpenReadOnly}
+	openResp := &fuse.OpenResponse{}
+	h2, err := file.Open(context.Background(), openReq, openResp)
+	assert.NoError(t, err)
+	assert.Equal(t, int32(1), file.node.OpenHandles)
+
+	// Release second handle: OpenHandles should become 0
+	err = h2.(*FileHandle).Release(context.Background(), nil)
+	assert.NoError(t, err)
+	assert.Equal(t, int32(0), file.node.OpenHandles)
+
+	b1.AssertExpectations(t)
+}
