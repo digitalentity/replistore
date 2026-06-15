@@ -1,4 +1,4 @@
-package test
+package mock
 
 import (
 	"context"
@@ -16,6 +16,11 @@ type MockBackend struct {
 
 func (m *MockBackend) GetName() string {
 	return m.NameVal
+}
+
+func (m *MockBackend) Connect() error {
+	args := m.Called()
+	return args.Error(0)
 }
 
 func (m *MockBackend) Ping(ctx context.Context) error {

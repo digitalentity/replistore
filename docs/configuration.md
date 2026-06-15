@@ -34,20 +34,19 @@ advertise_addr: "192.168.1.50:5050"   # host:port peers use to reach this node
 cluster_secret: "change-me-16chars+"  # shared HMAC secret, same on all nodes (min 16 chars)
 expected_cluster_size: 2              # total nodes in the cluster (>= 2)
 
-# List of SMB backend shares.
+# List of backends. Supports multiple backend types (e.g., "smb", "local").
 backends:
   - name: "nas-01"
+    type: "smb" # Defaults to "smb" if omitted
     address: "192.168.1.10:445"
     share: "data"
     user: "admin"
     password: "${NAS_PASSWORD}" # Env variable expansion
     domain: "WORKGROUP"
 
-  - name: "nas-02"
-    address: "192.168.1.11:445"
-    share: "backup"
-    user: "admin"
-    password: "secure_password"
+  - name: "local-01"
+    type: "local"
+    path: "/mnt/local_share"
 ```
 
 ## Field Descriptions
@@ -90,10 +89,17 @@ The total number of nodes in the cluster. Lock quorum is derived from this value
 ### `backends` (list)
 A list of backend configurations. Each backend must have a unique `name`.
 - `name`: Unique identifier for the backend.
-- `address`: IP address or hostname and port (e.g., `192.168.1.10:445`).
-- `share`: The name of the SMB share to mount.
-- `user`, `password`: Credentials for the SMB share.
-- `domain`: (Optional) The SMB/NTLM domain.
+- `type`: The type of the backend. Currently supported values:
+  - `smb` (Default): SMB/CIFS share.
+  - `local`: Local filesystem path.
+- **For `smb` type backends:**
+  - `address`: IP address or hostname and port (e.g., `192.168.1.10:445`).
+  - `share`: The name of the SMB share to mount.
+  - `user`, `password`: Credentials for the SMB share.
+  - `domain`: (Optional) The SMB/NTLM domain.
+- **For `local` type backends:**
+  - `path`: The absolute path to a local directory to act as the backend storage.
+- `options`: (Optional) Map of custom string/interface options for future backend extensions.
 
 ## Environment Variables
 RepliStore supports `os.ExpandEnv` on the configuration file. You can use `${VAR}` or `$VAR` syntax to inject sensitive information like passwords from your environment.

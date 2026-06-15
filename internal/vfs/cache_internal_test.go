@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"github.com/digitalentity/replistore/internal/backend"
-	"github.com/digitalentity/replistore/internal/test"
+	bmock "github.com/digitalentity/replistore/internal/backend/mock"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 )
@@ -162,7 +162,7 @@ func TestMergeMeta_DirRulesUnchanged(t *testing.T) {
 }
 
 // mockWalk makes b's Walk report exactly the given path/info pairs.
-func mockWalk(b *test.MockBackend, entries map[string]backend.FileInfo) {
+func mockWalk(b *bmock.MockBackend, entries map[string]backend.FileInfo) {
 	b.On("Walk", mock.Anything, "", mock.Anything).Run(func(args mock.Arguments) {
 		fn := args.Get(2).(func(string, backend.FileInfo) error)
 		for path, info := range entries {
@@ -173,9 +173,9 @@ func mockWalk(b *test.MockBackend, entries map[string]backend.FileInfo) {
 
 // mockSidecarRead makes b serve a valid sidecar with the given generation for
 // path.
-func mockSidecarRead(b *test.MockBackend, path string, gen int64) {
+func mockSidecarRead(b *bmock.MockBackend, path string, gen int64) {
 	payload := []byte(fmt.Sprintf(`{"v":1,"gen":%d,"writer":"w","deleted":false}`, gen))
-	f := &test.MockFile{}
+	f := &bmock.MockFile{}
 	f.On("ReadAt", mock.Anything, mock.Anything, int64(0)).Run(func(args mock.Arguments) {
 		copy(args.Get(1).([]byte), payload)
 	}).Return(len(payload), io.EOF)
@@ -185,13 +185,13 @@ func mockSidecarRead(b *test.MockBackend, path string, gen int64) {
 
 // mockNoTombstoneTree makes b report a missing tombstone tree (no recorded
 // deletions).
-func mockNoTombstoneTree(b *test.MockBackend) {
+func mockNoTombstoneTree(b *bmock.MockBackend) {
 	b.On("Walk", mock.Anything, tombstonesDir, mock.Anything).Return(os.ErrNotExist)
 }
 
 // mockTombstoneTree makes b's tombstone tree enumerate (and serve) a tombstone
 // at the given generation for each path.
-func mockTombstoneTree(b *test.MockBackend, tombs map[string]int64) {
+func mockTombstoneTree(b *bmock.MockBackend, tombs map[string]int64) {
 	b.On("Walk", mock.Anything, tombstonesDir, mock.Anything).Run(func(args mock.Arguments) {
 		fn := args.Get(2).(func(string, backend.FileInfo) error)
 		for path := range tombs {
@@ -205,9 +205,9 @@ func mockTombstoneTree(b *test.MockBackend, tombs map[string]int64) {
 
 // mockTombstoneRead makes b serve a tombstone with the given generation for
 // path.
-func mockTombstoneRead(b *test.MockBackend, path string, gen int64) {
+func mockTombstoneRead(b *bmock.MockBackend, path string, gen int64) {
 	payload := []byte(fmt.Sprintf(`{"v":1,"gen":%d,"writer":"w","deleted":true}`, gen))
-	f := &test.MockFile{}
+	f := &bmock.MockFile{}
 	f.On("ReadAt", mock.Anything, mock.Anything, int64(0)).Run(func(args mock.Arguments) {
 		copy(args.Get(1).([]byte), payload)
 	}).Return(len(payload), io.EOF)
@@ -216,7 +216,7 @@ func mockTombstoneRead(b *test.MockBackend, path string, gen int64) {
 }
 
 // mockNoTombstone makes b report no tombstone for path.
-func mockNoTombstone(b *test.MockBackend, path string) {
+func mockNoTombstone(b *bmock.MockBackend, path string) {
 	b.On("OpenFile", mock.Anything, TombstonePath(path), os.O_RDONLY, os.FileMode(0)).Return(nil, os.ErrNotExist)
 }
 
@@ -225,8 +225,8 @@ func TestSyncAll_SizeConflictResolvedByGenerations(t *testing.T) {
 	c := NewCache()
 	now := time.Now().Round(time.Second)
 
-	b1 := &test.MockBackend{NameVal: "b1"}
-	b2 := &test.MockBackend{NameVal: "b2"}
+	b1 := &bmock.MockBackend{NameVal: "b1"}
+	b2 := &bmock.MockBackend{NameVal: "b2"}
 
 	// Sizes differ → conflict → sidecars decide. b1 has a NEWER mtime but an
 	// older generation: it must lose.
@@ -258,8 +258,8 @@ func TestSyncAll_SameSizeMergesWithoutSidecarReads(t *testing.T) {
 	c := NewCache()
 	now := time.Now().Round(time.Second)
 
-	b1 := &test.MockBackend{NameVal: "b1"}
-	b2 := &test.MockBackend{NameVal: "b2"}
+	b1 := &bmock.MockBackend{NameVal: "b1"}
+	b2 := &bmock.MockBackend{NameVal: "b2"}
 
 	// Equal sizes with divergent server-stamped mtimes: one version, both
 	// backends, no sidecar reads.
@@ -289,8 +289,8 @@ func TestSyncAll_FileDirConflictSkipsSidecars(t *testing.T) {
 	c := NewCache()
 	now := time.Now().Round(time.Second)
 
-	b1 := &test.MockBackend{NameVal: "b1"}
-	b2 := &test.MockBackend{NameVal: "b2"}
+	b1 := &bmock.MockBackend{NameVal: "b1"}
+	b2 := &bmock.MockBackend{NameVal: "b2"}
 
 	// File on b1, directory on b2: dir wins on presence, no sidecar reads.
 	mockWalk(b1, map[string]backend.FileInfo{
@@ -317,8 +317,8 @@ func TestFetchEntry_PopulatesGenFromSidecar(t *testing.T) {
 	c := NewCache()
 	now := time.Now().Round(time.Second)
 
-	b1 := &test.MockBackend{NameVal: "b1"}
-	b2 := &test.MockBackend{NameVal: "b2"}
+	b1 := &bmock.MockBackend{NameVal: "b1"}
+	b2 := &bmock.MockBackend{NameVal: "b2"}
 	path := "dir/f.txt"
 
 	b1.On("Stat", mock.Anything, path).Return(backend.FileInfo{Name: "f.txt", Size: 100, ModTime: now}, nil)
@@ -340,7 +340,7 @@ func TestFetchEntry_MissingSidecarMeansGenZero(t *testing.T) {
 	c := NewCache()
 	now := time.Now().Round(time.Second)
 
-	b1 := &test.MockBackend{NameVal: "b1"}
+	b1 := &bmock.MockBackend{NameVal: "b1"}
 	path := "f.txt"
 
 	b1.On("Stat", mock.Anything, path).Return(backend.FileInfo{Name: "f.txt", Size: 100, ModTime: now}, nil)
@@ -358,8 +358,8 @@ func TestSyncAll_TombstoneDropsZombieAndEvicts(t *testing.T) {
 	c := NewCache()
 	now := time.Now().Round(time.Second)
 
-	b1 := &test.MockBackend{NameVal: "b1"}
-	b2 := &test.MockBackend{NameVal: "b2"}
+	b1 := &bmock.MockBackend{NameVal: "b1"}
+	b2 := &bmock.MockBackend{NameVal: "b2"}
 
 	// The path is already cached (e.g. from a previous sync before the delete
 	// was recorded): the dead path must be explicitly evicted.
@@ -388,7 +388,7 @@ func TestSyncAll_TombstoneSurvivorAdmitted(t *testing.T) {
 	c := NewCache()
 	now := time.Now().Round(time.Second)
 
-	b1 := &test.MockBackend{NameVal: "b1"}
+	b1 := &bmock.MockBackend{NameVal: "b1"}
 
 	// The replica's gen 4 is strictly above the tombstone's gen 3: a genuinely
 	// newer write that must resolve normally.
@@ -412,7 +412,7 @@ func TestFetchEntry_TombstonedReturnsNotExist(t *testing.T) {
 	c := NewCache()
 	now := time.Now().Round(time.Second)
 
-	b1 := &test.MockBackend{NameVal: "b1"}
+	b1 := &bmock.MockBackend{NameVal: "b1"}
 	path := "f.txt"
 
 	b1.On("Stat", mock.Anything, path).Return(backend.FileInfo{Name: "f.txt", Size: 100, ModTime: now}, nil)
@@ -432,7 +432,7 @@ func TestFetchEntry_NewerReplicaBeatsTombstone(t *testing.T) {
 	c := NewCache()
 	now := time.Now().Round(time.Second)
 
-	b1 := &test.MockBackend{NameVal: "b1"}
+	b1 := &bmock.MockBackend{NameVal: "b1"}
 	path := "f.txt"
 
 	b1.On("Stat", mock.Anything, path).Return(backend.FileInfo{Name: "f.txt", Size: 100, ModTime: now}, nil)

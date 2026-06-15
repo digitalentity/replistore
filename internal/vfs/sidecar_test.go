@@ -8,7 +8,7 @@ import (
 	"os"
 	"testing"
 
-	"github.com/digitalentity/replistore/internal/test"
+	bmock "github.com/digitalentity/replistore/internal/backend/mock"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 )
@@ -19,8 +19,8 @@ func TestSidecarPath(t *testing.T) {
 }
 
 func TestSidecar_WriteReadRoundTrip(t *testing.T) {
-	b := &test.MockBackend{NameVal: "b1"}
-	wf := &test.MockFile{}
+	b := &bmock.MockBackend{NameVal: "b1"}
+	wf := &bmock.MockFile{}
 
 	var written []byte
 	b.On("MkdirAll", mock.Anything, ".replistore/meta/dir", os.FileMode(0755)).Return(nil)
@@ -39,7 +39,7 @@ func TestSidecar_WriteReadRoundTrip(t *testing.T) {
 	assert.NoError(t, json.Unmarshal(written, &raw))
 	assert.EqualValues(t, 1, raw["v"])
 
-	rf := &test.MockFile{}
+	rf := &bmock.MockFile{}
 	b.On("OpenFile", mock.Anything, ".replistore/meta/dir/f.txt.json", os.O_RDONLY, os.FileMode(0)).Return(rf, nil)
 	rf.On("ReadAt", mock.Anything, mock.Anything, int64(0)).Run(func(args mock.Arguments) {
 		copy(args.Get(1).([]byte), written)
@@ -59,7 +59,7 @@ func TestSidecar_WriteReadRoundTrip(t *testing.T) {
 }
 
 func TestReadSidecar_MissingSurfacesNotExist(t *testing.T) {
-	b := &test.MockBackend{NameVal: "b1"}
+	b := &bmock.MockBackend{NameVal: "b1"}
 	b.On("OpenFile", mock.Anything, ".replistore/meta/missing.txt.json", os.O_RDONLY, os.FileMode(0)).Return(nil, os.ErrNotExist)
 
 	_, err := ReadSidecar(context.Background(), b, "missing.txt")
@@ -70,8 +70,8 @@ func TestReadSidecar_MissingSurfacesNotExist(t *testing.T) {
 }
 
 func TestReadSidecar_BadVersionRejected(t *testing.T) {
-	b := &test.MockBackend{NameVal: "b1"}
-	rf := &test.MockFile{}
+	b := &bmock.MockBackend{NameVal: "b1"}
+	rf := &bmock.MockFile{}
 
 	payload := []byte(`{"v":2,"gen":5,"writer":"x","deleted":false}`)
 	b.On("OpenFile", mock.Anything, ".replistore/meta/f.txt.json", os.O_RDONLY, os.FileMode(0)).Return(rf, nil)
@@ -89,7 +89,7 @@ func TestReadSidecar_BadVersionRejected(t *testing.T) {
 }
 
 func TestRemoveSidecar_NotExistIsSuccess(t *testing.T) {
-	b := &test.MockBackend{NameVal: "b1"}
+	b := &bmock.MockBackend{NameVal: "b1"}
 	b.On("Remove", mock.Anything, ".replistore/meta/gone.txt.json").Return(os.ErrNotExist)
 
 	assert.NoError(t, RemoveSidecar(context.Background(), b, "gone.txt"))
@@ -97,7 +97,7 @@ func TestRemoveSidecar_NotExistIsSuccess(t *testing.T) {
 }
 
 func TestRemoveSidecar_PropagatesOtherErrors(t *testing.T) {
-	b := &test.MockBackend{NameVal: "b1"}
+	b := &bmock.MockBackend{NameVal: "b1"}
 	bErr := errors.New("backend down")
 	b.On("Remove", mock.Anything, ".replistore/meta/f.txt.json").Return(bErr)
 
@@ -111,8 +111,8 @@ func TestTombstonePath(t *testing.T) {
 }
 
 func TestTombstone_WriteReadRoundTrip(t *testing.T) {
-	b := &test.MockBackend{NameVal: "b1"}
-	wf := &test.MockFile{}
+	b := &bmock.MockBackend{NameVal: "b1"}
+	wf := &bmock.MockFile{}
 
 	var written []byte
 	b.On("MkdirAll", mock.Anything, ".replistore/tombstones/dir", os.FileMode(0755)).Return(nil)
@@ -132,7 +132,7 @@ func TestTombstone_WriteReadRoundTrip(t *testing.T) {
 	assert.EqualValues(t, 1, raw["v"])
 	assert.Equal(t, true, raw["deleted"])
 
-	rf := &test.MockFile{}
+	rf := &bmock.MockFile{}
 	b.On("OpenFile", mock.Anything, ".replistore/tombstones/dir/f.txt.json", os.O_RDONLY, os.FileMode(0)).Return(rf, nil)
 	rf.On("ReadAt", mock.Anything, mock.Anything, int64(0)).Run(func(args mock.Arguments) {
 		copy(args.Get(1).([]byte), written)
@@ -151,7 +151,7 @@ func TestTombstone_WriteReadRoundTrip(t *testing.T) {
 }
 
 func TestReadTombstone_MissingSurfacesNotExist(t *testing.T) {
-	b := &test.MockBackend{NameVal: "b1"}
+	b := &bmock.MockBackend{NameVal: "b1"}
 	b.On("OpenFile", mock.Anything, ".replistore/tombstones/missing.txt.json", os.O_RDONLY, os.FileMode(0)).Return(nil, os.ErrNotExist)
 
 	_, err := ReadTombstone(context.Background(), b, "missing.txt")
@@ -160,7 +160,7 @@ func TestReadTombstone_MissingSurfacesNotExist(t *testing.T) {
 }
 
 func TestRemoveTombstone_NotExistIsSuccess(t *testing.T) {
-	b := &test.MockBackend{NameVal: "b1"}
+	b := &bmock.MockBackend{NameVal: "b1"}
 	b.On("Remove", mock.Anything, ".replistore/tombstones/gone.txt.json").Return(os.ErrNotExist)
 
 	assert.NoError(t, RemoveTombstone(context.Background(), b, "gone.txt"))
@@ -168,7 +168,7 @@ func TestRemoveTombstone_NotExistIsSuccess(t *testing.T) {
 }
 
 func TestRemoveTombstone_PropagatesOtherErrors(t *testing.T) {
-	b := &test.MockBackend{NameVal: "b1"}
+	b := &bmock.MockBackend{NameVal: "b1"}
 	bErr := errors.New("backend down")
 	b.On("Remove", mock.Anything, ".replistore/tombstones/f.txt.json").Return(bErr)
 

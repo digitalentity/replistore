@@ -9,13 +9,43 @@ import (
 )
 
 type BackendConfig struct {
-	Name     string `yaml:"name"`
-	Address  string `yaml:"address"`
-	Share    string `yaml:"share"`
-	User     string `yaml:"user"`
-	Password string `yaml:"password"`
-	Domain   string `yaml:"domain"`
+	Name     string                 `yaml:"name"`
+	Type     string                 `yaml:"type"` // e.g. "smb", "local"
+	Address  string                 `yaml:"address"`
+	Share    string                 `yaml:"share"`
+	User     string                 `yaml:"user"`
+	Password string                 `yaml:"password"`
+	Domain   string                 `yaml:"domain"`
+	Path     string                 `yaml:"path"` // For local filesystem backend
+	Options  map[string]interface{} `yaml:"options"`
 }
+
+func (bc *BackendConfig) ToOptions() map[string]interface{} {
+	opts := map[string]interface{}{}
+	if bc.Address != "" {
+		opts["address"] = bc.Address
+	}
+	if bc.Share != "" {
+		opts["share"] = bc.Share
+	}
+	if bc.User != "" {
+		opts["user"] = bc.User
+	}
+	if bc.Password != "" {
+		opts["password"] = bc.Password
+	}
+	if bc.Domain != "" {
+		opts["domain"] = bc.Domain
+	}
+	if bc.Path != "" {
+		opts["path"] = bc.Path
+	}
+	for k, v := range bc.Options {
+		opts[k] = v
+	}
+	return opts
+}
+
 
 type Config struct {
 	MountPoint           string          `yaml:"mount_point"`
@@ -42,6 +72,12 @@ func LoadConfig(path string) (*Config, error) {
 	var cfg Config
 	if err := yaml.Unmarshal([]byte(expandedData), &cfg); err != nil {
 		return nil, err
+	}
+
+	for i := range cfg.Backends {
+		if cfg.Backends[i].Type == "" {
+			cfg.Backends[i].Type = "smb"
+		}
 	}
 
 	if cfg.ListenAddr != "" {

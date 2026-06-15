@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/digitalentity/replistore/internal/backend"
-	"github.com/digitalentity/replistore/internal/test"
+	bmock "github.com/digitalentity/replistore/internal/backend/mock"
 	"github.com/digitalentity/replistore/internal/vfs"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
@@ -20,9 +20,9 @@ func TestCache_FetchEntry(t *testing.T) {
 	now := time.Now().Round(time.Second)
 
 	// Mock backends
-	b1 := &test.MockBackend{NameVal: "b1"}
-	b2 := &test.MockBackend{NameVal: "b2"}
-	b3 := &test.MockBackend{NameVal: "b3"}
+	b1 := &bmock.MockBackend{NameVal: "b1"}
+	b2 := &bmock.MockBackend{NameVal: "b2"}
+	b3 := &bmock.MockBackend{NameVal: "b3"}
 
 	path := "lazy/file.txt"
 
@@ -49,7 +49,7 @@ func TestCache_FetchEntry(t *testing.T) {
 
 	// No sidecars and no tombstones anywhere: all replicas report Gen 0
 	// (legacy) and no deletion is recorded.
-	for _, b := range []*test.MockBackend{b1, b2, b3} {
+	for _, b := range []*bmock.MockBackend{b1, b2, b3} {
 		b.On("OpenFile", mock.Anything, vfs.SidecarPath(path), os.O_RDONLY, os.FileMode(0)).Return(nil, os.ErrNotExist)
 		b.On("OpenFile", mock.Anything, vfs.TombstonePath(path), os.O_RDONLY, os.FileMode(0)).Return(nil, os.ErrNotExist)
 	}
@@ -73,7 +73,7 @@ func TestCache_FetchEntry_NotFound(t *testing.T) {
 	ctx := context.Background()
 	cache := vfs.NewCache()
 
-	b1 := &test.MockBackend{NameVal: "b1"}
+	b1 := &bmock.MockBackend{NameVal: "b1"}
 	path := "missing.txt"
 	b1.On("Stat", mock.Anything, path).Return(backend.FileInfo{}, os.ErrNotExist)
 
@@ -86,8 +86,8 @@ func TestCache_FetchEntry_AllBackendsUnavailable(t *testing.T) {
 	ctx := context.Background()
 	cache := vfs.NewCache()
 
-	b1 := &test.MockBackend{NameVal: "b1"}
-	b2 := &test.MockBackend{NameVal: "b2"}
+	b1 := &bmock.MockBackend{NameVal: "b1"}
+	b2 := &bmock.MockBackend{NameVal: "b2"}
 	path := "missing.txt"
 	b1.On("Stat", mock.Anything, path).Return(backend.FileInfo{}, errors.New("conn reset"))
 	b2.On("Stat", mock.Anything, path).Return(backend.FileInfo{}, errors.New("conn reset"))
@@ -102,8 +102,8 @@ func TestCache_FetchEntry_DefinitiveNotFoundWins(t *testing.T) {
 	ctx := context.Background()
 	cache := vfs.NewCache()
 
-	b1 := &test.MockBackend{NameVal: "b1"}
-	b2 := &test.MockBackend{NameVal: "b2"}
+	b1 := &bmock.MockBackend{NameVal: "b1"}
+	b2 := &bmock.MockBackend{NameVal: "b2"}
 	path := "missing.txt"
 	// b1 gives a definitive "not found", b2 errors transiently
 	b1.On("Stat", mock.Anything, path).Return(backend.FileInfo{}, os.ErrNotExist)
@@ -123,7 +123,7 @@ func TestCache_FetchDir_Partial(t *testing.T) {
 	dirNode, _ := cache.Get("lazy-dir")
 	assert.False(t, dirNode.FullyIndexed)
 
-	b1 := &test.MockBackend{NameVal: "b1"}
+	b1 := &bmock.MockBackend{NameVal: "b1"}
 	b1.On("ReadDir", mock.Anything, "lazy-dir").Return([]backend.FileInfo{
 		{Name: "file1.txt", Size: 10, IsDir: false},
 		{Name: "subdir", IsDir: true},
@@ -150,8 +150,8 @@ func TestCache_FetchDir_AllBackendsUnavailable(t *testing.T) {
 	dirNode, _ := cache.Get("lazy-dir")
 	assert.False(t, dirNode.FullyIndexed)
 
-	b1 := &test.MockBackend{NameVal: "b1"}
-	b2 := &test.MockBackend{NameVal: "b2"}
+	b1 := &bmock.MockBackend{NameVal: "b1"}
+	b2 := &bmock.MockBackend{NameVal: "b2"}
 	b1.On("ReadDir", mock.Anything, "lazy-dir").Return([]backend.FileInfo(nil), errors.New("conn reset"))
 	b2.On("ReadDir", mock.Anything, "lazy-dir").Return([]backend.FileInfo(nil), errors.New("conn reset"))
 
@@ -170,8 +170,8 @@ func TestCache_FetchDir_PartialBackendFailure(t *testing.T) {
 	dirNode, _ := cache.Get("lazy-dir")
 	assert.False(t, dirNode.FullyIndexed)
 
-	b1 := &test.MockBackend{NameVal: "b1"}
-	b2 := &test.MockBackend{NameVal: "b2"}
+	b1 := &bmock.MockBackend{NameVal: "b1"}
+	b2 := &bmock.MockBackend{NameVal: "b2"}
 	b1.On("ReadDir", mock.Anything, "lazy-dir").Return([]backend.FileInfo{
 		{Name: "file1.txt", Size: 10, IsDir: false},
 	}, nil)
@@ -396,8 +396,8 @@ func TestCache_FetchEntryDirUnionsBackends(t *testing.T) {
 	cache := vfs.NewCache()
 	now := time.Now().Round(time.Second)
 
-	b1 := &test.MockBackend{NameVal: "b1"}
-	b2 := &test.MockBackend{NameVal: "b2"}
+	b1 := &bmock.MockBackend{NameVal: "b1"}
+	b2 := &bmock.MockBackend{NameVal: "b2"}
 
 	path := "some/dir"
 	// Directory mtimes differ per backend; both must be listed.
@@ -483,7 +483,7 @@ func TestCache_Warmup_SkipsReservedPaths(t *testing.T) {
 	ctx := context.Background()
 	cache := vfs.NewCache()
 
-	b1 := &test.MockBackend{NameVal: "b1"}
+	b1 := &bmock.MockBackend{NameVal: "b1"}
 	b1.On("Walk", mock.Anything, "", mock.Anything).Run(func(args mock.Arguments) {
 		fn := args.Get(2).(func(path string, info backend.FileInfo) error)
 		now := time.Now()
@@ -510,7 +510,7 @@ func TestCache_FetchEntry_ReservedPath(t *testing.T) {
 	cache := vfs.NewCache()
 
 	// No Stat expectation: the backend must never be contacted.
-	b1 := &test.MockBackend{NameVal: "b1"}
+	b1 := &bmock.MockBackend{NameVal: "b1"}
 
 	node, err := cache.FetchEntry(ctx, ".replistore/peers/x.json", []backend.Backend{b1})
 	assert.ErrorIs(t, err, os.ErrNotExist)

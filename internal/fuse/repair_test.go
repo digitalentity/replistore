@@ -11,18 +11,18 @@ import (
 	"time"
 
 	"github.com/digitalentity/replistore/internal/backend"
-	"github.com/digitalentity/replistore/internal/test"
+	bmock "github.com/digitalentity/replistore/internal/backend/mock"
 	"github.com/digitalentity/replistore/internal/vfs"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 )
 
 func TestRepairManager_RepairNode(t *testing.T) {
-	b1 := &test.MockBackend{NameVal: "b1"}
-	b2 := &test.MockBackend{NameVal: "b2"}
+	b1 := &bmock.MockBackend{NameVal: "b1"}
+	b2 := &bmock.MockBackend{NameVal: "b2"}
 
-	mockFile1 := &test.MockFile{}
-	mockFile2 := &test.MockFile{}
+	mockFile1 := &bmock.MockFile{}
+	mockFile2 := &bmock.MockFile{}
 
 	cache := vfs.NewCache()
 	// File only on b1, RF=2
@@ -60,7 +60,7 @@ func TestRepairManager_RepairNode(t *testing.T) {
 	b2.On("Chtimes", mock.Anything, "repair.txt", srcModTime, srcModTime).Return(nil)
 
 	// The source's sidecar (gen 7) must be replicated to the target.
-	srcSidecar := &test.MockFile{}
+	srcSidecar := &bmock.MockFile{}
 	scPayload := []byte(`{"v":1,"gen":7,"writer":"node-x","deleted":false}`)
 	b1.On("OpenFile", mock.Anything, vfs.SidecarPath("repair.txt"), os.O_RDONLY, os.FileMode(0)).Return(srcSidecar, nil)
 	srcSidecar.On("ReadAt", mock.Anything, mock.Anything, int64(0)).Run(func(args mock.Arguments) {
@@ -101,11 +101,11 @@ func TestRepairManager_RepairNode(t *testing.T) {
 }
 
 func TestRepairManager_RepairNode_ChtimesErrorStillSucceeds(t *testing.T) {
-	b1 := &test.MockBackend{NameVal: "b1"}
-	b2 := &test.MockBackend{NameVal: "b2"}
+	b1 := &bmock.MockBackend{NameVal: "b1"}
+	b2 := &bmock.MockBackend{NameVal: "b2"}
 
-	mockFile1 := &test.MockFile{}
-	mockFile2 := &test.MockFile{}
+	mockFile1 := &bmock.MockFile{}
+	mockFile2 := &bmock.MockFile{}
 
 	cache := vfs.NewCache()
 	cache.Upsert("repair.txt", vfs.Metadata{Name: "repair.txt", Path: "repair.txt", Backends: []string{"b1"}, Mode: 0644}, "b1")
@@ -159,11 +159,11 @@ func TestRepairManager_RepairNode_ChtimesErrorStillSucceeds(t *testing.T) {
 }
 
 func TestRepairManager_RepairNode_DetectsDivergentReplicas(t *testing.T) {
-	b1 := &test.MockBackend{NameVal: "b1"}
-	b2 := &test.MockBackend{NameVal: "b2"}
+	b1 := &bmock.MockBackend{NameVal: "b1"}
+	b2 := &bmock.MockBackend{NameVal: "b2"}
 
-	mockFile1 := &test.MockFile{}
-	mockFile2 := &test.MockFile{}
+	mockFile1 := &bmock.MockFile{}
+	mockFile2 := &bmock.MockFile{}
 
 	cache := vfs.NewCache()
 	// The cache only knows about the b1 replica, but b2 also holds the file
@@ -192,7 +192,7 @@ func TestRepairManager_RepairNode_DetectsDivergentReplicas(t *testing.T) {
 	mockFile1.On("Close").Return(nil)
 
 	// Source sidecar: gen 7 with the (matching) content sum.
-	srcSidecar := &test.MockFile{}
+	srcSidecar := &bmock.MockFile{}
 	srcPayload := []byte(fmt.Sprintf(`{"v":1,"gen":7,"writer":"node-x","deleted":false,"sum":"%s"}`, srcSum))
 	b1.On("OpenFile", mock.Anything, vfs.SidecarPath("repair.txt"), os.O_RDONLY, os.FileMode(0)).Return(srcSidecar, nil)
 	srcSidecar.On("ReadAt", mock.Anything, mock.Anything, int64(0)).Run(func(args mock.Arguments) {
@@ -203,7 +203,7 @@ func TestRepairManager_RepairNode_DetectsDivergentReplicas(t *testing.T) {
 	// Target already holds the file at the SAME generation with a DIFFERENT
 	// non-empty sum: divergence must be detected before the overwrite.
 	b2.On("Stat", mock.Anything, "repair.txt").Return(backend.FileInfo{Name: "repair.txt", Size: 17}, nil)
-	tgtSidecar := &test.MockFile{}
+	tgtSidecar := &bmock.MockFile{}
 	tgtPayload := []byte(fmt.Sprintf(`{"v":1,"gen":7,"writer":"node-y","deleted":false,"sum":"%s"}`, divergentSum))
 	b2.On("OpenFile", mock.Anything, vfs.SidecarPath("repair.txt"), os.O_RDONLY, os.FileMode(0)).Return(tgtSidecar, nil)
 	tgtSidecar.On("ReadAt", mock.Anything, mock.Anything, int64(0)).Run(func(args mock.Arguments) {
@@ -248,7 +248,7 @@ func TestRepairManager_RepairNode_DetectsDivergentReplicas(t *testing.T) {
 }
 
 func TestOffsetReader_Read(t *testing.T) {
-	mockFile := &test.MockFile{}
+	mockFile := &bmock.MockFile{}
 	data := []byte("hello world")
 
 	mockFile.On("ReadAt", mock.Anything, mock.Anything, int64(0)).Run(func(args mock.Arguments) {
@@ -277,7 +277,7 @@ func TestOffsetReader_Read(t *testing.T) {
 }
 
 func TestOffsetWriter_Write(t *testing.T) {
-	mockFile := &test.MockFile{}
+	mockFile := &bmock.MockFile{}
 
 	mockFile.On("WriteAt", mock.Anything, []byte("hello"), int64(0)).Return(5, nil)
 	mockFile.On("WriteAt", mock.Anything, []byte(" world"), int64(5)).Return(6, nil)
@@ -295,7 +295,7 @@ func TestOffsetWriter_Write(t *testing.T) {
 
 // mockTombstoneTree makes b's tombstone tree enumerate (and serve) a tombstone
 // at the given generation for each path; an empty map means no tombstone tree.
-func mockTombstoneTree(b *test.MockBackend, tombs map[string]int64) {
+func mockTombstoneTree(b *bmock.MockBackend, tombs map[string]int64) {
 	if len(tombs) == 0 {
 		b.On("Walk", mock.Anything, ".replistore/tombstones", mock.Anything).Return(os.ErrNotExist)
 		return
@@ -308,7 +308,7 @@ func mockTombstoneTree(b *test.MockBackend, tombs map[string]int64) {
 	}).Return(nil)
 	for path, gen := range tombs {
 		payload := []byte(fmt.Sprintf(`{"v":1,"gen":%d,"writer":"w","deleted":true}`, gen))
-		f := &test.MockFile{}
+		f := &bmock.MockFile{}
 		f.On("ReadAt", mock.Anything, mock.Anything, int64(0)).Run(func(args mock.Arguments) {
 			copy(args.Get(1).([]byte), payload)
 		}).Return(len(payload), io.EOF)
@@ -318,9 +318,9 @@ func mockTombstoneTree(b *test.MockBackend, tombs map[string]int64) {
 }
 
 // mockSidecarGen makes b serve a sidecar with the given generation for path.
-func mockSidecarGen(b *test.MockBackend, path string, gen int64) {
+func mockSidecarGen(b *bmock.MockBackend, path string, gen int64) {
 	payload := []byte(fmt.Sprintf(`{"v":1,"gen":%d,"writer":"w","deleted":false}`, gen))
-	f := &test.MockFile{}
+	f := &bmock.MockFile{}
 	f.On("ReadAt", mock.Anything, mock.Anything, int64(0)).Run(func(args mock.Arguments) {
 		copy(args.Get(1).([]byte), payload)
 	}).Return(len(payload), io.EOF)
@@ -328,7 +328,7 @@ func mockSidecarGen(b *test.MockBackend, path string, gen int64) {
 	b.On("OpenFile", mock.Anything, vfs.SidecarPath(path), os.O_RDONLY, os.FileMode(0)).Return(f, nil)
 }
 
-func newTombstoneTestManager(b1, b2 *test.MockBackend) *RepairManager {
+func newTombstoneTestManager(b1, b2 *bmock.MockBackend) *RepairManager {
 	fs := &RepliFS{
 		Cache:             vfs.NewCache(),
 		Backends:          map[string]backend.Backend{"b1": b1, "b2": b2},
@@ -340,8 +340,8 @@ func newTombstoneTestManager(b1, b2 *test.MockBackend) *RepairManager {
 }
 
 func TestEnforceTombstones_DeletesZombie(t *testing.T) {
-	b1 := &test.MockBackend{NameVal: "b1"}
-	b2 := &test.MockBackend{NameVal: "b2"}
+	b1 := &bmock.MockBackend{NameVal: "b1"}
+	b2 := &bmock.MockBackend{NameVal: "b2"}
 	mgr := newTombstoneTestManager(b1, b2)
 
 	// b1 still holds the deleted file at gen 2; the tombstone records gen 3.
@@ -365,8 +365,8 @@ func TestEnforceTombstones_DeletesZombie(t *testing.T) {
 }
 
 func TestEnforceTombstones_GCsWhenAbsentEverywhere(t *testing.T) {
-	b1 := &test.MockBackend{NameVal: "b1"}
-	b2 := &test.MockBackend{NameVal: "b2"}
+	b1 := &bmock.MockBackend{NameVal: "b1"}
+	b2 := &bmock.MockBackend{NameVal: "b2"}
 	mgr := newTombstoneTestManager(b1, b2)
 
 	mockTombstoneTree(b1, map[string]int64{"gone.txt": 3})
@@ -388,8 +388,8 @@ func TestEnforceTombstones_GCsWhenAbsentEverywhere(t *testing.T) {
 }
 
 func TestEnforceTombstones_KeepsTombstoneOnBackendError(t *testing.T) {
-	b1 := &test.MockBackend{NameVal: "b1"}
-	b2 := &test.MockBackend{NameVal: "b2"}
+	b1 := &bmock.MockBackend{NameVal: "b1"}
+	b2 := &bmock.MockBackend{NameVal: "b2"}
 	mgr := newTombstoneTestManager(b1, b2)
 
 	mockTombstoneTree(b1, map[string]int64{"limbo.txt": 3})
@@ -409,8 +409,8 @@ func TestEnforceTombstones_KeepsTombstoneOnBackendError(t *testing.T) {
 }
 
 func TestEnforceTombstones_RemovesObsoleteTombstone(t *testing.T) {
-	b1 := &test.MockBackend{NameVal: "b1"}
-	b2 := &test.MockBackend{NameVal: "b2"}
+	b1 := &bmock.MockBackend{NameVal: "b1"}
+	b2 := &bmock.MockBackend{NameVal: "b2"}
 	mgr := newTombstoneTestManager(b1, b2)
 
 	// b1's replica is at gen 5, newer than the recorded deletion at gen 3:

@@ -9,19 +9,19 @@ import (
 	"time"
 
 	"github.com/digitalentity/replistore/internal/backend"
-	"github.com/digitalentity/replistore/internal/test"
+	bmock "github.com/digitalentity/replistore/internal/backend/mock"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 )
 
 // newEntryFile returns a MockFile that serves the JSON encoding of the given
 // peer entry on ReadAt.
-func newEntryFile(t *testing.T, id, addr string, seq int64) *test.MockFile {
+func newEntryFile(t *testing.T, id, addr string, seq int64) *bmock.MockFile {
 	t.Helper()
 	data, err := json.Marshal(peerEntry{ID: id, Address: addr, Seq: seq})
 	assert.NoError(t, err)
 
-	f := &test.MockFile{}
+	f := &bmock.MockFile{}
 	f.On("ReadAt", mock.Anything, mock.Anything, int64(0)).Run(func(args mock.Arguments) {
 		copy(args.Get(1).([]byte), data)
 	}).Return(len(data), io.EOF)
@@ -30,7 +30,7 @@ func newEntryFile(t *testing.T, id, addr string, seq int64) *test.MockFile {
 }
 
 // expectEntryListing makes the backend list and serve the given peer entries.
-func expectEntryListing(t *testing.T, b *test.MockBackend, entries ...peerEntry) {
+func expectEntryListing(t *testing.T, b *bmock.MockBackend, entries ...peerEntry) {
 	t.Helper()
 	var infos []backend.FileInfo
 	for _, e := range entries {
@@ -46,14 +46,14 @@ func TestDiscovery_StartWritesEntryToAllBackends(t *testing.T) {
 	defer cancel()
 
 	var backends []backend.Backend
-	var files []*test.MockFile
-	var mocks []*test.MockBackend
+	var files []*bmock.MockFile
+	var mocks []*bmock.MockBackend
 	for _, name := range []string{"b1", "b2"} {
-		f := &test.MockFile{}
+		f := &bmock.MockFile{}
 		f.On("WriteAt", mock.Anything, mock.Anything, int64(0)).Return(64, nil)
 		f.On("Close").Return(nil)
 
-		b := &test.MockBackend{NameVal: name}
+		b := &bmock.MockBackend{NameVal: name}
 		b.On("MkdirAll", mock.Anything, peersDir, os.FileMode(0755)).Return(nil)
 		b.On("OpenFile", mock.Anything, peersDir+"/node1.json", os.O_CREATE|os.O_TRUNC|os.O_RDWR, os.FileMode(0644)).
 			Return(f, nil)
@@ -74,16 +74,16 @@ func TestDiscovery_StartWritesEntryToAllBackends(t *testing.T) {
 }
 
 func TestDiscovery_HeartbeatWriteFailureIsTolerated(t *testing.T) {
-	f := &test.MockFile{}
+	f := &bmock.MockFile{}
 	f.On("WriteAt", mock.Anything, mock.Anything, int64(0)).Return(64, nil)
 	f.On("Close").Return(nil)
 
-	good := &test.MockBackend{NameVal: "good"}
+	good := &bmock.MockBackend{NameVal: "good"}
 	good.On("MkdirAll", mock.Anything, peersDir, os.FileMode(0755)).Return(nil)
 	good.On("OpenFile", mock.Anything, peersDir+"/node1.json", os.O_CREATE|os.O_TRUNC|os.O_RDWR, os.FileMode(0644)).
 		Return(f, nil)
 
-	bad := &test.MockBackend{NameVal: "bad"}
+	bad := &bmock.MockBackend{NameVal: "bad"}
 	bad.On("MkdirAll", mock.Anything, peersDir, os.FileMode(0755)).Return(assert.AnError)
 
 	d := NewDiscovery("node1", "10.0.0.1:5050", []backend.Backend{bad, good})
@@ -94,14 +94,14 @@ func TestDiscovery_HeartbeatWriteFailureIsTolerated(t *testing.T) {
 }
 
 func TestDiscovery_PollMergesAcrossBackends(t *testing.T) {
-	b1 := &test.MockBackend{NameVal: "b1"}
+	b1 := &bmock.MockBackend{NameVal: "b1"}
 	expectEntryListing(t, b1,
 		peerEntry{ID: "node2", Address: "10.0.0.2:5050", Seq: 100},
 		peerEntry{ID: "node3", Address: "10.0.0.3:5050", Seq: 50},
 	)
 
 	// node2 also present on b2 with a higher seq and different address.
-	b2 := &test.MockBackend{NameVal: "b2"}
+	b2 := &bmock.MockBackend{NameVal: "b2"}
 	expectEntryListing(t, b2,
 		peerEntry{ID: "node2", Address: "10.0.0.22:5050", Seq: 200},
 	)
@@ -121,7 +121,7 @@ func TestDiscovery_PollMergesAcrossBackends(t *testing.T) {
 }
 
 func TestDiscovery_PeerExpiresWhenSeqUnchanged(t *testing.T) {
-	b1 := &test.MockBackend{NameVal: "b1"}
+	b1 := &bmock.MockBackend{NameVal: "b1"}
 	expectEntryListing(t, b1, peerEntry{ID: "node2", Address: "10.0.0.2:5050", Seq: 100})
 
 	d := NewDiscovery("node1", "10.0.0.1:5050", []backend.Backend{b1})
@@ -148,7 +148,7 @@ func TestDiscovery_PeerExpiresWhenSeqUnchanged(t *testing.T) {
 }
 
 func TestDiscovery_PeerRemovedWhenEntryDeleted(t *testing.T) {
-	b1 := &test.MockBackend{NameVal: "b1"}
+	b1 := &bmock.MockBackend{NameVal: "b1"}
 	b1.On("ReadDir", mock.Anything, peersDir).
 		Return([]backend.FileInfo{{Name: "node2.json", Size: 64}}, nil).Once()
 	b1.On("OpenFile", mock.Anything, peersDir+"/node2.json", os.O_RDONLY, os.FileMode(0)).
@@ -168,7 +168,7 @@ func TestDiscovery_PeerRemovedWhenEntryDeleted(t *testing.T) {
 }
 
 func TestDiscovery_SkipsOwnEntry(t *testing.T) {
-	b1 := &test.MockBackend{NameVal: "b1"}
+	b1 := &bmock.MockBackend{NameVal: "b1"}
 	expectEntryListing(t, b1, peerEntry{ID: "node1", Address: "10.0.0.1:5050", Seq: 100})
 
 	d := NewDiscovery("node1", "10.0.0.1:5050", []backend.Backend{b1})
@@ -178,7 +178,7 @@ func TestDiscovery_SkipsOwnEntry(t *testing.T) {
 }
 
 func TestDiscovery_StopIsIdempotentAndRemovesEntry(t *testing.T) {
-	b1 := &test.MockBackend{NameVal: "b1"}
+	b1 := &bmock.MockBackend{NameVal: "b1"}
 	b1.On("Remove", mock.Anything, peersDir+"/node1.json").Return(nil).Once()
 
 	d := NewDiscovery("node1", "10.0.0.1:5050", []backend.Backend{b1})
@@ -189,7 +189,7 @@ func TestDiscovery_StopIsIdempotentAndRemovesEntry(t *testing.T) {
 }
 
 func TestDiscovery_AllBackendsUnreachableKeepsMembership(t *testing.T) {
-	b1 := &test.MockBackend{NameVal: "b1"}
+	b1 := &bmock.MockBackend{NameVal: "b1"}
 	b1.On("ReadDir", mock.Anything, peersDir).
 		Return([]backend.FileInfo{{Name: "node2.json", Size: 64}}, nil).Once()
 	b1.On("OpenFile", mock.Anything, peersDir+"/node2.json", os.O_RDONLY, os.FileMode(0)).

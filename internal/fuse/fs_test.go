@@ -14,7 +14,7 @@ import (
 
 	"bazil.org/fuse"
 	"github.com/digitalentity/replistore/internal/backend"
-	"github.com/digitalentity/replistore/internal/test"
+	bmock "github.com/digitalentity/replistore/internal/backend/mock"
 	"github.com/digitalentity/replistore/internal/vfs"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
@@ -37,9 +37,9 @@ func (c *sidecarCapture) get() (vfs.Sidecar, int) {
 // writes of dataPath on b — MkdirAll + OpenFile + WriteAt + Close — and
 // captures what was written. Permissive so tests that aren't about sidecars
 // stay minimal.
-func expectSidecarWrite(b *test.MockBackend, dataPath string) *sidecarCapture {
+func expectSidecarWrite(b *bmock.MockBackend, dataPath string) *sidecarCapture {
 	c := &sidecarCapture{}
-	f := &test.MockFile{}
+	f := &bmock.MockFile{}
 	sp := vfs.SidecarPath(dataPath)
 	b.On("MkdirAll", mock.Anything, gopath.Dir(sp), os.FileMode(0755)).Return(nil).Maybe()
 	b.On("OpenFile", mock.Anything, sp, os.O_CREATE|os.O_TRUNC|os.O_RDWR, os.FileMode(0644)).Return(f, nil).Maybe()
@@ -55,9 +55,9 @@ func expectSidecarWrite(b *test.MockBackend, dataPath string) *sidecarCapture {
 
 // expectTombstoneWrite registers permissive (.Maybe()) expectations for
 // tombstone writes of dataPath on b and captures what was written.
-func expectTombstoneWrite(b *test.MockBackend, dataPath string) *sidecarCapture {
+func expectTombstoneWrite(b *bmock.MockBackend, dataPath string) *sidecarCapture {
 	c := &sidecarCapture{}
-	f := &test.MockFile{}
+	f := &bmock.MockFile{}
 	tp := vfs.TombstonePath(dataPath)
 	b.On("MkdirAll", mock.Anything, gopath.Dir(tp), os.FileMode(0755)).Return(nil).Maybe()
 	b.On("OpenFile", mock.Anything, tp, os.O_CREATE|os.O_TRUNC|os.O_RDWR, os.FileMode(0644)).Return(f, nil).Maybe()
@@ -73,21 +73,21 @@ func expectTombstoneWrite(b *test.MockBackend, dataPath string) *sidecarCapture 
 
 // expectSidecarRemove registers a permissive expectation for sidecar deletion
 // of dataPath on b.
-func expectSidecarRemove(b *test.MockBackend, dataPath string) {
+func expectSidecarRemove(b *bmock.MockBackend, dataPath string) {
 	b.On("Remove", mock.Anything, vfs.SidecarPath(dataPath)).Return(nil).Maybe()
 }
 
 // expectNoTombstone makes b report no tombstone for dataPath (used by
 // FetchEntry and the Create/Rename tombstone-generation reads).
-func expectNoTombstone(b *test.MockBackend, dataPath string) {
+func expectNoTombstone(b *bmock.MockBackend, dataPath string) {
 	b.On("OpenFile", mock.Anything, vfs.TombstonePath(dataPath), os.O_RDONLY, os.FileMode(0)).Return(nil, os.ErrNotExist)
 }
 
 // expectTombstoneGen makes b serve a tombstone at the given generation for
 // dataPath (used by the Create/Rename tombstone-generation reads).
-func expectTombstoneGen(b *test.MockBackend, dataPath string, gen int64) {
+func expectTombstoneGen(b *bmock.MockBackend, dataPath string, gen int64) {
 	payload := []byte(fmt.Sprintf(`{"v":1,"gen":%d,"writer":"w","deleted":true}`, gen))
-	f := &test.MockFile{}
+	f := &bmock.MockFile{}
 	f.On("ReadAt", mock.Anything, mock.Anything, int64(0)).Run(func(args mock.Arguments) {
 		copy(args.Get(1).([]byte), payload)
 	}).Return(len(payload), io.EOF)
@@ -132,8 +132,8 @@ func TestFS_ReadDirAll(t *testing.T) {
 }
 
 func TestDir_Create(t *testing.T) {
-	b1 := &test.MockBackend{NameVal: "b1"}
-	mockFile := &test.MockFile{}
+	b1 := &bmock.MockBackend{NameVal: "b1"}
+	mockFile := &bmock.MockFile{}
 
 	cache := vfs.NewCache()
 	fs := &RepliFS{
@@ -178,10 +178,10 @@ func TestDir_Create(t *testing.T) {
 // recorded by a tombstone must start the new lineage ABOVE the tombstone
 // generation, otherwise the next sync/repair pass destroys the fresh file.
 func TestDir_Create_AboveTombstoneGen(t *testing.T) {
-	b1 := &test.MockBackend{NameVal: "b1"}
-	b2 := &test.MockBackend{NameVal: "b2"}
-	mockFile1 := &test.MockFile{}
-	mockFile2 := &test.MockFile{}
+	b1 := &bmock.MockBackend{NameVal: "b1"}
+	b2 := &bmock.MockBackend{NameVal: "b2"}
+	mockFile1 := &bmock.MockFile{}
+	mockFile2 := &bmock.MockFile{}
 
 	cache := vfs.NewCache()
 	fs := &RepliFS{
@@ -232,8 +232,8 @@ func TestDir_Create_AboveTombstoneGen(t *testing.T) {
 }
 
 func TestFile_Write(t *testing.T) {
-	b1 := &test.MockBackend{NameVal: "b1"}
-	mockFile := &test.MockFile{}
+	b1 := &bmock.MockBackend{NameVal: "b1"}
+	mockFile := &bmock.MockFile{}
 
 	cache := vfs.NewCache()
 	cache.Upsert("test.txt", vfs.Metadata{Name: "test.txt", Path: "test.txt", Backends: []string{"b1"}}, "b1")
@@ -270,10 +270,10 @@ func TestFile_Write(t *testing.T) {
 }
 
 func TestFile_Read_Failover(t *testing.T) {
-	b1 := &test.MockBackend{NameVal: "b1"}
-	b2 := &test.MockBackend{NameVal: "b2"}
-	mockFile1 := &test.MockFile{}
-	mockFile2 := &test.MockFile{}
+	b1 := &bmock.MockBackend{NameVal: "b1"}
+	b2 := &bmock.MockBackend{NameVal: "b2"}
+	mockFile1 := &bmock.MockFile{}
+	mockFile2 := &bmock.MockFile{}
 
 	cache := vfs.NewCache()
 	cache.Upsert("failover.txt", vfs.Metadata{Name: "failover.txt", Path: "failover.txt", Backends: []string{"b1", "b2"}}, "b1")
@@ -316,9 +316,9 @@ func TestFile_Read_Failover(t *testing.T) {
 }
 
 func TestFile_Open_ReadOnly_Failover(t *testing.T) {
-	b1 := &test.MockBackend{NameVal: "b1"}
-	b2 := &test.MockBackend{NameVal: "b2"}
-	mockFile2 := &test.MockFile{}
+	b1 := &bmock.MockBackend{NameVal: "b1"}
+	b2 := &bmock.MockBackend{NameVal: "b2"}
+	mockFile2 := &bmock.MockFile{}
 
 	cache := vfs.NewCache()
 	cache.Upsert("ro_failover.txt", vfs.Metadata{Name: "ro_failover.txt", Path: "ro_failover.txt", Backends: []string{"b1", "b2"}}, "b1")
@@ -352,8 +352,8 @@ func TestFile_Open_ReadOnly_Failover(t *testing.T) {
 }
 
 func TestFile_Open_ReadOnly_AllBackendsFail(t *testing.T) {
-	b1 := &test.MockBackend{NameVal: "b1"}
-	b2 := &test.MockBackend{NameVal: "b2"}
+	b1 := &bmock.MockBackend{NameVal: "b1"}
+	b2 := &bmock.MockBackend{NameVal: "b2"}
 
 	cache := vfs.NewCache()
 	cache.Upsert("ro_fail.txt", vfs.Metadata{Name: "ro_fail.txt", Path: "ro_fail.txt", Backends: []string{"b1", "b2"}}, "b1")
@@ -382,10 +382,10 @@ func TestFile_Open_ReadOnly_AllBackendsFail(t *testing.T) {
 }
 
 func TestFile_Write_Quorum(t *testing.T) {
-	b1 := &test.MockBackend{NameVal: "b1"}
-	b2 := &test.MockBackend{NameVal: "b2"}
-	mockFile1 := &test.MockFile{}
-	mockFile2 := &test.MockFile{}
+	b1 := &bmock.MockBackend{NameVal: "b1"}
+	b2 := &bmock.MockBackend{NameVal: "b2"}
+	mockFile1 := &bmock.MockFile{}
+	mockFile2 := &bmock.MockFile{}
 
 	cache := vfs.NewCache()
 	cache.Upsert("quorum.txt", vfs.Metadata{Name: "quorum.txt", Path: "quorum.txt", Backends: []string{"b1", "b2"}}, "b1")
@@ -450,10 +450,10 @@ func TestFile_Write_Quorum(t *testing.T) {
 }
 
 func TestFile_Fsync_WithWriteHandle(t *testing.T) {
-	b1 := &test.MockBackend{NameVal: "b1"}
-	b2 := &test.MockBackend{NameVal: "b2"}
-	mockFile1 := &test.MockFile{}
-	mockFile2 := &test.MockFile{}
+	b1 := &bmock.MockBackend{NameVal: "b1"}
+	b2 := &bmock.MockBackend{NameVal: "b2"}
+	mockFile1 := &bmock.MockFile{}
+	mockFile2 := &bmock.MockFile{}
 
 	cache := vfs.NewCache()
 	cache.Upsert("sync.txt", vfs.Metadata{Name: "sync.txt", Path: "sync.txt", Backends: []string{"b1", "b2"}}, "b1")
@@ -516,7 +516,7 @@ func TestFile_Fsync_WithWriteHandle(t *testing.T) {
 }
 
 func TestLookup_LazyTrigger(t *testing.T) {
-	b1 := &test.MockBackend{NameVal: "b1"}
+	b1 := &bmock.MockBackend{NameVal: "b1"}
 	cache := vfs.NewCache()
 	// Directory exists in cache but not fully indexed
 	cache.Upsert("lazy/dummy", vfs.Metadata{Name: "dummy"}, "b1")
@@ -549,7 +549,7 @@ func TestLookup_LazyTrigger(t *testing.T) {
 }
 
 func TestLookup_AllBackendsUnavailable(t *testing.T) {
-	b1 := &test.MockBackend{NameVal: "b1"}
+	b1 := &bmock.MockBackend{NameVal: "b1"}
 	cache := vfs.NewCache()
 	// Directory exists in cache but not fully indexed
 	cache.Upsert("lazy/dummy", vfs.Metadata{Name: "dummy"}, "b1")
@@ -576,7 +576,7 @@ func TestLookup_AllBackendsUnavailable(t *testing.T) {
 }
 
 func TestReadDir_LazyTrigger(t *testing.T) {
-	b1 := &test.MockBackend{NameVal: "b1"}
+	b1 := &bmock.MockBackend{NameVal: "b1"}
 	cache := vfs.NewCache()
 	cache.Upsert("lazy-dir/dummy", vfs.Metadata{Name: "dummy"}, "b1")
 	dirNode, _ := cache.Get("lazy-dir")
@@ -602,8 +602,8 @@ func TestReadDir_LazyTrigger(t *testing.T) {
 }
 
 func TestMkdir_Quorum(t *testing.T) {
-	b1 := &test.MockBackend{NameVal: "b1"}
-	b2 := &test.MockBackend{NameVal: "b2"}
+	b1 := &bmock.MockBackend{NameVal: "b1"}
+	b2 := &bmock.MockBackend{NameVal: "b2"}
 
 	cache := vfs.NewCache()
 	fs := &RepliFS{
@@ -634,8 +634,8 @@ func TestMkdir_Quorum(t *testing.T) {
 }
 
 func TestMkdir_AlreadyExistsCountsTowardQuorum(t *testing.T) {
-	b1 := &test.MockBackend{NameVal: "b1"}
-	b2 := &test.MockBackend{NameVal: "b2"}
+	b1 := &bmock.MockBackend{NameVal: "b1"}
+	b2 := &bmock.MockBackend{NameVal: "b2"}
 
 	cache := vfs.NewCache()
 	fs := &RepliFS{
@@ -673,8 +673,8 @@ func TestMkdir_AlreadyExistsCountsTowardQuorum(t *testing.T) {
 }
 
 func TestMkdir_ExistsAsFileNotCounted(t *testing.T) {
-	b1 := &test.MockBackend{NameVal: "b1"}
-	b2 := &test.MockBackend{NameVal: "b2"}
+	b1 := &bmock.MockBackend{NameVal: "b1"}
+	b2 := &bmock.MockBackend{NameVal: "b2"}
 
 	cache := vfs.NewCache()
 	fs := &RepliFS{
@@ -707,8 +707,8 @@ func TestMkdir_ExistsAsFileNotCounted(t *testing.T) {
 }
 
 func TestRemove_Quorum(t *testing.T) {
-	b1 := &test.MockBackend{NameVal: "b1"}
-	b2 := &test.MockBackend{NameVal: "b2"}
+	b1 := &bmock.MockBackend{NameVal: "b1"}
+	b2 := &bmock.MockBackend{NameVal: "b2"}
 
 	cache := vfs.NewCache()
 	cache.Upsert("remove.txt", vfs.Metadata{Name: "remove.txt", Path: "remove.txt", Backends: []string{"b1", "b2"}}, "b1")
@@ -739,8 +739,8 @@ func TestRemove_Quorum(t *testing.T) {
 }
 
 func TestRemove_DirFansOutToAllBackends(t *testing.T) {
-	b1 := &test.MockBackend{NameVal: "b1"}
-	b2 := &test.MockBackend{NameVal: "b2"}
+	b1 := &bmock.MockBackend{NameVal: "b1"}
+	b2 := &bmock.MockBackend{NameVal: "b2"}
 
 	cache := vfs.NewCache()
 	// Directory is only listed on b1 in the cache, but it may exist on b2 too
@@ -785,8 +785,8 @@ func TestRemove_DirFansOutToAllBackends(t *testing.T) {
 }
 
 func TestRemove_NonEmptyDirFailsWithENOTEMPTY(t *testing.T) {
-	b1 := &test.MockBackend{NameVal: "b1"}
-	b2 := &test.MockBackend{NameVal: "b2"}
+	b1 := &bmock.MockBackend{NameVal: "b1"}
+	b2 := &bmock.MockBackend{NameVal: "b2"}
 
 	cache := vfs.NewCache()
 	cache.Upsert("subdir", vfs.Metadata{Name: "subdir", Path: "subdir", IsDir: true, Mode: os.ModeDir | 0755}, "b1")
@@ -822,8 +822,8 @@ func TestRemove_NonEmptyDirFailsWithENOTEMPTY(t *testing.T) {
 }
 
 func TestRemove_FileNotExistCountsAsSuccess(t *testing.T) {
-	b1 := &test.MockBackend{NameVal: "b1"}
-	b2 := &test.MockBackend{NameVal: "b2"}
+	b1 := &bmock.MockBackend{NameVal: "b1"}
+	b2 := &bmock.MockBackend{NameVal: "b2"}
 
 	cache := vfs.NewCache()
 	cache.Upsert("gone.txt", vfs.Metadata{Name: "gone.txt", Path: "gone.txt", Backends: []string{"b1", "b2"}}, "b1")
@@ -860,10 +860,10 @@ func TestRemove_FileNotExistCountsAsSuccess(t *testing.T) {
 }
 
 func TestFile_Write_QuorumFailure(t *testing.T) {
-	b1 := &test.MockBackend{NameVal: "b1"}
-	b2 := &test.MockBackend{NameVal: "b2"}
-	mockFile1 := &test.MockFile{}
-	mockFile2 := &test.MockFile{}
+	b1 := &bmock.MockBackend{NameVal: "b1"}
+	b2 := &bmock.MockBackend{NameVal: "b2"}
+	mockFile1 := &bmock.MockFile{}
+	mockFile2 := &bmock.MockFile{}
 
 	cache := vfs.NewCache()
 	cache.Upsert("quorum_fail.txt", vfs.Metadata{Name: "quorum_fail.txt", Path: "quorum_fail.txt", Backends: []string{"b1", "b2"}}, "b1")
@@ -925,9 +925,9 @@ func TestFile_Write_QuorumFailure(t *testing.T) {
 }
 
 func TestDir_Create_QuorumFailure(t *testing.T) {
-	b1 := &test.MockBackend{NameVal: "b1"}
-	b2 := &test.MockBackend{NameVal: "b2"}
-	mockFile1 := &test.MockFile{}
+	b1 := &bmock.MockBackend{NameVal: "b1"}
+	b2 := &bmock.MockBackend{NameVal: "b2"}
+	mockFile1 := &bmock.MockFile{}
 
 	cache := vfs.NewCache()
 	fs := &RepliFS{
@@ -961,8 +961,8 @@ func TestDir_Create_QuorumFailure(t *testing.T) {
 }
 
 func TestDir_Create_AlreadyExistsOnBackends(t *testing.T) {
-	b1 := &test.MockBackend{NameVal: "b1"}
-	b2 := &test.MockBackend{NameVal: "b2"}
+	b1 := &bmock.MockBackend{NameVal: "b1"}
+	b2 := &bmock.MockBackend{NameVal: "b2"}
 
 	cache := vfs.NewCache()
 	fs := &RepliFS{
@@ -1013,13 +1013,13 @@ func TestDir_Create_AlreadyExistsOnBackends(t *testing.T) {
 }
 
 func TestFile_Open_HealDegraded(t *testing.T) {
-	b1 := &test.MockBackend{NameVal: "b1"}
-	b2 := &test.MockBackend{NameVal: "b2"}
+	b1 := &bmock.MockBackend{NameVal: "b1"}
+	b2 := &bmock.MockBackend{NameVal: "b2"}
 
-	srcMockFile := &test.MockFile{}
-	dstMockFile := &test.MockFile{}
-	b1WriteFile := &test.MockFile{}
-	b2WriteFile := &test.MockFile{}
+	srcMockFile := &bmock.MockFile{}
+	dstMockFile := &bmock.MockFile{}
+	b1WriteFile := &bmock.MockFile{}
+	b2WriteFile := &bmock.MockFile{}
 
 	cache := vfs.NewCache()
 	// Node has initially Backends = []string{"b1"}
@@ -1097,8 +1097,8 @@ func TestFile_Open_HealDegraded(t *testing.T) {
 }
 
 func TestDir_Create_MkdirAllParent(t *testing.T) {
-	b1 := &test.MockBackend{NameVal: "b1"}
-	mockFile := &test.MockFile{}
+	b1 := &bmock.MockBackend{NameVal: "b1"}
+	mockFile := &bmock.MockFile{}
 
 	cache := vfs.NewCache()
 	cache.Upsert("parent/dummy", vfs.Metadata{Name: "dummy"}, "b1")
@@ -1132,7 +1132,7 @@ func TestDir_Create_MkdirAllParent(t *testing.T) {
 }
 
 func TestDir_Mkdir_MkdirAllParent(t *testing.T) {
-	b1 := &test.MockBackend{NameVal: "b1"}
+	b1 := &bmock.MockBackend{NameVal: "b1"}
 
 	cache := vfs.NewCache()
 	cache.Upsert("parent/dummy", vfs.Metadata{Name: "dummy"}, "b1")
@@ -1167,10 +1167,10 @@ func TestDir_Mkdir_MkdirAllParent(t *testing.T) {
 // TestFile_Fsync_FallbackNoHandles exercises the no-open-write-handle path:
 // Fsync opens each replica read-only and syncs it.
 func TestFile_Fsync_FallbackNoHandles(t *testing.T) {
-	b1 := &test.MockBackend{NameVal: "b1"}
-	b2 := &test.MockBackend{NameVal: "b2"}
-	mockFile1 := &test.MockFile{}
-	mockFile2 := &test.MockFile{}
+	b1 := &bmock.MockBackend{NameVal: "b1"}
+	b2 := &bmock.MockBackend{NameVal: "b2"}
+	mockFile1 := &bmock.MockFile{}
+	mockFile2 := &bmock.MockFile{}
 
 	cache := vfs.NewCache()
 	cache.Upsert("sync.txt", vfs.Metadata{Name: "sync.txt", Path: "sync.txt", Backends: []string{"b1", "b2"}}, "b1")
@@ -1208,8 +1208,8 @@ func TestFile_Fsync_FallbackNoHandles(t *testing.T) {
 }
 
 func TestFile_Setattr_Truncate(t *testing.T) {
-	b1 := &test.MockBackend{NameVal: "b1"}
-	b2 := &test.MockBackend{NameVal: "b2"}
+	b1 := &bmock.MockBackend{NameVal: "b1"}
+	b2 := &bmock.MockBackend{NameVal: "b2"}
 
 	cache := vfs.NewCache()
 	cache.Upsert("trunc.txt", vfs.Metadata{Name: "trunc.txt", Path: "trunc.txt", Size: 100, Mode: 0644, Backends: []string{"b1", "b2"}}, "b1")
@@ -1259,8 +1259,8 @@ func TestFile_Setattr_Truncate(t *testing.T) {
 }
 
 func TestFile_Setattr_Truncate_QuorumFailure(t *testing.T) {
-	b1 := &test.MockBackend{NameVal: "b1"}
-	b2 := &test.MockBackend{NameVal: "b2"}
+	b1 := &bmock.MockBackend{NameVal: "b1"}
+	b2 := &bmock.MockBackend{NameVal: "b2"}
 
 	cache := vfs.NewCache()
 	cache.Upsert("trunc_fail.txt", vfs.Metadata{Name: "trunc_fail.txt", Path: "trunc_fail.txt", Size: 100, Backends: []string{"b1", "b2"}}, "b1")
@@ -1298,8 +1298,8 @@ func TestFile_Setattr_Truncate_QuorumFailure(t *testing.T) {
 }
 
 func TestFile_Setattr_Truncate_PartialFailureEvictsBackend(t *testing.T) {
-	b1 := &test.MockBackend{NameVal: "b1"}
-	b2 := &test.MockBackend{NameVal: "b2"}
+	b1 := &bmock.MockBackend{NameVal: "b1"}
+	b2 := &bmock.MockBackend{NameVal: "b2"}
 
 	cache := vfs.NewCache()
 	cache.Upsert("trunc_part.txt", vfs.Metadata{Name: "trunc_part.txt", Path: "trunc_part.txt", Size: 100, Backends: []string{"b1", "b2"}}, "b1")
@@ -1353,7 +1353,7 @@ func TestFile_Setattr_Truncate_PartialFailureEvictsBackend(t *testing.T) {
 }
 
 func TestFile_Setattr_NonSizeIsNoop(t *testing.T) {
-	b1 := &test.MockBackend{NameVal: "b1"}
+	b1 := &bmock.MockBackend{NameVal: "b1"}
 
 	cache := vfs.NewCache()
 	cache.Upsert("attrs.txt", vfs.Metadata{Name: "attrs.txt", Path: "attrs.txt", Size: 42, Mode: 0644, Backends: []string{"b1"}}, "b1")
@@ -1385,7 +1385,7 @@ func TestFile_Setattr_NonSizeIsNoop(t *testing.T) {
 }
 
 func TestFile_Open_AppendNotSupported(t *testing.T) {
-	b1 := &test.MockBackend{NameVal: "b1"}
+	b1 := &bmock.MockBackend{NameVal: "b1"}
 
 	cache := vfs.NewCache()
 	cache.Upsert("append.txt", vfs.Metadata{Name: "append.txt", Path: "append.txt", Backends: []string{"b1"}}, "b1")
@@ -1412,7 +1412,7 @@ func TestFile_Open_AppendNotSupported(t *testing.T) {
 
 func TestReservedPath_LookupReturnsENOENT(t *testing.T) {
 	// No backend expectations: lookup of the reserved dir must not hit backends.
-	b1 := &test.MockBackend{NameVal: "b1"}
+	b1 := &bmock.MockBackend{NameVal: "b1"}
 
 	cache := vfs.NewCache()
 	fs := &RepliFS{
@@ -1431,7 +1431,7 @@ func TestReservedPath_LookupReturnsENOENT(t *testing.T) {
 }
 
 func TestReservedPath_MkdirReturnsEACCES(t *testing.T) {
-	b1 := &test.MockBackend{NameVal: "b1"}
+	b1 := &bmock.MockBackend{NameVal: "b1"}
 
 	cache := vfs.NewCache()
 	fs := &RepliFS{
@@ -1452,7 +1452,7 @@ func TestReservedPath_MkdirReturnsEACCES(t *testing.T) {
 }
 
 func TestReservedPath_CreateReturnsEACCES(t *testing.T) {
-	b1 := &test.MockBackend{NameVal: "b1"}
+	b1 := &bmock.MockBackend{NameVal: "b1"}
 
 	cache := vfs.NewCache()
 	fs := &RepliFS{
@@ -1474,10 +1474,10 @@ func TestReservedPath_CreateReturnsEACCES(t *testing.T) {
 }
 
 func TestFile_Open_WriteBumpsGeneration(t *testing.T) {
-	b1 := &test.MockBackend{NameVal: "b1"}
-	b2 := &test.MockBackend{NameVal: "b2"}
-	mockFile1 := &test.MockFile{}
-	mockFile2 := &test.MockFile{}
+	b1 := &bmock.MockBackend{NameVal: "b1"}
+	b2 := &bmock.MockBackend{NameVal: "b2"}
+	mockFile1 := &bmock.MockFile{}
+	mockFile2 := &bmock.MockFile{}
 
 	cache := vfs.NewCache()
 	cache.Upsert("gen.txt", vfs.Metadata{Name: "gen.txt", Path: "gen.txt", Backends: []string{"b1", "b2"}, Gen: 3}, "b1")
@@ -1526,8 +1526,8 @@ func TestFile_Open_WriteBumpsGeneration(t *testing.T) {
 }
 
 func TestRemove_WritesTombstonesToAllBackends(t *testing.T) {
-	b1 := &test.MockBackend{NameVal: "b1"}
-	b2 := &test.MockBackend{NameVal: "b2"}
+	b1 := &bmock.MockBackend{NameVal: "b1"}
+	b2 := &bmock.MockBackend{NameVal: "b2"}
 
 	cache := vfs.NewCache()
 	// The file's replicas live only on b1, but the tombstone must reach ALL
@@ -1577,8 +1577,8 @@ func TestRemove_WritesTombstonesToAllBackends(t *testing.T) {
 }
 
 func TestRemove_TombstoneQuorumFailureKeepsData(t *testing.T) {
-	b1 := &test.MockBackend{NameVal: "b1"}
-	b2 := &test.MockBackend{NameVal: "b2"}
+	b1 := &bmock.MockBackend{NameVal: "b1"}
+	b2 := &bmock.MockBackend{NameVal: "b2"}
 
 	cache := vfs.NewCache()
 	cache.Upsert("safe.txt", vfs.Metadata{Name: "safe.txt", Path: "safe.txt", Backends: []string{"b1", "b2"}}, "b1")
@@ -1616,8 +1616,8 @@ func TestRemove_TombstoneQuorumFailureKeepsData(t *testing.T) {
 }
 
 func TestRename_TombstonesOldPathAndWritesFreshSidecar(t *testing.T) {
-	b1 := &test.MockBackend{NameVal: "b1"}
-	b2 := &test.MockBackend{NameVal: "b2"}
+	b1 := &bmock.MockBackend{NameVal: "b1"}
+	b2 := &bmock.MockBackend{NameVal: "b2"}
 
 	cache := vfs.NewCache()
 	cache.Upsert("old.txt", vfs.Metadata{Name: "old.txt", Path: "old.txt", Backends: []string{"b1"}, Gen: 3}, "b1")
@@ -1694,8 +1694,8 @@ func TestRename_TombstonesOldPathAndWritesFreshSidecar(t *testing.T) {
 // lineage above that tombstone, while the OLD path's tombstone stays in the
 // source lineage (source gen + 1).
 func TestRename_OntoTombstonedTargetStartsAboveTombstone(t *testing.T) {
-	b1 := &test.MockBackend{NameVal: "b1"}
-	b2 := &test.MockBackend{NameVal: "b2"}
+	b1 := &bmock.MockBackend{NameVal: "b1"}
+	b2 := &bmock.MockBackend{NameVal: "b2"}
 
 	cache := vfs.NewCache()
 	cache.Upsert("old.txt", vfs.Metadata{Name: "old.txt", Path: "old.txt", Backends: []string{"b1"}}, "b1")
@@ -1759,8 +1759,8 @@ func TestRename_OntoTombstonedTargetStartsAboveTombstone(t *testing.T) {
 }
 
 func TestFile_OpenHandles(t *testing.T) {
-	b1 := &test.MockBackend{NameVal: "b1"}
-	mockFile := &test.MockFile{}
+	b1 := &bmock.MockBackend{NameVal: "b1"}
+	mockFile := &bmock.MockFile{}
 	mockFile.On("Close").Return(nil).Maybe()
 
 	cache := vfs.NewCache()

@@ -8,14 +8,14 @@ import (
 
 	"bazil.org/fuse"
 	"github.com/digitalentity/replistore/internal/backend"
-	"github.com/digitalentity/replistore/internal/test"
+	bmock "github.com/digitalentity/replistore/internal/backend/mock"
 	"github.com/digitalentity/replistore/internal/vfs"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 )
 
 func TestDir_Rename_Simple(t *testing.T) {
-	b1 := &test.MockBackend{NameVal: "b1"}
+	b1 := &bmock.MockBackend{NameVal: "b1"}
 
 	cache := vfs.NewCache()
 	cache.Upsert("old.txt", vfs.Metadata{Name: "old.txt", Path: "old.txt", Backends: []string{"b1"}}, "b1")
@@ -57,7 +57,7 @@ func TestDir_Rename_Simple(t *testing.T) {
 }
 
 func TestDir_Rename_CrossDir(t *testing.T) {
-	b1 := &test.MockBackend{NameVal: "b1"}
+	b1 := &bmock.MockBackend{NameVal: "b1"}
 
 	cache := vfs.NewCache()
 	cache.Upsert("dir1/old.txt", vfs.Metadata{Name: "old.txt", Path: "dir1/old.txt", Backends: []string{"b1"}}, "b1")
@@ -103,8 +103,8 @@ func TestDir_Rename_CrossDir(t *testing.T) {
 }
 
 func TestDir_Rename_DirFansOutToAllBackends(t *testing.T) {
-	b1 := &test.MockBackend{NameVal: "b1"}
-	b2 := &test.MockBackend{NameVal: "b2"}
+	b1 := &bmock.MockBackend{NameVal: "b1"}
+	b2 := &bmock.MockBackend{NameVal: "b2"}
 
 	cache := vfs.NewCache()
 	// Directory listed on b1 only in the cache, but rename must fan out to
@@ -158,8 +158,8 @@ func TestDir_Rename_DirFansOutToAllBackends(t *testing.T) {
 }
 
 func TestDir_Rename_DirNotExistIsSkipped(t *testing.T) {
-	b1 := &test.MockBackend{NameVal: "b1"}
-	b2 := &test.MockBackend{NameVal: "b2"}
+	b1 := &bmock.MockBackend{NameVal: "b1"}
+	b2 := &bmock.MockBackend{NameVal: "b2"}
 
 	cache := vfs.NewCache()
 	cache.Upsert("olddir", vfs.Metadata{Name: "olddir", Path: "olddir", IsDir: true, Mode: os.ModeDir | 0755}, "b1")
@@ -209,8 +209,8 @@ func TestDir_Rename_DirNotExistIsSkipped(t *testing.T) {
 }
 
 func TestDir_Rename_Quorum(t *testing.T) {
-	b1 := &test.MockBackend{NameVal: "b1"}
-	b2 := &test.MockBackend{NameVal: "b2"}
+	b1 := &bmock.MockBackend{NameVal: "b1"}
+	b2 := &bmock.MockBackend{NameVal: "b2"}
 
 	cache := vfs.NewCache()
 	cache.Upsert("old.txt", vfs.Metadata{Name: "old.txt", Path: "old.txt", Backends: []string{"b1", "b2"}}, "b1")

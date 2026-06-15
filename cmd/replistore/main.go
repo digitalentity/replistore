@@ -11,6 +11,7 @@ import (
 	"bazil.org/fuse"
 	"bazil.org/fuse/fs"
 	"github.com/digitalentity/replistore/internal/backend"
+	_ "github.com/digitalentity/replistore/internal/backend/smb"
 	"github.com/digitalentity/replistore/internal/cluster"
 	"github.com/digitalentity/replistore/internal/config"
 	rfuse "github.com/digitalentity/replistore/internal/fuse"
@@ -33,10 +34,14 @@ func main() {
 	logrus.Infof("Starting RepliStore with %d backends (RF=%d, WQ=%d)", len(cfg.Backends), cfg.ReplicationFactor, cfg.WriteQuorum)
 
 	// Initialize backends
-	backends := make(map[string]backend.Backend)
-	var backendList []backend.Backend
+	backends := map[string]backend.Backend{}
+	backendList := []backend.Backend{}
 	for _, bc := range cfg.Backends {
-		b := backend.NewSMBBackend(bc.Name, bc.Address, bc.Share, bc.User, bc.Password, bc.Domain)
+		b, err := backend.Create(bc.Type, bc.Name, bc.ToOptions())
+		if err != nil {
+			logrus.Errorf("Failed to create backend %s: %v", bc.Name, err)
+			continue
+		}
 		if err := b.Connect(); err != nil {
 			logrus.Errorf("Failed to connect to backend %s: %v", bc.Name, err)
 			continue
