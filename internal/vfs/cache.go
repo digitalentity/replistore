@@ -584,10 +584,7 @@ func (c *Cache) sweep(node *Node, path string, backendName string, seenPaths map
 	defer node.Mu.Unlock()
 
 	for name, child := range node.Children {
-		childPath := name
-		if path != "" {
-			childPath = path + "/" + name
-		}
+		childPath := joinPath(path, name)
 
 		c.sweep(child, childPath, backendName, seenPaths, walkStart)
 
@@ -619,7 +616,7 @@ func splitPath(path string) []string {
 		return nil
 	}
 	var res []string
-	for _, s := range append([]string{}, split(path, "/")...) {
+	for _, s := range strings.Split(path, "/") {
 		if s != "" {
 			res = append(res, s)
 		}
@@ -627,17 +624,13 @@ func splitPath(path string) []string {
 	return res
 }
 
-func split(s, sep string) []string {
-	var res []string
-	start := 0
-	for i := 0; i < len(s); i++ {
-		if string(s[i]) == sep {
-			res = append(res, s[start:i])
-			start = i + 1
-		}
+// joinPath appends name to a slash-separated relative parent path, treating
+// the empty parent as the namespace root.
+func joinPath(parent, name string) string {
+	if parent == "" {
+		return name
 	}
-	res = append(res, s[start:])
-	return res
+	return parent + "/" + name
 }
 
 func (c *Cache) Rename(oldPath, newPath string) bool {
@@ -900,7 +893,7 @@ func (c *Cache) updatePaths(node *Node, newPath string) {
 	// Assumes node.Mu is locked or we are in a safe context
 	for name, child := range node.Children {
 		child.Mu.Lock()
-		child.Meta.Path = newPath + "/" + name
+		child.Meta.Path = joinPath(newPath, name)
 		child.LastUpdated = time.Now()
 		if child.Meta.IsDir {
 			c.updatePaths(child, child.Meta.Path)
