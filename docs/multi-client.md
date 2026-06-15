@@ -21,6 +21,7 @@ listen_addr: ":5050"      # Internal lock server port (UDP)
 advertise_addr: "192.168.1.50:5050" # Required: host:port peers use to reach this node
 cluster_secret: "<16+ char shared secret>"  # Required: same value on all nodes
 expected_cluster_size: 2  # Required: total nodes in the cluster (>= 2)
+max_io_duration: "1s"     # Optional: lease buffer duration required to start a write (default 1s)
 ```
 
 Ensure all nodes can reach the SMB backends (for discovery) and each other's `advertise_addr` (lock messages are exchanged as UDP datagrams authenticated with HMAC in JWT/JWS format, signed with `cluster_secret`).
@@ -42,7 +43,11 @@ The background **Repair Manager** also utilizes the DLM. Before repairing a degr
 ### 4. Fencing and Node Recovery
 Locks are granted as **Leases** with a short Time-To-Live (TTL).
 - If a node crashes, its locks naturally expire and are reclaimed by the cluster.
-- **Lease validation:** lease validity is checked before each write *and re-checked after the backend writes complete, before acknowledging to the application* — a write that landed under an expired lease is reported as an I/O error. Note the honest limitation: SMB offers no true fencing primitive, so a write already in flight when the lease expires can still reach the backend; the post-write check shrinks that window to milliseconds but cannot eliminate it.
+- **Lease validation:** lease validity is checked at two points for write operations:
+  1. **Pre-write buffer check:** before issuing a write, RepliStore verifies that the remaining lease window exceeds the configured `max_io_duration` (default 1s). If the lease is too close to expiry, the write is rejected early.
+  2. **Post-write re-check:** after the backend writes complete and before acknowledging to the application, the lease validity is verified. A write that landed under an expired lease is reported as an I/O error.
+
+  Note the honest limitation: SMB offers no true fencing primitive, so a write already in flight when the lease expires can still reach the backend; these checks shrink that window to milliseconds but cannot eliminate it.
 
 ---
 

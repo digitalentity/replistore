@@ -115,16 +115,35 @@ func main() {
 	}
 	defer c.Close()
 
+	maxIODuration, err := time.ParseDuration(cfg.MaxIODuration)
+	if err != nil {
+		logrus.Warnf("Invalid max_io_duration '%s', defaulting to 1s: %v", cfg.MaxIODuration, err)
+		maxIODuration = 1 * time.Second
+	}
+
+	var selector vfs.BackendSelector
+	switch cfg.Selector.Type {
+	case "space-aware":
+		selector = vfs.NewSpaceAwareSelector(backends, monitor, cfg.Selector.WriteAffinity)
+	case "first":
+		selector = vfs.NewFirstSelector(monitor)
+	case "random":
+		fallthrough
+	default:
+		selector = vfs.NewRandomSelector(monitor)
+	}
+
 	srv := fs.New(c, nil)
 	replFS := &rfuse.RepliFS{
 		Cache:             cache,
 		Backends:          backends,
 		ReplicationFactor: cfg.ReplicationFactor,
 		WriteQuorum:       cfg.WriteQuorum,
-		Selector:          vfs.NewRandomSelector(monitor),
+		Selector:          selector,
 		LockManager:       lockMgr,
 		Discovery:         disco,
 		NodeID:            nodeID,
+		MaxIODuration:     maxIODuration,
 	}
 
 	// Initialize and start Repair Manager

@@ -22,6 +22,7 @@ type DistributedLock struct {
 	Discovery    *cluster.Discovery
 
 	isValid       bool
+	expiresAt     time.Time
 	mu            sync.RWMutex
 	cancelRenewal context.CancelFunc
 	renewalWg     sync.WaitGroup
@@ -54,6 +55,21 @@ func (l *DistributedLock) IsValid() bool {
 	l.mu.RLock()
 	defer l.mu.RUnlock()
 	return l.isValid
+}
+
+func (l *DistributedLock) ExpiresAt() time.Time {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	return l.expiresAt
+}
+
+func (l *DistributedLock) IsValidWithBuffer(buffer time.Duration) bool {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	if !l.isValid {
+		return false
+	}
+	return time.Now().Add(buffer).Before(l.expiresAt)
 }
 
 const (
@@ -165,6 +181,7 @@ func (l *DistributedLock) tryAcquire(ctx context.Context) error {
 		l.mu.Lock()
 		l.isValid = true
 		l.FencingToken = fencingToken
+		l.expiresAt = time.Now().Add(l.Manager.LeaseTTL)
 		l.mu.Unlock()
 		l.startRenewal(grantedPeers)
 		return nil
@@ -258,7 +275,13 @@ func (l *DistributedLock) renew(peers []string) bool {
 	}
 
 	_ = g.Wait()
-	return successes >= quorum
+	ok := successes >= quorum
+	if ok {
+		l.mu.Lock()
+		l.expiresAt = time.Now().Add(l.Manager.LeaseTTL)
+		l.mu.Unlock()
+	}
+	return ok
 }
 
 func (l *DistributedLock) rollback(peers []string, token string) {

@@ -34,6 +34,8 @@ type RepliFS struct {
 	// clustering is off — sidecar correctness depends only on Gen.
 	NodeID string
 
+	MaxIODuration time.Duration
+
 	// pathLocks serializes same-path mutations within this process. The
 	// distributed lock manager (when enabled) only arbitrates between nodes
 	// and rejects a second local acquisition instead of queueing it; when
@@ -1457,8 +1459,8 @@ func (h *FileHandle) openFallbackBackend(ctx context.Context, tried map[string]b
 }
 
 func (h *FileHandle) Write(ctx context.Context, req *fuse.WriteRequest, resp *fuse.WriteResponse) error {
-	if h.lock != nil && !h.lock.IsValid() {
-		return syscall.EIO // Lock lost
+	if h.lock != nil && !h.lock.IsValidWithBuffer(h.file.fs.MaxIODuration) {
+		return syscall.EIO // Lock lost or too close to expiry
 	}
 
 	h.mu.Lock()
@@ -1574,8 +1576,8 @@ func (h *FileHandle) Flush(ctx context.Context, req *fuse.FlushRequest) error {
 }
 
 func (h *FileHandle) syncBackends(ctx context.Context) error {
-	if h.lock != nil && !h.lock.IsValid() {
-		return syscall.EIO // Lock lost
+	if h.lock != nil && !h.lock.IsValidWithBuffer(h.file.fs.MaxIODuration) {
+		return syscall.EIO // Lock lost or too close to expiry
 	}
 
 	h.mu.Lock()

@@ -33,6 +33,12 @@ listen_addr: ":5050"                  # UDP port for the lock server
 advertise_addr: "192.168.1.50:5050"   # host:port peers use to reach this node
 cluster_secret: "change-me-16chars+"  # shared HMAC secret, same on all nodes (min 16 chars)
 expected_cluster_size: 2              # total nodes in the cluster (>= 2)
+max_io_duration: "1s"                 # minimum lease buffer duration required to start a write (default 1s)
+
+# Selector configuration (optional)
+selector:
+  type: "space-aware"                 # "random", "first", or "space-aware" (default "random")
+  write_affinity: ["cold-storage"]    # tags indicating cold-storage/backup targets for write affinity
 
 # List of backends. Supports multiple backend types (e.g., "smb", "local").
 backends:
@@ -43,10 +49,14 @@ backends:
     user: "admin"
     password: "${NAS_PASSWORD}" # Env variable expansion
     domain: "WORKGROUP"
+    speed: 10                         # Read speed rating (default 10)
+    tags: ["hot"]                     # Custom tags (default empty list)
 
   - name: "local-01"
     type: "local"
     path: "/mnt/local_share"
+    speed: 1
+    tags: ["cold-storage"]
 ```
 
 ## Field Descriptions
@@ -86,6 +96,18 @@ A shared secret, identical on all nodes, used to HMAC-SHA256-sign every lock dat
 ### `expected_cluster_size` (int, required when `listen_addr` is set)
 The total number of nodes in the cluster. Lock quorum is derived from this value (`expected_cluster_size/2 + 1`), never from the live peer list, so a stale peer registry can only hurt availability, not consistency. Must be at least 2 when clustering is enabled; without `listen_addr` the value is unused.
 
+### `max_io_duration` (duration string)
+The minimum remaining lease duration buffer required to start a write. If the write handle's lease has less than this time remaining before expiry, new write operations are rejected early to prevent out-of-lease backend writes.
+- **Default:** `1s`.
+
+### `selector` (object)
+Determines how backends are selected for reads and writes.
+- `type` (string): Selector algorithm to use. Options are:
+  - `random` (default): Selects randomly among healthy backends.
+  - `first`: Deterministically selects the first healthy backend in the list.
+  - `space-aware`: Performs speed-based read tie-breaking and space-based write load balancing.
+- `write_affinity` (list of strings): Tags indicating which backends are preferred as backup targets (e.g., cold-storage shares). Under the `space-aware` selector, at least one write replica is placed on a healthy backend possessing one of these tags, selecting the one with the most free space.
+
 ### `backends` (list)
 A list of backend configurations. Each backend must have a unique `name`.
 - `name`: Unique identifier for the backend.
@@ -99,6 +121,8 @@ A list of backend configurations. Each backend must have a unique `name`.
   - `domain`: (Optional) The SMB/NTLM domain.
 - **For `local` type backends:**
   - `path`: The absolute path to a local directory to act as the backend storage.
+- `speed` (int): A performance rating for read selection (default `10`). Slower backends (e.g. cold storage/HDDs) should be given lower values. Under `space-aware` reads, RepliStore will tie-break and only read from the fastest available replica.
+- `tags` (list of strings): A list of tags associated with this backend, used for write affinity matching (default `[]`).
 - `options`: (Optional) Map of custom string/interface options for future backend extensions.
 
 ## Environment Variables

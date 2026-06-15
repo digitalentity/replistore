@@ -38,7 +38,7 @@ func TestSMBBackend_AutoReconnect(t *testing.T) {
 		}
 	}()
 
-	b := NewSMBBackend("test", addr, "share", "user", "pass", "")
+	b := NewSMBBackend("test", addr, "share", "user", "pass", "", 10, nil)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()

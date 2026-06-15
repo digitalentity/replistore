@@ -7,18 +7,23 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 )
 
 type LocalBackend struct {
-	Name string
-	Path string
+	Name  string
+	Path  string
+	Speed int
+	Tags  []string
 }
 
-func NewLocalBackend(name, path string) *LocalBackend {
+func NewLocalBackend(name, path string, speed int, tags []string) *LocalBackend {
 	return &LocalBackend{
-		Name: name,
-		Path: path,
+		Name:  name,
+		Path:  path,
+		Speed: speed,
+		Tags:  tags,
 	}
 }
 
@@ -28,8 +33,40 @@ func init() {
 		if path == "" {
 			return nil, fmt.Errorf("local backend requires 'path' option")
 		}
-		return NewLocalBackend(name, path), nil
+		speed := 10
+		if speedVal, ok := options["speed"].(float64); ok {
+			speed = int(speedVal)
+		} else if speedVal, ok := options["speed"].(int); ok {
+			speed = speedVal
+		}
+		var tags []string
+		if tList, ok := options["tags"].([]interface{}); ok {
+			for _, t := range tList {
+				if s, ok := t.(string); ok {
+					tags = append(tags, s)
+				}
+			}
+		} else if tList, ok := options["tags"].([]string); ok {
+			tags = tList
+		}
+		return NewLocalBackend(name, path, speed, tags), nil
 	})
+}
+
+func (b *LocalBackend) GetSpeed() int {
+	return b.Speed
+}
+
+func (b *LocalBackend) GetTags() []string {
+	return b.Tags
+}
+
+func (b *LocalBackend) GetFreeSpace() (uint64, error) {
+	var stat syscall.Statfs_t
+	if err := syscall.Statfs(b.Path, &stat); err != nil {
+		return 0, err
+	}
+	return stat.Bavail * uint64(stat.Bsize), nil
 }
 
 func (b *LocalBackend) GetName() string {

@@ -23,6 +23,8 @@ type SMBBackend struct {
 	User     string
 	Password string
 	Domain   string
+	Speed    int
+	Tags     []string
 
 	mu      sync.Mutex
 	session *smb2.Session
@@ -30,7 +32,7 @@ type SMBBackend struct {
 	conn    net.Conn
 }
 
-func NewSMBBackend(name, addr, share, user, pass, domain string) *SMBBackend {
+func NewSMBBackend(name, addr, share, user, pass, domain string, speed int, tags []string) *SMBBackend {
 	return &SMBBackend{
 		Name:     name,
 		Address:  addr,
@@ -38,6 +40,8 @@ func NewSMBBackend(name, addr, share, user, pass, domain string) *SMBBackend {
 		User:     user,
 		Password: pass,
 		Domain:   domain,
+		Speed:    speed,
+		Tags:     tags,
 	}
 }
 
@@ -48,8 +52,44 @@ func init() {
 		user, _ := options["user"].(string)
 		pass, _ := options["password"].(string)
 		domain, _ := options["domain"].(string)
-		return NewSMBBackend(name, addr, share, user, pass, domain), nil
+		speed := 10
+		if speedVal, ok := options["speed"].(float64); ok {
+			speed = int(speedVal)
+		} else if speedVal, ok := options["speed"].(int); ok {
+			speed = speedVal
+		}
+		var tags []string
+		if tList, ok := options["tags"].([]interface{}); ok {
+			for _, t := range tList {
+				if s, ok := t.(string); ok {
+					tags = append(tags, s)
+				}
+			}
+		} else if tList, ok := options["tags"].([]string); ok {
+			tags = tList
+		}
+		return NewSMBBackend(name, addr, share, user, pass, domain, speed, tags), nil
 	})
+}
+
+func (b *SMBBackend) GetSpeed() int {
+	return b.Speed
+}
+
+func (b *SMBBackend) GetTags() []string {
+	return b.Tags
+}
+
+func (b *SMBBackend) GetFreeSpace() (uint64, error) {
+	share, err := b.getShare()
+	if err != nil {
+		return 0, err
+	}
+	info, err := share.Statfs(".")
+	if err != nil {
+		return 0, err
+	}
+	return info.AvailableBlockCount() * info.BlockSize(), nil
 }
 
 func (b *SMBBackend) GetName() string {

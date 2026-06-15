@@ -11,11 +11,27 @@ import (
 
 type MockBackend struct {
 	mock.Mock
-	NameVal string
+	NameVal      string
+	SpeedVal     int
+	TagsVal      []string
+	FreeSpaceVal uint64
 }
 
 func (m *MockBackend) GetName() string {
 	return m.NameVal
+}
+
+func (m *MockBackend) GetSpeed() int {
+	return m.SpeedVal
+}
+
+func (m *MockBackend) GetTags() []string {
+	return m.TagsVal
+}
+
+func (m *MockBackend) GetFreeSpace() (uint64, error) {
+	args := m.Called()
+	return args.Get(0).(uint64), args.Error(1)
 }
 
 func (m *MockBackend) Connect() error {

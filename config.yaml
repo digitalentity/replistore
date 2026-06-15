@@ -1,25 +1,50 @@
+# The local path where the RepliStore filesystem will be mounted.
 mount_point: "/tmp/replistore_mount"
+
+# The number of backend replicas to write for each file.
 replication_factor: 2
+
+# The number of successful backend writes required to acknowledge a write.
+# Defaults to replication_factor if not specified.
 write_quorum: 1
+
+# How often to scan backends to sync the in-memory metadata cache.
 cache_refresh_interval: "5m"
+
+# How often to search for and re-replicate degraded files.
 repair_interval: "1h"
+
+# The maximum number of concurrent repair operations.
 repair_concurrency: 2
 
-# Optional: P2P clustering. When listen_addr is set, the other three
-# cluster fields become mandatory.
+# Optional: P2P clustering configuration for distributed locking.
+# When listen_addr is set, the other three fields become mandatory.
 # listen_addr: ":5050"                  # UDP port for the lock server
 # advertise_addr: "192.168.1.50:5050"   # host:port peers use to reach this node
-# cluster_secret: "change-me-16chars+"  # shared HMAC secret, same on all nodes, min 16 chars
+# cluster_secret: "change-me-16chars+"  # shared HMAC secret, same on all nodes (min 16 chars)
 # expected_cluster_size: 2              # total nodes in the cluster (quorum = n/2+1)
+
+# Optional: Backend selector configuration.
+# type can be:
+#   - "random" (default): randomly distributes files.
+#   - "first": always selects the first healthy backend.
+#   - "space-aware": speed-based read tie-breaking and space-based write load balancing.
+# selector:
+#   type: "space-aware"
+#   write_affinity: ["cold-storage"]    # tags of backends preferred for backup replication
 
 backends:
   - name: "nas-01"
-    address: "127.0.0.1:445"
-    share: "share1"
-    user: "user"
-    password: "password"
+    address: "127.0.0.1:445"           # Host and port of the SMB server
+    share: "share1"                   # SMB share name
+    user: "user"                       # SMB username
+    password: "password"               # SMB password
+    speed: 10                          # Read speed rating (default 10)
+    tags: ["hot"]                      # Custom tags (default empty list)
   - name: "nas-02"
-    address: "127.0.0.1:445"
-    share: "share2"
-    user: "user"
-    password: "password"
+    address: "127.0.0.1:445"           # Host and port of the SMB server
+    share: "share2"                   # SMB share name
+    user: "user"                       # SMB username
+    password: "password"               # SMB password
+    speed: 5                           # Slower read speed
+    tags: ["cold-storage"]             # Match write_affinity to ensure backups here

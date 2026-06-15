@@ -204,3 +204,34 @@ func TestDistributedLock_AcquireRetriesAfterContention(t *testing.T) {
 	lock.Release()
 	assert.False(t, lock.IsValid())
 }
+
+func TestDistributedLock_IsValidWithBuffer(t *testing.T) {
+	n1 := cluster.NewLockManager("node1")
+	n1.Secret = testClusterSecret
+	n1.ExpectedClusterSize = 1
+	n1.LeaseTTL = 500 * time.Millisecond
+	_, _ = n1.Start("127.0.0.1:0")
+	defer n1.Stop()
+
+	disco1 := cluster.NewDiscovery("node1", "", nil)
+
+	lock := vfs.NewDistributedLock("buffer/path", n1, disco1)
+
+	err := lock.Acquire(context.Background())
+	assert.NoError(t, err)
+	assert.True(t, lock.IsValid())
+
+	// If we check with a buffer of 100ms, it should be valid since lease is 500ms
+	assert.True(t, lock.IsValidWithBuffer(100*time.Millisecond))
+
+	// If we check with a buffer of 600ms, it should be invalid since lease is only 500ms
+	assert.False(t, lock.IsValidWithBuffer(600*time.Millisecond))
+
+	// Wait 100ms, now remaining is ~400ms. Since LeaseTTL/2 is 250ms, no background renewal has ticked yet.
+	time.Sleep(100 * time.Millisecond)
+	assert.True(t, lock.IsValidWithBuffer(200*time.Millisecond))
+	assert.False(t, lock.IsValidWithBuffer(450*time.Millisecond))
+
+	lock.Release()
+	assert.False(t, lock.IsValidWithBuffer(10*time.Millisecond))
+}

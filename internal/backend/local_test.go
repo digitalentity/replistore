@@ -194,7 +194,7 @@ func TestLocalBackend_Lifecycle(t *testing.T) {
 
 func TestLocalBackend_DirectoryTraversalPrevention(t *testing.T) {
 	tmpDir := t.TempDir()
-	b := NewLocalBackend("test-local", tmpDir)
+	b := NewLocalBackend("test-local", tmpDir, 10, nil)
 
 	// Try to resolve paths that attempt directory traversal escape
 	resolved := b.resolve("../../../etc/passwd")

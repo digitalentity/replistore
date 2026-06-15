@@ -63,6 +63,11 @@ An alternative implementation that:
 - **For Reads:** Always picks the first healthy backend available in the metadata list.
 - **For Writes:** Picks the first $count$ healthy backends available in the configuration list.
 
+### `SpaceAwareSelector`
+An advanced implementation that:
+- **For Reads:** Performs speed-based tie-breaking. It identifies the maximum speed rating among healthy backends containing the replica and randomly selects one from this fastest subset. Active read operations persist on their opened backend.
+- **For Writes:** Balances storage utilization while ensuring backup replication. If write affinity tags are configured (e.g. cold storage targets), it guarantees at least one replica is placed on the healthy cold backend with the most free space. The remaining replicas are distributed to the other healthy backends with the most free space.
+
 It uses a `HealthMonitor` to avoid selecting backends that are currently unreachable.
 
 ```mermaid

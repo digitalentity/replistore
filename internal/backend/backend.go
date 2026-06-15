@@ -26,6 +26,9 @@ type File interface {
 
 type Backend interface {
 	GetName() string
+	GetSpeed() int
+	GetTags() []string
+	GetFreeSpace() (uint64, error)
 	Connect() error
 	Ping(ctx context.Context) error
 	ReadDir(ctx context.Context, path string) ([]FileInfo, error)

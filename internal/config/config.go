@@ -17,6 +17,8 @@ type BackendConfig struct {
 	Password string                 `yaml:"password"`
 	Domain   string                 `yaml:"domain"`
 	Path     string                 `yaml:"path"` // For local filesystem backend
+	Speed    int                    `yaml:"speed"`
+	Tags     []string               `yaml:"tags"`
 	Options  map[string]interface{} `yaml:"options"`
 }
 
@@ -40,12 +42,20 @@ func (bc *BackendConfig) ToOptions() map[string]interface{} {
 	if bc.Path != "" {
 		opts["path"] = bc.Path
 	}
+	opts["speed"] = bc.Speed
+	if bc.Tags != nil {
+		opts["tags"] = bc.Tags
+	}
 	for k, v := range bc.Options {
 		opts[k] = v
 	}
 	return opts
 }
 
+type SelectorConfig struct {
+	Type          string   `yaml:"type"`
+	WriteAffinity []string `yaml:"write_affinity"`
+}
 
 type Config struct {
 	MountPoint           string          `yaml:"mount_point"`
@@ -58,6 +68,8 @@ type Config struct {
 	AdvertiseAddr        string          `yaml:"advertise_addr"`
 	ClusterSecret        string          `yaml:"cluster_secret"`
 	ExpectedClusterSize  int             `yaml:"expected_cluster_size"`
+	MaxIODuration        string          `yaml:"max_io_duration"`
+	Selector             SelectorConfig  `yaml:"selector"`
 	Backends             []BackendConfig `yaml:"backends"`
 }
 
@@ -74,9 +86,16 @@ func LoadConfig(path string) (*Config, error) {
 		return nil, err
 	}
 
+	if cfg.Selector.Type == "" {
+		cfg.Selector.Type = "random"
+	}
+
 	for i := range cfg.Backends {
 		if cfg.Backends[i].Type == "" {
 			cfg.Backends[i].Type = "smb"
+		}
+		if cfg.Backends[i].Speed <= 0 {
+			cfg.Backends[i].Speed = 10
 		}
 	}
 
@@ -116,6 +135,10 @@ func LoadConfig(path string) (*Config, error) {
 
 	if cfg.RepairInterval == "" {
 		cfg.RepairInterval = "1h"
+	}
+
+	if cfg.MaxIODuration == "" {
+		cfg.MaxIODuration = "1s"
 	}
 
 	return &cfg, nil
