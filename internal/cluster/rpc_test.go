@@ -24,10 +24,11 @@ func TestLockManager_RPC(t *testing.T) {
 
 	// 1. Request Lock
 	req := LockRequest{
-		Path:        path,
-		NodeID:      "node2",
-		LockID:      "lock-a",
-		LamportTime: 100,
+		Path:         path,
+		NodeID:       "node2",
+		LockID:       "lock-a",
+		LamportTime:  100,
+		FencingToken: "fence-a",
 	}
 	var resp LockResponse
 	err = CallUDP(ctx, secret, addr, TypRequestLock, req, &resp)
@@ -37,10 +38,11 @@ func TestLockManager_RPC(t *testing.T) {
 
 	// 2. Try to request same lock from another node
 	req2 := LockRequest{
-		Path:        path,
-		NodeID:      "node3",
-		LockID:      "lock-b",
-		LamportTime: 101,
+		Path:         path,
+		NodeID:       "node3",
+		LockID:       "lock-b",
+		LamportTime:  101,
+		FencingToken: "fence-b",
 	}
 	var resp2 LockResponse
 	err = CallUDP(ctx, secret, addr, TypRequestLock, req2, &resp2)
@@ -82,14 +84,14 @@ func TestLockManager_SameNodeDifferentLockID(t *testing.T) {
 	path := "same-node/path"
 
 	// First acquisition from node2 with lock-a
-	req := LockRequest{Path: path, NodeID: "node2", LockID: "lock-a", LamportTime: 100}
+	req := LockRequest{Path: path, NodeID: "node2", LockID: "lock-a", LamportTime: 100, FencingToken: "fence-a"}
 	var resp LockResponse
 	_ = m.RequestLock(req, &resp)
 	assert.Equal(t, LockOK, resp.Status)
 
 	// Second acquisition from the SAME node but a different LockID must be
 	// rejected while the first grant is unexpired.
-	req2 := LockRequest{Path: path, NodeID: "node2", LockID: "lock-b", LamportTime: 101}
+	req2 := LockRequest{Path: path, NodeID: "node2", LockID: "lock-b", LamportTime: 101, FencingToken: "fence-b"}
 	var resp2 LockResponse
 	_ = m.RequestLock(req2, &resp2)
 	assert.Equal(t, LockReject, resp2.Status)
@@ -123,9 +125,9 @@ func TestLockManager_SweepExpiredGrants(t *testing.T) {
 
 	// Grant two locks
 	var resp LockResponse
-	_ = m.RequestLock(LockRequest{Path: "sweep/a", NodeID: "node2", LockID: "lock-a", LamportTime: 100}, &resp)
+	_ = m.RequestLock(LockRequest{Path: "sweep/a", NodeID: "node2", LockID: "lock-a", LamportTime: 100, FencingToken: "fence-a"}, &resp)
 	assert.Equal(t, LockOK, resp.Status)
-	_ = m.RequestLock(LockRequest{Path: "sweep/b", NodeID: "node3", LockID: "lock-b", LamportTime: 101}, &resp)
+	_ = m.RequestLock(LockRequest{Path: "sweep/b", NodeID: "node3", LockID: "lock-b", LamportTime: 101, FencingToken: "fence-b"}, &resp)
 	assert.Equal(t, LockOK, resp.Status)
 	assert.Equal(t, 2, countGrants())
 
@@ -138,10 +140,10 @@ func TestLockManager_SweepExpiredGrants(t *testing.T) {
 	assert.Equal(t, 0, countGrants())
 
 	// A non-expired grant survives a sweep that collects an expired one.
-	_ = m.RequestLock(LockRequest{Path: "sweep/expired", NodeID: "node2", LockID: "lock-c", LamportTime: 102}, &resp)
+	_ = m.RequestLock(LockRequest{Path: "sweep/expired", NodeID: "node2", LockID: "lock-c", LamportTime: 102, FencingToken: "fence-c"}, &resp)
 	assert.Equal(t, LockOK, resp.Status)
 	time.Sleep(3 * m.LeaseTTL) // let it expire past the slack window
-	_ = m.RequestLock(LockRequest{Path: "sweep/live", NodeID: "node2", LockID: "lock-d", LamportTime: 103}, &resp)
+	_ = m.RequestLock(LockRequest{Path: "sweep/live", NodeID: "node2", LockID: "lock-d", LamportTime: 103, FencingToken: "fence-d"}, &resp)
 	assert.Equal(t, LockOK, resp.Status)
 
 	m.sweepExpiredGrants(time.Now())
@@ -181,7 +183,7 @@ func TestLockManager_RenewExpiredLease(t *testing.T) {
 	m := NewLockManager("node1")
 	m.LeaseTTL = 10 * time.Millisecond
 
-	req := LockRequest{Path: "renew-expired", NodeID: "node2", LockID: "lock-a", LamportTime: 100}
+	req := LockRequest{Path: "renew-expired", NodeID: "node2", LockID: "lock-a", LamportTime: 100, FencingToken: "fence-a"}
 	var resp LockResponse
 	_ = m.RequestLock(req, &resp)
 	assert.Equal(t, LockOK, resp.Status)
@@ -205,7 +207,7 @@ func TestLockManager_RenewExpiredLease(t *testing.T) {
 	assert.Equal(t, LockReject, status)
 
 	// The expired grant was deleted, so another node can acquire the lock
-	req2 := LockRequest{Path: "renew-expired", NodeID: "node3", LockID: "lock-b", LamportTime: 101}
+	req2 := LockRequest{Path: "renew-expired", NodeID: "node3", LockID: "lock-b", LamportTime: 101, FencingToken: "fence-b"}
 	var resp2 LockResponse
 	_ = m.RequestLock(req2, &resp2)
 	assert.Equal(t, LockOK, resp2.Status)
@@ -215,7 +217,7 @@ func TestLockManager_LeaseExpiration(t *testing.T) {
 	m := NewLockManager("node1")
 	m.LeaseTTL = 100 * time.Millisecond
 
-	req := LockRequest{Path: "expire", NodeID: "node2", LockID: "lock-a"}
+	req := LockRequest{Path: "expire", NodeID: "node2", LockID: "lock-a", FencingToken: "fence-a"}
 	var resp LockResponse
 	_ = m.RequestLock(req, &resp)
 
@@ -225,7 +227,7 @@ func TestLockManager_LeaseExpiration(t *testing.T) {
 	time.Sleep(200 * time.Millisecond)
 
 	// Should be able to lock from another node now
-	req2 := LockRequest{Path: "expire", NodeID: "node3", LockID: "lock-b"}
+	req2 := LockRequest{Path: "expire", NodeID: "node3", LockID: "lock-b", FencingToken: "fence-b"}
 	var resp2 LockResponse
 	_ = m.RequestLock(req2, &resp2)
 	assert.Equal(t, LockOK, resp2.Status)

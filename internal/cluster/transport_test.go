@@ -126,7 +126,7 @@ func TestCallUDP_Integration(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	req := LockRequest{Path: "integration/path", NodeID: "client-node", LockID: "lock-1", LamportTime: 7}
+	req := LockRequest{Path: "integration/path", NodeID: "client-node", LockID: "lock-1", LamportTime: 7, FencingToken: "fence-1"}
 	var resp LockResponse
 	err = CallUDP(ctx, testSecret, addr, TypRequestLock, req, &resp)
 	assert.NoError(t, err)

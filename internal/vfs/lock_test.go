@@ -179,10 +179,11 @@ func TestDistributedLock_AcquireRetriesAfterContention(t *testing.T) {
 	// (node, lockid), expiring after LeaseTTL.
 	var resp cluster.LockResponse
 	err := n1.RequestLock(cluster.LockRequest{
-		Path:        "contended/path",
-		NodeID:      "node2",
-		LockID:      "other-lock",
-		LamportTime: 1,
+		Path:         "contended/path",
+		NodeID:       "node2",
+		LockID:       "other-lock",
+		LamportTime:  1,
+		FencingToken: "other-fence",
 	}, &resp)
 	assert.NoError(t, err)
 	assert.Equal(t, cluster.LockOK, resp.Status)

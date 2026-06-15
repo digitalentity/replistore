@@ -1,7 +1,6 @@
 package cluster
 
 import (
-	"fmt"
 	"net"
 	"sync"
 	"sync/atomic"
@@ -18,10 +17,11 @@ const (
 )
 
 type LockRequest struct {
-	Path        string
-	NodeID      string
-	LockID      string
-	LamportTime int64
+	Path         string
+	NodeID       string
+	LockID       string
+	LamportTime  int64
+	FencingToken string
 }
 
 type LockResponse struct {
@@ -182,9 +182,17 @@ func (m *LockManager) RequestLock(req LockRequest, resp *LockResponse) error {
 		}
 	}
 
-	// Grant (or refresh, for an idempotent retry of the same acquisition) the lock
-	// Fencing token is <LamportTime>-<NodeID>-<LockID>
-	fencingToken := fmt.Sprintf("%d-%s-%s", req.LamportTime, req.NodeID, req.LockID)
+	// The fencing token is an unguessable random value minted by the client
+	// once per acquisition (see vfs.NewDistributedLock) and carried unchanged
+	// across peers and renewals. Reject requests without one rather than
+	// granting a forgeable lease.
+	fencingToken := req.FencingToken
+	if fencingToken == "" {
+		log.Warnf("Rejecting lock request from node %s (lock ID %s): missing fencing token", req.NodeID, req.LockID)
+		resp.Status = LockReject
+		return nil
+	}
+	// Grant (or refresh, for an idempotent retry of the same acquisition) the lock.
 	m.grants.Store(path, Grant{
 		NodeID:       req.NodeID,
 		LockID:       req.LockID,

@@ -31,21 +31,25 @@ type DistributedLock struct {
 
 func NewDistributedLock(path string, mgr *cluster.LockManager, disco *cluster.Discovery) *DistributedLock {
 	return &DistributedLock{
-		Path:      path,
-		LockID:    newLockID(),
-		Manager:   mgr,
-		Discovery: disco,
-		log:       logrus.WithField("component", "dist-lock").WithField("path", path),
+		Path: path,
+		// LockID identifies the acquisition; FencingToken is the unguessable
+		// capability that authorizes renew/release. Both are minted once here
+		// and carried unchanged across every peer and renewal round so the
+		// holder presents the same token to all peers (see tryAcquire).
+		LockID:       randomHex(),
+		FencingToken: randomHex(),
+		Manager:      mgr,
+		Discovery:    disco,
+		log:          logrus.WithField("component", "dist-lock").WithField("path", path),
 	}
 }
 
-// newLockID returns a unique per-acquisition lock identity: 16 random bytes,
-// hex-encoded.
-func newLockID() string {
+// randomHex returns 16 random bytes, hex-encoded.
+func randomHex() string {
 	b := make([]byte, 16)
 	if _, err := cryptorand.Read(b); err != nil {
 		// crypto/rand never fails on supported platforms; fall back to a
-		// time-derived ID rather than panicking.
+		// time-derived value rather than panicking.
 		return fmt.Sprintf("fallback-%d", time.Now().UnixNano())
 	}
 	return hex.EncodeToString(b)
@@ -125,10 +129,11 @@ func (l *DistributedLock) tryAcquire(ctx context.Context) error {
 
 	lamportTime := l.Manager.Clock.Tick()
 	req := cluster.LockRequest{
-		Path:        l.Path,
-		NodeID:      l.Manager.NodeID,
-		LockID:      l.LockID,
-		LamportTime: lamportTime,
+		Path:         l.Path,
+		NodeID:       l.Manager.NodeID,
+		LockID:       l.LockID,
+		LamportTime:  lamportTime,
+		FencingToken: l.FencingToken,
 	}
 
 	var mu sync.Mutex
