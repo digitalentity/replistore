@@ -8,7 +8,7 @@ When configured with `listen_addr`, RepliStore instances form a cluster:
 1.  **Discovery:** Nodes discover each other through the shared SMB backends: each node maintains a peer entry at `.replistore/peers/<nodeID>.json` on every backend (heartbeated every ~10s) and polls that directory to learn cluster membership. No multicast or shared L2 network is required — any node that can reach the backends can join.
 2.  **Distributed Locking:** High-level operations (Create, Mkdir, Open for write, Rename, Remove) acquire a distributed lock for the affected path.
 3.  **Lease Validation:** Individual `Write` and `Sync` operations do not re-acquire the lock; instead, they verify that the previously acquired **Lease** is still valid before proceeding with backend I/O.
-4.  **Consensus:** A lock is granted only if a **quorum** (majority) of discovered nodes agree. This prevents "split-brain" scenarios in the event of a network partition.
+4.  **Consensus:** A lock is granted only if a **quorum** (majority) of the cluster agrees. The quorum is `expected_cluster_size/2 + 1`, derived from configuration rather than the live peer list, so stale discovery data can never shrink the quorum. This prevents "split-brain" scenarios in the event of a network partition. Failed acquisitions are retried with randomized exponential backoff before surfacing an error.
 
 ---
 
@@ -20,6 +20,7 @@ To enable clustering, add the following to each node's `config.yaml`:
 listen_addr: ":5050"      # Internal lock server port (UDP)
 advertise_addr: "192.168.1.50:5050" # Required: host:port peers use to reach this node
 cluster_secret: "<16+ char shared secret>"  # Required: same value on all nodes
+expected_cluster_size: 2  # Required: total nodes in the cluster (>= 2)
 ```
 
 Ensure all nodes can reach the SMB backends (for discovery) and each other's `advertise_addr` (lock messages are exchanged as UDP datagrams authenticated with HMAC in JWT/JWS format, signed with `cluster_secret`).
@@ -29,7 +30,7 @@ Ensure all nodes can reach the SMB backends (for discovery) and each other's `ad
 ## Benefits of Distributed Locking
 
 ### 1. Write Collision Prevention
-Multiple nodes can no longer write to the same file simultaneously. The DLM ensures that only one node holds the "Write Lease" for a specific path, providing strict consistency for cross-node operations.
+Multiple nodes can no longer write to the same file simultaneously. The DLM ensures that only one node holds the "Write Lease" for a specific path, providing strict consistency for cross-node operations. On each node, an in-process per-path lock table additionally serializes same-path mutations (including repair and inline healing) even when clustering is disabled; the DLM layers cross-node exclusion on top of it.
 
 ### 2. Atomic Directory Operations & Deletes
 Operations like `Rename`, `Mkdir`, and `Remove` (delete) are coordinated across the cluster. This prevents race conditions where two nodes might attempt to modify or delete the same directory structure simultaneously.

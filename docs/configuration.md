@@ -28,8 +28,11 @@ repair_concurrency: 2
 
 # P2P Cluster configuration (optional)
 # Enables distributed locking across multiple RepliStore instances.
-listen_addr: ":5050"
-advertise_addr: "192.168.1.50:5050"
+# When listen_addr is set, the other three fields become mandatory.
+listen_addr: ":5050"                  # UDP port for the lock server
+advertise_addr: "192.168.1.50:5050"   # host:port peers use to reach this node
+cluster_secret: "change-me-16chars+"  # shared HMAC secret, same on all nodes (min 16 chars)
+expected_cluster_size: 2              # total nodes in the cluster (>= 2)
 
 # List of SMB backend shares.
 backends:
@@ -57,7 +60,7 @@ The number of backends a new file should be written to. If the number of availab
 
 ### `write_quorum` (int)
 The number of backends that must acknowledge a successful write or create operation.
-- **Default:** If omitted, `write_quorum` is set to `replication_factor`.
+- **Default:** If omitted — or set outside the valid range — `write_quorum` falls back to `replication_factor`.
 - **Constraint:** Must be greater than 0 and less than or equal to `replication_factor`.
 - **Use Case:** A value lower than `replication_factor` (e.g., $WQ=2, RF=3$) allows writes to succeed even if some backends are temporarily down or slow.
 
@@ -71,10 +74,18 @@ How often the background repair worker scans for degraded files (files with fewe
 Maximum number of files being repaired simultaneously.
 
 ### `listen_addr` (string, optional)
-Enables the P2P Distributed Lock Manager (DLM) by specifying the address where the internal RPC server will listen (e.g., `:5050` or `127.0.0.1:5050`). If omitted, P2P features are disabled.
+Enables the P2P Distributed Lock Manager (DLM) by specifying the address where the internal UDP lock server will listen (e.g., `:5050` or `127.0.0.1:5050`). If omitted, P2P features are disabled and the remaining cluster fields are ignored.
 
-### `advertise_addr` (string, optional)
-The IP and port announced to other nodes via mDNS. This is crucial if `listen_addr` uses a wildcard (e.g., `:5050`) or if the node is behind NAT.
+**Validation:** when `listen_addr` is set, `advertise_addr`, `cluster_secret`, and `expected_cluster_size` all become mandatory; the process refuses to start otherwise.
+
+### `advertise_addr` (string, required when `listen_addr` is set)
+The `host:port` address other nodes use to reach this node's lock server. It is published to peers through the backend-based peer registry (`.replistore/peers/<nodeID>.json` on every backend). Setting it explicitly avoids any interface-selection guesswork on multi-homed hosts; it must parse as a valid `host:port` with a non-empty host.
+
+### `cluster_secret` (string, required when `listen_addr` is set)
+A shared secret, identical on all nodes, used to HMAC-SHA256-sign every lock datagram (JWS compact serialization). Datagrams with bad signatures are dropped silently. Must be at least 16 characters long.
+
+### `expected_cluster_size` (int, required when `listen_addr` is set)
+The total number of nodes in the cluster. Lock quorum is derived from this value (`expected_cluster_size/2 + 1`), never from the live peer list, so a stale peer registry can only hurt availability, not consistency. Must be at least 2 when clustering is enabled; without `listen_addr` the value is unused.
 
 ### `backends` (list)
 A list of backend configurations. Each backend must have a unique `name`.

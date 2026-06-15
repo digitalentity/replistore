@@ -18,6 +18,7 @@ Welcome to the RepliStore documentation. This project provides a distributed, FU
     - [Startup & Warmup](flows/startup.md) - Building the initial metadata cache.
 - [**Configuration Guide**](configuration.md) - Detailed description of `config.yaml` options.
 - [**Testing Guide**](testing.md) - How to run and extend the test suite.
+- [**Roadmap & Known Gaps**](../ROADMAP.md) - Proposed improvements not yet implemented and open issues from code review.
 
 ## Project Structure
 

@@ -58,7 +58,7 @@ This is the classic stale-lock-holder problem (Kleppmann's "How to do distribute
 
 **Proposed solution (pick one, document honestly either way):**
 - *Pragmatic:* keep the lease check but (a) re-check `IsValid()` *after* the write completes and before acknowledging to the kernel, and (b) require the remaining lease window to exceed a configured `max_io_duration` before starting a write (i.e., check `ExpiresAt - now > maxIO`, which requires exposing the lease deadline to the holder). This shrinks the race to clock-skew-sized windows instead of full I/O durations.
-- *Correct:* store a fencing token per file in an SMB Alternate Data Stream (or sidecar metadata file) and have writers verify-and-bump it under the SMB-level byte-range lock of the metadata stream. This makes the backend the fencing point. Significant work; tracks PROPOSAL.md §6.3.
+- *Correct:* store a fencing token per file in an SMB Alternate Data Stream (or sidecar metadata file) and have writers verify-and-bump it under the SMB-level byte-range lock of the metadata stream. This makes the backend the fencing point. Significant work; tracks the version-metadata design (docs/architecture.md, "Design Decisions").
 - At minimum, fix docs/multi-client.md to stop claiming write fencing exists.
 
 ### C4. Last-writer-wins on `(mtime, size)` makes anti-entropy non-convergent: perpetual repair churn and clock-skew data loss
@@ -73,7 +73,7 @@ Replica metadata reconciliation (`Cache.Upsert`, `syncAll`, `FetchEntry` — int
 
 **Proposed solution:**
 - Add `Chtimes(ctx, path, mtime)` to the `Backend` interface and make repair/heal copies preserve the source mtime. This alone stops the repair ping-pong.
-- Stop trusting raw backend mtimes for conflict resolution. Maintain a per-file generation/version written by RepliStore itself (ADS or sidecar `.replistore/meta` tree), bumped under the write lock; reconcile on `(generation, checksum)` instead of `(mtime, size)`. This subsumes PROPOSAL.md §3.1 and §6.3 and fixes (2) and (3).
+- Stop trusting raw backend mtimes for conflict resolution. Maintain a per-file generation/version written by RepliStore itself (ADS or sidecar `.replistore/meta` tree), bumped under the write lock; reconcile on `(generation, checksum)` instead of `(mtime, size)`. This subsumes the read-path checksum and version-metadata work (ROADMAP §3.1; docs/architecture.md, "Design Decisions") and fixes (2) and (3).
 - Until then, apply an mtime tolerance window (e.g., treat |Δmtime| < 2s with equal size as "same version, merge backends") to absorb SMB timestamp granularity and per-write stamping jitter — an imperfect but high-leverage mitigation for (1).
 
 ### C5. Directories are reconciled with file LWW semantics, so directory `Backends` lists are arbitrary — `Rename`/`Remove` of directories only act on a subset of backends
@@ -132,7 +132,7 @@ Replica metadata reconciliation (`Cache.Upsert`, `syncAll`, `FetchEntry` — int
 
 > **Status: PARTIALLY FIXED** in `5003ee2` — retry/backoff added; Lamport ordering still unused
 
-`RequestLock` is first-come-first-served per peer; `LamportTime` only updates the clock. Two simultaneous requesters can each collect a partial set of grants, both miss quorum, both roll back, and both immediately fail the FUSE op back to the application. PLAN.md §3.1 claims deterministic Lamport-ordered conflict resolution; the code has none.
+`RequestLock` is first-come-first-served per peer; `LamportTime` only updates the clock. Two simultaneous requesters can each collect a partial set of grants, both miss quorum, both roll back, and both immediately fail the FUSE op back to the application. the project's test plan claimed deterministic Lamport-ordered conflict resolution; the code has none.
 
 **Proposed solution:** either (a) implement request ordering — a peer that has granted to `(T1, NodeA)` and receives `(T0, NodeB)` with `T0 < T1` (or equal time, lower node ID) should be able to yield via a wound/wait rule — or (b) keep FCFS but add randomized exponential backoff and retry inside `Acquire` before surfacing failure. Option (b) is far simpler and adequate at this scale.
 
@@ -164,7 +164,7 @@ Replica metadata reconciliation (`Cache.Upsert`, `syncAll`, `FetchEntry` — int
 
 > **Status: FIXED** in `6898ec3`
 
-No `Setattr` is implemented (acknowledged in PROPOSAL.md §4.1), so kernel-initiated truncation (`truncate()`, and `O_TRUNC` handled by the kernel as setattr when atomic-trunc is off) fails outright. When `O_TRUNC` does pass through `Open` (fs.go:731), the backends truncate but `node.Meta.Size` is never reset, so `Attr` reports the old size and readers get short reads/garbage tails until the next sync. `O_APPEND` (PROPOSAL.md §5.1) similarly passes through to each backend, which appends at *its own* current EOF — guaranteed replica divergence.
+No `Setattr` is implemented (full chmod/chown/utimes still open — ROADMAP §4.1), so kernel-initiated truncation (`truncate()`, and `O_TRUNC` handled by the kernel as setattr when atomic-trunc is off) fails outright. When `O_TRUNC` does pass through `Open` (fs.go:731), the backends truncate but `node.Meta.Size` is never reset, so `Attr` reports the old size and readers get short reads/garbage tails until the next sync. `O_APPEND` (ROADMAP §5.1) similarly passes through to each backend, which appends at *its own* current EOF — guaranteed replica divergence.
 
 **Proposed solution:** implement `Setattr` for size (fan out a truncate to all replica backends with quorum accounting, update cache size/mtime); on `Open` with `O_TRUNC`, reset cached size to 0 after backend opens succeed. Reject `O_APPEND` opens with `EINVAL` until append is implemented via size-tracking in the handle (single source of truth for the append offset).
 
