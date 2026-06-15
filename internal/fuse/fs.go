@@ -725,6 +725,92 @@ func (d *Dir) Remove(ctx context.Context, req *fuse.RemoveRequest) error {
 	return nil
 }
 
+// clearRenameTarget makes room for a rename onto newPath by durably removing
+// an existing target there. It enforces the POSIX type rules (a directory may
+// only be replaced by a directory, and only when empty) and tombstones the
+// target before deleting its replicas, so a backend that misses the delete
+// cannot resurrect it. It is a no-op when nothing exists at the target.
+// Caller must already hold the local and distributed locks for newPath.
+func (d *Dir) clearRenameTarget(ctx context.Context, targetDir *Dir, name, newPath string, sourceIsDir bool) error {
+	targetDir.node.Mu.RLock()
+	target, ok := targetDir.node.Children[name]
+	targetDir.node.Mu.RUnlock()
+	if !ok {
+		return nil
+	}
+
+	target.Mu.RLock()
+	targetIsDir := target.Meta.IsDir
+	targetGen := target.Meta.Gen
+	target.Mu.RUnlock()
+
+	switch {
+	case targetIsDir && !sourceIsDir:
+		return syscall.EISDIR
+	case !targetIsDir && sourceIsDir:
+		return syscall.ENOTDIR
+	case targetIsDir:
+		// A directory target may only be replaced when it is empty. Refresh
+		// from all backends first so an undiscovered child is not lost.
+		if err := d.fs.Cache.FetchDir(ctx, newPath, d.fs.getBackendList()); err != nil && !errors.Is(err, os.ErrNotExist) && !errors.Is(err, vfs.ErrUnavailable) {
+			return err
+		}
+		target.Mu.RLock()
+		hasChildren := len(target.Children) > 0
+		target.Mu.RUnlock()
+		if hasChildren {
+			return syscall.ENOTEMPTY
+		}
+	}
+
+	// Durable replace (REVIEW.md C6): tombstone the target before destroying
+	// any data. The new lineage's generation is lifted above this tombstone by
+	// the maxTombstoneGen(newPath) term in Rename.
+	all := d.fs.allBackendNames()
+	tomb := vfs.Sidecar{Gen: targetGen + 1, Writer: d.fs.NodeID, Deleted: true}
+	if n := d.fs.writeTombstones(ctx, newPath, tomb, all); n < d.fs.WriteQuorum {
+		return fmt.Errorf("could not reach tombstone quorum to replace rename target %s: %d/%d", newPath, n, d.fs.WriteQuorum)
+	}
+
+	var mu sync.Mutex
+	var successes int
+	g, gCtx := errgroup.WithContext(ctx)
+	for _, bName := range all {
+		bName := bName
+		b := d.fs.Backends[bName]
+		g.Go(func() error {
+			err := b.Remove(gCtx, newPath)
+			mu.Lock()
+			defer mu.Unlock()
+			if err == nil || os.IsNotExist(err) || errors.Is(err, os.ErrNotExist) {
+				successes++
+			} else {
+				d.fs.pathLogger(newPath).Errorf("Failed to remove rename target on %s: %v", bName, err)
+			}
+			return nil
+		})
+	}
+	_ = g.Wait()
+	if successes < d.fs.WriteQuorum {
+		return fmt.Errorf("could not reach remove quorum to replace rename target %s: %d/%d", newPath, successes, d.fs.WriteQuorum)
+	}
+
+	// Best-effort sidecar cleanup; durability is carried by the tombstone.
+	for _, bName := range all {
+		if err := vfs.RemoveSidecar(ctx, d.fs.Backends[bName], newPath); err != nil {
+			d.fs.pathLogger(newPath).Warnf("Failed to remove target sidecar on %s: %v", bName, err)
+		}
+	}
+
+	// Drop the target from the cache tree (the FUSE node is the cache node, so
+	// deleting it from the parent's children removes it from the namespace).
+	targetDir.node.Mu.Lock()
+	delete(targetDir.node.Children, name)
+	targetDir.node.Mu.Unlock()
+
+	return nil
+}
+
 func (d *Dir) Rename(ctx context.Context, req *fuse.RenameRequest, newDir fs.Node) error {
 	d.node.Mu.RLock()
 	sourceNode, ok := d.node.Children[req.OldName]
@@ -769,6 +855,10 @@ func (d *Dir) Rename(ctx context.Context, req *fuse.RenameRequest, newDir fs.Nod
 		// Renaming into or out of the reserved tree must be impossible.
 		return syscall.EACCES
 	}
+	if newPath == oldPath {
+		// Renaming a path onto itself is a no-op success per POSIX.
+		return nil
+	}
 
 	// Locking for BOTH paths. Acquire in lexicographic order so crossing
 	// renames (mv A B vs mv B A) cannot grab one lock each and defeat the
@@ -802,6 +892,14 @@ func (d *Dir) Rename(ctx context.Context, req *fuse.RenameRequest, newDir fs.Nod
 		if secondLock != nil {
 			defer secondLock.Release()
 		}
+	}
+
+	// POSIX rename must atomically replace an existing target. SMB2 rename
+	// fails outright when the target exists, and leaving the target's replicas
+	// behind would leak them, so clear the target (durably, with a tombstone)
+	// before the source fan-out. Both paths are already locked above.
+	if err := d.clearRenameTarget(ctx, targetDir, req.NewName, newPath, isDir); err != nil {
+		return err
 	}
 
 	var mu sync.Mutex

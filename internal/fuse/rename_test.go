@@ -3,6 +3,7 @@ package fuse
 import (
 	"context"
 	"os"
+	"syscall"
 	"testing"
 	"time"
 
@@ -54,6 +55,82 @@ func TestDir_Rename_Simple(t *testing.T) {
 	assert.Equal(t, "new.txt", node.Meta.Path)
 
 	b1.AssertExpectations(t)
+}
+
+func TestDir_Rename_OverExistingTarget(t *testing.T) {
+	b1 := &bmock.MockBackend{NameVal: "b1"}
+
+	cache := vfs.NewCache()
+	cache.Upsert("old.txt", vfs.Metadata{Name: "old.txt", Path: "old.txt", Backends: []string{"b1"}}, "b1")
+	cache.Upsert("new.txt", vfs.Metadata{Name: "new.txt", Path: "new.txt", Backends: []string{"b1"}}, "b1")
+
+	fs := &RepliFS{
+		Cache:             cache,
+		Backends:          map[string]backend.Backend{"b1": b1},
+		ReplicationFactor: 1,
+		WriteQuorum:       1,
+		Selector:          vfs.NewRandomSelector(nil),
+	}
+
+	rootNode, _ := fs.Root()
+	root := rootNode.(*Dir)
+
+	// Replacing the target durably tombstones and removes it before the source
+	// rename runs, so the target's replica is not leaked.
+	expectTombstoneWrite(b1, "new.txt")
+	b1.On("Remove", mock.Anything, "new.txt").Return(nil)
+	expectSidecarRemove(b1, "new.txt")
+
+	b1.On("MkdirAll", mock.Anything, "", os.FileMode(0755)).Return(nil)
+	b1.On("Rename", mock.Anything, "old.txt", "new.txt").Return(nil)
+	expectTombstoneWrite(b1, "old.txt")
+	expectNoTombstone(b1, "new.txt")
+	expectSidecarWrite(b1, "new.txt")
+	expectSidecarRemove(b1, "old.txt")
+
+	req := &fuse.RenameRequest{OldName: "old.txt", NewName: "new.txt"}
+	err := root.Rename(context.Background(), req, root)
+	assert.NoError(t, err)
+
+	_, ok := cache.Get("old.txt")
+	assert.False(t, ok)
+	node, ok := cache.Get("new.txt")
+	assert.True(t, ok)
+	assert.Equal(t, "new.txt", node.Meta.Name)
+
+	b1.AssertExpectations(t)
+	// The target's replica must have been removed before the rename.
+	b1.AssertCalled(t, "Remove", mock.Anything, "new.txt")
+}
+
+func TestDir_Rename_OverDirectoryTargetRejected(t *testing.T) {
+	b1 := &bmock.MockBackend{NameVal: "b1"}
+
+	cache := vfs.NewCache()
+	cache.Upsert("file.txt", vfs.Metadata{Name: "file.txt", Path: "file.txt", Backends: []string{"b1"}}, "b1")
+	cache.Upsert("dir", vfs.Metadata{Name: "dir", Path: "dir", IsDir: true, Mode: os.ModeDir | 0755, Backends: []string{"b1"}}, "b1")
+
+	fs := &RepliFS{
+		Cache:             cache,
+		Backends:          map[string]backend.Backend{"b1": b1},
+		ReplicationFactor: 1,
+		WriteQuorum:       1,
+		Selector:          vfs.NewRandomSelector(nil),
+	}
+
+	rootNode, _ := fs.Root()
+	root := rootNode.(*Dir)
+
+	// Renaming a file onto an existing directory must fail (EISDIR) and touch
+	// no backend data.
+	req := &fuse.RenameRequest{OldName: "file.txt", NewName: "dir"}
+	err := root.Rename(context.Background(), req, root)
+	assert.ErrorIs(t, err, syscall.EISDIR)
+
+	_, ok := cache.Get("file.txt")
+	assert.True(t, ok, "source must be untouched after a rejected rename")
+	b1.AssertNotCalled(t, "Rename", mock.Anything, mock.Anything, mock.Anything)
+	b1.AssertNotCalled(t, "Remove", mock.Anything, mock.Anything)
 }
 
 func TestDir_Rename_CrossDir(t *testing.T) {
