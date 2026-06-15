@@ -51,8 +51,6 @@ The repair copy loop reads the source file once *per target* and writes targets 
 ### 7.2. Backend Selection during `Create`
 `Dir.Create` uses all healthy backends as candidates for `SelectForWrite` without preferring backends that already contain the parent directory. Since parents are now created implicitly with `MkdirAll`, this is an optimization (avoiding extra directory creation), not a correctness issue.
 
-### 7.3. Replica Pruning (Over-Replication)
-If a file has more replicas than the `replication_factor` (e.g., after a config change), the system keeps all of them, increasing write overhead and consuming unnecessary space. Update `RepairManager` to identify over-replicated files and safely remove extra replicas from the least-preferred backends.
 
 ## 8. Operational & Observability
 
@@ -80,6 +78,8 @@ The test suite is mock-based throughout; a real-cluster smoke test of the sideca
 
 Major items delivered during the 2026-06 remediation, newest first:
 
+- (Remediation) — 7.3: replica pruning for over-replicated files implemented in RepairManager.
+- Refactored local backend package: isolated local backend into its own package (`internal/backend/local`).
 - (Remediation) — M12: emptiness verification for directory removes checks child existence in unified view, returning ENOTEMPTY.
 - (Remediation) — C6-dirs: directory deletes and renames write tombstones and sidecars; repair enforces directory tombstones.
 - (Remediation) — M3: walkStart timestamp captured in syncAll and sweep skipped for nodes updated during/after walk.

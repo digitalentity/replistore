@@ -354,6 +354,31 @@ func TestCache_FindDegraded(t *testing.T) {
 	assert.Equal(t, "degraded.txt", degraded[0].Meta.Name)
 }
 
+func TestCache_FindOverReplicated(t *testing.T) {
+	cache := vfs.NewCache()
+
+	// 1. File on 4 backends (RF=3) -> over-replicated
+	cache.Upsert("over.txt", vfs.Metadata{Name: "over.txt", IsDir: false}, "b1")
+	cache.Upsert("over.txt", vfs.Metadata{Name: "over.txt", IsDir: false}, "b2")
+	cache.Upsert("over.txt", vfs.Metadata{Name: "over.txt", IsDir: false}, "b3")
+	cache.Upsert("over.txt", vfs.Metadata{Name: "over.txt", IsDir: false}, "b4")
+
+	// 2. File on 3 backends (RF=3) -> healthy
+	cache.Upsert("healthy.txt", vfs.Metadata{Name: "healthy.txt", IsDir: false}, "b1")
+	cache.Upsert("healthy.txt", vfs.Metadata{Name: "healthy.txt", IsDir: false}, "b2")
+	cache.Upsert("healthy.txt", vfs.Metadata{Name: "healthy.txt", IsDir: false}, "b3")
+
+	// 3. Directory -> should not be reported as over-replicated
+	cache.Upsert("dir", vfs.Metadata{Name: "dir", IsDir: true}, "b1")
+	cache.Upsert("dir", vfs.Metadata{Name: "dir", IsDir: true}, "b2")
+	cache.Upsert("dir", vfs.Metadata{Name: "dir", IsDir: true}, "b3")
+	cache.Upsert("dir", vfs.Metadata{Name: "dir", IsDir: true}, "b4")
+
+	overReplicated := cache.FindOverReplicated(3)
+	assert.Len(t, overReplicated, 1)
+	assert.Equal(t, "over.txt", overReplicated[0].Meta.Name)
+}
+
 func TestCache_UpsertDirUnionsBackends(t *testing.T) {
 	cache := vfs.NewCache()
 	now := time.Now()

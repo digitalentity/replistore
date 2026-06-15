@@ -433,3 +433,79 @@ func TestEnforceTombstones_RemovesObsoleteTombstone(t *testing.T) {
 	b1.AssertExpectations(t)
 	b2.AssertExpectations(t)
 }
+
+func TestRepairManager_PruneNode(t *testing.T) {
+	b1 := &bmock.MockBackend{NameVal: "b1"}
+	b2 := &bmock.MockBackend{NameVal: "b2"}
+	b3 := &bmock.MockBackend{NameVal: "b3"}
+
+	cache := vfs.NewCache()
+	cache.Upsert("prune.txt", vfs.Metadata{Name: "prune.txt", Path: "prune.txt", Backends: []string{"b1", "b2", "b3"}, Mode: 0644}, "b1")
+	cache.Upsert("prune.txt", vfs.Metadata{Name: "prune.txt", Path: "prune.txt", Backends: []string{"b1", "b2", "b3"}, Mode: 0644}, "b2")
+	cache.Upsert("prune.txt", vfs.Metadata{Name: "prune.txt", Path: "prune.txt", Backends: []string{"b1", "b2", "b3"}, Mode: 0644}, "b3")
+
+	backends := map[string]backend.Backend{"b1": b1, "b2": b2, "b3": b3}
+
+	fs := &RepliFS{
+		Cache:             cache,
+		Backends:          backends,
+		ReplicationFactor: 2,
+		Selector:          vfs.NewFirstSelector(nil),
+	}
+
+	mgr := NewRepairManager(fs, time.Hour, 1)
+
+	node, _ := cache.Get("prune.txt")
+
+	b3.On("Remove", mock.Anything, "prune.txt").Return(nil)
+	b3.On("Remove", mock.Anything, vfs.SidecarPath("prune.txt")).Return(nil)
+
+	err := mgr.pruneNode(context.Background(), node)
+	assert.NoError(t, err)
+
+	b1.AssertNotCalled(t, "Remove", mock.Anything, mock.Anything)
+	b2.AssertNotCalled(t, "Remove", mock.Anything, mock.Anything)
+
+	node.Mu.RLock()
+	assert.ElementsMatch(t, []string{"b1", "b2"}, node.Meta.Backends)
+	node.Mu.RUnlock()
+
+	b1.AssertExpectations(t)
+	b2.AssertExpectations(t)
+	b3.AssertExpectations(t)
+}
+
+func TestRepairManager_PruneNode_FailureKeepsMetadata(t *testing.T) {
+	b1 := &bmock.MockBackend{NameVal: "b1"}
+	b2 := &bmock.MockBackend{NameVal: "b2"}
+	b3 := &bmock.MockBackend{NameVal: "b3"}
+
+	cache := vfs.NewCache()
+	cache.Upsert("prune.txt", vfs.Metadata{Name: "prune.txt", Path: "prune.txt", Backends: []string{"b1", "b2", "b3"}, Mode: 0644}, "b1")
+	cache.Upsert("prune.txt", vfs.Metadata{Name: "prune.txt", Path: "prune.txt", Backends: []string{"b1", "b2", "b3"}, Mode: 0644}, "b2")
+	cache.Upsert("prune.txt", vfs.Metadata{Name: "prune.txt", Path: "prune.txt", Backends: []string{"b1", "b2", "b3"}, Mode: 0644}, "b3")
+
+	backends := map[string]backend.Backend{"b1": b1, "b2": b2, "b3": b3}
+
+	fs := &RepliFS{
+		Cache:             cache,
+		Backends:          backends,
+		ReplicationFactor: 2,
+		Selector:          vfs.NewFirstSelector(nil),
+	}
+
+	mgr := NewRepairManager(fs, time.Hour, 1)
+
+	node, _ := cache.Get("prune.txt")
+
+	b3.On("Remove", mock.Anything, "prune.txt").Return(io.ErrUnexpectedEOF)
+
+	err := mgr.pruneNode(context.Background(), node)
+	assert.NoError(t, err)
+
+	node.Mu.RLock()
+	assert.ElementsMatch(t, []string{"b1", "b2", "b3"}, node.Meta.Backends)
+	node.Mu.RUnlock()
+
+	b3.AssertExpectations(t)
+}

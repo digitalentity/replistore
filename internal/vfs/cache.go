@@ -991,6 +991,19 @@ func (c *Cache) FindDegraded(rf int) []*Node {
 	return degraded
 }
 
+// FindOverReplicated returns all file nodes that have more backends than the required replication factor.
+func (c *Cache) FindOverReplicated(rf int) []*Node {
+	var overReplicated []*Node
+	c.walk(c.Root, func(n *Node) {
+		n.Mu.RLock()
+		if !n.Meta.IsDir && len(n.Meta.Backends) > rf {
+			overReplicated = append(overReplicated, n)
+		}
+		n.Mu.RUnlock()
+	})
+	return overReplicated
+}
+
 func (c *Cache) walk(node *Node, fn func(*Node)) {
 	fn(node)
 	node.Mu.RLock()
@@ -1087,4 +1100,3 @@ func (c *Cache) LoadFromFile(path string) error {
 func (c *Cache) Evict(path string) {
 	c.evict(path)
 }
-

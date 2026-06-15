@@ -77,12 +77,19 @@ func (m *RepairManager) performScrub(ctx context.Context) {
 
 	m.logger().Info("Starting background repair scrub...")
 	degraded := m.fs.Cache.FindDegraded(m.fs.ReplicationFactor)
-	if len(degraded) == 0 {
-		m.logger().Info("No degraded files found")
+	overReplicated := m.fs.Cache.FindOverReplicated(m.fs.ReplicationFactor)
+
+	if len(degraded) == 0 && len(overReplicated) == 0 {
+		m.logger().Info("No degraded or over-replicated files found")
 		return
 	}
 
-	m.logger().Infof("Found %d degraded files, starting repair...", len(degraded))
+	if len(degraded) > 0 {
+		m.logger().Infof("Found %d degraded files, starting repair...", len(degraded))
+	}
+	if len(overReplicated) > 0 {
+		m.logger().Infof("Found %d over-replicated files, starting pruning...", len(overReplicated))
+	}
 
 	g, gCtx := errgroup.WithContext(ctx)
 	g.SetLimit(m.concurrency)
@@ -96,6 +103,17 @@ func (m *RepairManager) performScrub(ctx context.Context) {
 			return nil // Don't fail the whole scrub on single file error
 		})
 	}
+
+	for _, node := range overReplicated {
+		node := node
+		g.Go(func() error {
+			if err := m.pruneNode(gCtx, node); err != nil {
+				m.logger().WithField("path", node.Meta.Path).Errorf("Failed to prune: %v", err)
+			}
+			return nil
+		})
+	}
+
 	_ = g.Wait()
 	m.logger().Info("Background repair scrub completed")
 }
@@ -389,6 +407,116 @@ func (m *RepairManager) repairNode(ctx context.Context, node *vfs.Node) error {
 		}
 		node.Mu.Unlock()
 		m.logger().WithField("path", path).Infof("Successfully repaired on backend %s", targetName)
+	}
+
+	return nil
+}
+
+func (m *RepairManager) pruneNode(ctx context.Context, node *vfs.Node) error {
+	node.Mu.Lock()
+	path := node.Meta.Path
+	current := append([]string(nil), node.Meta.Backends...)
+	node.Mu.Unlock()
+
+	if len(current) <= m.fs.ReplicationFactor {
+		return nil // Not over-replicated
+	}
+
+	// Local serialization first, then distributed lock (ordering invariant on RepliFS)
+	unlock := m.fs.pathLocks.lock(path)
+	defer unlock()
+
+	lock, err := m.fs.acquireLock(ctx, path)
+	if err != nil {
+		return err
+	}
+	if lock != nil {
+		defer lock.Release()
+	}
+
+	// Double check under lock
+	node.Mu.Lock()
+	if len(node.Meta.Backends) <= m.fs.ReplicationFactor {
+		node.Mu.Unlock()
+		return nil
+	}
+	current = append([]string(nil), node.Meta.Backends...)
+	node.Mu.Unlock()
+
+	// Select which ones to keep using the configured backend selector
+	selectedToKeep := m.fs.Selector.SelectForWrite(m.fs.ReplicationFactor, current)
+	keepMap := make(map[string]bool)
+	for _, bName := range selectedToKeep {
+		keepMap[bName] = true
+	}
+
+	// Fallback to preserve replication factor if selector returned fewer
+	if len(selectedToKeep) < m.fs.ReplicationFactor {
+		for _, bName := range current {
+			if !keepMap[bName] {
+				keepMap[bName] = true
+				selectedToKeep = append(selectedToKeep, bName)
+				if len(selectedToKeep) == m.fs.ReplicationFactor {
+					break
+				}
+			}
+		}
+	}
+
+	// Identify replicas to prune
+	var toPrune []string
+	for _, bName := range current {
+		if !keepMap[bName] {
+			toPrune = append(toPrune, bName)
+		}
+	}
+
+	if len(toPrune) == 0 {
+		return nil
+	}
+
+	m.logger().WithField("path", path).Infof("Pruning over-replicated file: keeping %v, pruning %v", selectedToKeep, toPrune)
+
+	var prunedSuccessfully []string
+	for _, targetName := range toPrune {
+		targetBackend := m.fs.Backends[targetName]
+		if targetBackend == nil {
+			continue
+		}
+
+		// Remove the replica
+		err := targetBackend.Remove(ctx, path)
+		if err != nil && !os.IsNotExist(err) && !errors.Is(err, os.ErrNotExist) {
+			m.logger().WithField("path", path).Warnf("Failed to prune replica from backend %s: %v", targetName, err)
+			continue
+		}
+
+		// Remove sidecar
+		if err := vfs.RemoveSidecar(ctx, targetBackend, path); err != nil {
+			m.logger().WithField("path", path).Warnf("Failed to remove sidecar from backend %s during pruning: %v", targetName, err)
+		}
+
+		prunedSuccessfully = append(prunedSuccessfully, targetName)
+	}
+
+	if len(prunedSuccessfully) > 0 {
+		node.Mu.Lock()
+		newBackends := make([]string, 0, len(node.Meta.Backends))
+		for _, b := range node.Meta.Backends {
+			pruned := false
+			for _, p := range prunedSuccessfully {
+				if b == p {
+					pruned = true
+					break
+				}
+			}
+			if !pruned {
+				newBackends = append(newBackends, b)
+			}
+		}
+		node.Meta.Backends = newBackends
+		node.Mu.Unlock()
+		m.logger().WithField("path", path).Infof("Successfully pruned replicas on backends %v", prunedSuccessfully)
 	}
 
 	return nil
