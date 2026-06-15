@@ -34,16 +34,13 @@ func (c *sidecarCapture) get() (vfs.Sidecar, int) {
 	return c.last, c.count
 }
 
-// expectSidecarWrite registers permissive (.Maybe()) expectations for sidecar
-// writes of dataPath on b — MkdirAll + OpenFile + WriteAt + Close — and
-// captures what was written. Permissive so tests that aren't about sidecars
-// stay minimal.
-func expectSidecarWrite(b *bmock.MockBackend, dataPath string) *sidecarCapture {
+// expectReservedWrite registers permissive (.Maybe()) expectations for writing
+// to a reserved path under replistore.
+func expectReservedWrite(b *bmock.MockBackend, reservedPath string) *sidecarCapture {
 	c := &sidecarCapture{}
 	f := &bmock.MockFile{}
-	sp := vfs.SidecarPath(dataPath)
-	b.On("MkdirAll", mock.Anything, gopath.Dir(sp), os.FileMode(0755)).Return(nil).Maybe()
-	b.On("OpenFile", mock.Anything, sp, os.O_CREATE|os.O_TRUNC|os.O_RDWR, os.FileMode(0644)).Return(f, nil).Maybe()
+	b.On("MkdirAll", mock.Anything, gopath.Dir(reservedPath), os.FileMode(0755)).Return(nil).Maybe()
+	b.On("OpenFile", mock.Anything, reservedPath, os.O_CREATE|os.O_TRUNC|os.O_RDWR, os.FileMode(0644)).Return(f, nil).Maybe()
 	f.On("WriteAt", mock.Anything, mock.Anything, int64(0)).Run(func(args mock.Arguments) {
 		c.mu.Lock()
 		defer c.mu.Unlock()
@@ -54,22 +51,18 @@ func expectSidecarWrite(b *bmock.MockBackend, dataPath string) *sidecarCapture {
 	return c
 }
 
+// expectSidecarWrite registers permissive (.Maybe()) expectations for sidecar
+// writes of dataPath on b — MkdirAll + OpenFile + WriteAt + Close — and
+// captures what was written. Permissive so tests that aren't about sidecars
+// stay minimal.
+func expectSidecarWrite(b *bmock.MockBackend, dataPath string) *sidecarCapture {
+	return expectReservedWrite(b, vfs.SidecarPath(dataPath))
+}
+
 // expectTombstoneWrite registers permissive (.Maybe()) expectations for
 // tombstone writes of dataPath on b and captures what was written.
 func expectTombstoneWrite(b *bmock.MockBackend, dataPath string) *sidecarCapture {
-	c := &sidecarCapture{}
-	f := &bmock.MockFile{}
-	tp := vfs.TombstonePath(dataPath)
-	b.On("MkdirAll", mock.Anything, gopath.Dir(tp), os.FileMode(0755)).Return(nil).Maybe()
-	b.On("OpenFile", mock.Anything, tp, os.O_CREATE|os.O_TRUNC|os.O_RDWR, os.FileMode(0644)).Return(f, nil).Maybe()
-	f.On("WriteAt", mock.Anything, mock.Anything, int64(0)).Run(func(args mock.Arguments) {
-		c.mu.Lock()
-		defer c.mu.Unlock()
-		c.count++
-		_ = json.Unmarshal(args.Get(1).([]byte), &c.last)
-	}).Return(0, nil).Maybe()
-	f.On("Close").Return(nil).Maybe()
-	return c
+	return expectReservedWrite(b, vfs.TombstonePath(dataPath))
 }
 
 // expectSidecarRemove registers a permissive expectation for sidecar deletion

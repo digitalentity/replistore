@@ -65,6 +65,7 @@ func (m *MockBackend) Walk(ctx context.Context, path string, fn func(path string
 	return args.Error(0)
 }
 
+//nolint:ireturn // backend.File is an interface returned by mock
 func (m *MockBackend) OpenFile(ctx context.Context, path string, flag int, perm os.FileMode) (backend.File, error) {
 	args := m.Called(ctx, path, flag, perm)
 	if args.Get(0) == nil {

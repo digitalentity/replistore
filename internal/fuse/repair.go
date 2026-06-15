@@ -522,7 +522,7 @@ func sourceModTime(ctx context.Context, source backend.Backend, path string, fal
 
 // Helpers to adapt backend.File to io.Reader/Writer.
 type offsetReader struct {
-	ctx    context.Context
+	ctx    context.Context //nolint:containedctx // Needed to adapt context-aware backend.File to io.Reader
 	f      backend.File
 	offset int64
 }
@@ -534,7 +534,7 @@ func (r *offsetReader) Read(p []byte) (int, error) {
 }
 
 type offsetWriter struct {
-	ctx    context.Context
+	ctx    context.Context //nolint:containedctx // Needed to adapt context-aware backend.File to io.Writer
 	f      backend.File
 	offset int64
 }

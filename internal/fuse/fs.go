@@ -64,6 +64,7 @@ func (f *RepliFS) pathLogger(path string) *logrus.Entry {
 	return f.logger().WithField("path", path)
 }
 
+//nolint:ireturn // fs.Node is an interface required by bazil.org/fuse/fs
 func (f *RepliFS) Root() (fs.Node, error) {
 	return &Dir{fs: f, node: f.Cache.Root}, nil
 }
@@ -91,6 +92,7 @@ func (f *RepliFS) acquireLock(ctx context.Context, path string) (*vfs.Distribute
 // since an operation on it just failed), in which case the stale replica
 // survives and may resurface via background sync. A tombstone mechanism
 // (REVIEW.md C6) is the durable fix for that.
+//nolint:contextcheck // runs asynchronously in the background
 func (f *RepliFS) removeStaleReplica(path string, backendName string) {
 	b, ok := f.Backends[backendName]
 	if !ok {
@@ -236,6 +238,7 @@ func (d *Dir) Attr(ctx context.Context, a *fuse.Attr) error {
 	return nil
 }
 
+//nolint:ireturn // fs.Node is an interface required by bazil.org/fuse/fs
 func (d *Dir) Lookup(ctx context.Context, name string) (fs.Node, error) {
 	d.node.Mu.RLock()
 	child, ok := d.node.Children[name]
@@ -337,6 +340,7 @@ func (d *Dir) ReadDirAll(ctx context.Context) ([]fuse.Dirent, error) {
 	return res, nil
 }
 
+//nolint:ireturn // fs.Node and fs.Handle are interfaces required by bazil.org/fuse/fs
 func (d *Dir) Create(ctx context.Context, req *fuse.CreateRequest, resp *fuse.CreateResponse) (fs.Node, fs.Handle, error) {
 	d.node.Mu.Lock()
 	if _, ok := d.node.Children[req.Name]; ok {
@@ -518,6 +522,7 @@ func (d *Dir) removeCreated(ctx context.Context, path string, backends []string)
 	}
 }
 
+//nolint:ireturn // fs.Node is an interface required by bazil.org/fuse/fs
 func (d *Dir) Mkdir(ctx context.Context, req *fuse.MkdirRequest) (fs.Node, error) {
 	d.node.Mu.Lock()
 	if _, ok := d.node.Children[req.Name]; ok {
@@ -1254,6 +1259,7 @@ func (f *File) Setattr(ctx context.Context, req *fuse.SetattrRequest, resp *fuse
 	return f.Attr(ctx, &resp.Attr)
 }
 
+//nolint:ireturn // fs.Handle is an interface required by bazil.org/fuse/fs
 func (f *File) Open(ctx context.Context, req *fuse.OpenRequest, resp *fuse.OpenResponse) (fs.Handle, error) {
 	// O_APPEND is not supported: each backend would append at its own
 	// current EOF, guaranteeing replica divergence. Supporting it requires
@@ -1662,6 +1668,7 @@ func (h *FileHandle) Write(ctx context.Context, req *fuse.WriteRequest, resp *fu
 	return nil
 }
 
+//nolint:contextcheck // invokes removeStaleReplica asynchronously in the background
 func (h *FileHandle) cleanupFailedBackends(failures []string) {
 	h.mu.Lock()
 	for _, name := range failures {

@@ -214,6 +214,7 @@ func (l *DistributedLock) Release() {
 	}
 }
 
+//nolint:contextcheck // runs asynchronously in the background
 func (l *DistributedLock) startRenewal(peers []string) {
 	ctx, cancel := context.WithCancel(context.Background())
 	l.cancelRenewal = cancel
@@ -252,6 +253,7 @@ func (l *DistributedLock) startRenewal(peers []string) {
 	}()
 }
 
+//nolint:contextcheck // runs asynchronously in the background
 func (l *DistributedLock) renew(peers []string) bool {
 	quorum := (l.Manager.ExpectedClusterSize / 2) + 1
 
@@ -306,6 +308,7 @@ func (l *DistributedLock) renew(peers []string) bool {
 	return ok
 }
 
+//nolint:contextcheck // runs asynchronously in the background
 func (l *DistributedLock) rollback(peers []string, token string) {
 	req := cluster.LockRelease{
 		Path:         l.Path,

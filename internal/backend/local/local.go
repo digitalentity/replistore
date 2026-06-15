@@ -194,6 +194,7 @@ func (b *LocalBackend) Walk(ctx context.Context, path string, fn func(path strin
 	})
 }
 
+//nolint:ireturn // backend.File is an interface returned by implementation
 func (b *LocalBackend) OpenFile(ctx context.Context, path string, flag int, perm os.FileMode) (backend.File, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err

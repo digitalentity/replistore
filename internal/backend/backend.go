@@ -60,6 +60,7 @@ func Register(typeName string, factory Factory) {
 	factories[strings.ToLower(typeName)] = factory
 }
 
+//nolint:ireturn // Backend is an interface returned by factory
 func Create(typeName string, name string, options map[string]any) (Backend, error) {
 	factoriesMu.RLock()
 	factory, ok := factories[strings.ToLower(typeName)]

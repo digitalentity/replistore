@@ -4,6 +4,7 @@ package cluster
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -317,7 +318,7 @@ func (d *Discovery) readEntry(ctx context.Context, b backend.Backend, p string) 
 
 	buf := make([]byte, 4096)
 	n, err := f.ReadAt(ctx, buf, 0)
-	if err != nil && (err != io.EOF || n <= 0) {
+	if err != nil && (!errors.Is(err, io.EOF) || n <= 0) {
 		return entry, err
 	}
 

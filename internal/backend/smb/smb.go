@@ -125,10 +125,12 @@ func (b *SMBBackend) Connect() error {
 	return b.connectLocked()
 }
 
+//nolint:contextcheck // runs independently of request context
 func (b *SMBBackend) connectLocked() error {
 	b.closeLocked()
 
-	conn, err := net.DialTimeout("tcp", b.Address, 5*time.Second)
+	dialer := &net.Dialer{Timeout: 5 * time.Second}
+	conn, err := dialer.DialContext(context.Background(), "tcp", b.Address)
 	if err != nil {
 		return fmt.Errorf("dial failed: %w", err)
 	}
@@ -199,9 +201,11 @@ func isConnectionError(err error) bool {
 	}
 	var errno syscall.Errno
 	if errors.As(err, &errno) {
+		//nolint:exhaustive // Only matching connection-related errnos
 		switch errno {
 		case syscall.EPIPE, syscall.ECONNRESET, syscall.ECONNABORTED, syscall.ECONNREFUSED:
 			return true
+		default:
 		}
 	}
 	errStr := strings.ToLower(err.Error())
@@ -311,6 +315,7 @@ func (b *SMBBackend) Stat(ctx context.Context, path string) (backend.FileInfo, e
 	return fi, err
 }
 
+//nolint:ireturn // backend.File is an interface returned by implementation
 func (b *SMBBackend) OpenFile(ctx context.Context, path string, flag int, perm os.FileMode) (backend.File, error) {
 	var file backend.File
 	err := b.execute(func() error {

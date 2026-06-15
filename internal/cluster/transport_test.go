@@ -58,7 +58,8 @@ func TestVerify_TamperedClaims(t *testing.T) {
 	parts := bytes.Split(datagram, []byte("."))
 	assert.Len(t, parts, 3)
 
-	otherClaims, _ := json.Marshal(wireClaims{V: 1, Typ: TypReleaseLock, RID: newRID(), Body: json.RawMessage(`{}`)})
+	otherClaims, err := json.Marshal(wireClaims{V: 1, Typ: TypReleaseLock, RID: newRID(), Body: json.RawMessage(`{}`)})
+	assert.NoError(t, err)
 	parts[1] = []byte(base64.RawURLEncoding.EncodeToString(otherClaims))
 	tampered := bytes.Join(parts, []byte("."))
 
@@ -71,26 +72,28 @@ func TestVerify_WrongHeaderRejected(t *testing.T) {
 	// STILL be rejected: the verifier compares the header segment against
 	// the pinned constant and never parses the algorithm from the wire.
 	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"none","typ":"JWT"}`))
-	claimsJSON, _ := json.Marshal(wireClaims{V: 1, Typ: TypRequestLock, RID: newRID(), Body: json.RawMessage(`{}`)})
+	claimsJSON, err := json.Marshal(wireClaims{V: 1, Typ: TypRequestLock, RID: newRID(), Body: json.RawMessage(`{}`)})
+	assert.NoError(t, err)
 	signingInput := header + "." + base64.RawURLEncoding.EncodeToString(claimsJSON)
 
 	mac := hmac.New(sha256.New, testSecret)
 	mac.Write([]byte(signingInput))
 	sig := base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
 
-	_, err := verifyMessage(testSecret, []byte(signingInput+"."+sig))
+	_, err = verifyMessage(testSecret, []byte(signingInput+"."+sig))
 	assert.ErrorIs(t, err, errBadHeader)
 }
 
 func TestVerify_WrongVersionRejected(t *testing.T) {
-	claimsJSON, _ := json.Marshal(wireClaims{V: 2, Typ: TypRequestLock, RID: newRID(), Body: json.RawMessage(`{}`)})
+	claimsJSON, err := json.Marshal(wireClaims{V: 2, Typ: TypRequestLock, RID: newRID(), Body: json.RawMessage(`{}`)})
+	assert.NoError(t, err)
 	signingInput := pinnedHeader + "." + base64.RawURLEncoding.EncodeToString(claimsJSON)
 
 	mac := hmac.New(sha256.New, testSecret)
 	mac.Write([]byte(signingInput))
 	sig := base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
 
-	_, err := verifyMessage(testSecret, []byte(signingInput+"."+sig))
+	_, err = verifyMessage(testSecret, []byte(signingInput+"."+sig))
 	assert.ErrorIs(t, err, errBadVersion)
 }
 
