@@ -56,6 +56,10 @@ type Cache struct {
 	Mu   sync.RWMutex
 }
 
+func (c *Cache) logger() *logrus.Entry {
+	return logrus.WithField("component", "vfs")
+}
+
 func NewCache() *Cache {
 	return &Cache{
 		Root: &Node{
@@ -122,7 +126,7 @@ func mergeMeta(existing *Metadata, incoming Metadata, incomingBackends []string)
 			if p == "" {
 				p = existing.Name
 			}
-			logrus.Warnf("vfs: type conflict at %q: file on some backends, directory on others; treating as directory", p)
+			logrus.WithField("component", "vfs").WithField("path", p).Warn("Type conflict: file on some backends, directory on others; treating as directory")
 		}
 		if !existing.IsDir {
 			// Directory wins the type conflict: convert the node to a directory.
@@ -330,7 +334,7 @@ func listTombstones(ctx context.Context, b backend.Backend) map[string]int64 {
 		dataPath := strings.TrimSuffix(strings.TrimPrefix(p, tombstonesDir+"/"), ".json")
 		sc, err := ReadTombstone(ctx, b, dataPath)
 		if err != nil {
-			logrus.Debugf("vfs: tombstone read for %q on %s failed: %v", dataPath, b.GetName(), err)
+			logrus.WithField("component", "vfs").WithField("path", dataPath).Debugf("Tombstone read on %s failed: %v", b.GetName(), err)
 			return nil
 		}
 		if sc.Deleted {
@@ -339,7 +343,7 @@ func listTombstones(ctx context.Context, b backend.Backend) map[string]int64 {
 		return nil
 	})
 	if err != nil && !os.IsNotExist(err) && !errors.Is(err, os.ErrNotExist) {
-		logrus.Debugf("vfs: tombstone walk on %s failed: %v", b.GetName(), err)
+		logrus.WithField("component", "vfs").Debugf("Tombstone walk on %s failed: %v", b.GetName(), err)
 	}
 	return res
 }
@@ -395,7 +399,7 @@ func (c *Cache) walkBackends(ctx context.Context, backends []backend.Backend) ma
 		state := perBackend[b.GetName()] // each goroutine writes only its own map
 		g.Go(func() error {
 			walkStart := time.Now()
-			logrus.Debugf("Background syncing backend: %s", b.GetName())
+			c.logger().Debugf("Background syncing backend: %s", b.GetName())
 			seenPaths := make(map[string]bool)
 			err := b.Walk(gCtx, "", func(path string, info backend.FileInfo) error {
 				if IsReservedPath(path) {
@@ -417,7 +421,7 @@ func (c *Cache) walkBackends(ctx context.Context, backends []backend.Backend) ma
 				return nil
 			})
 			if err != nil {
-				logrus.Errorf("Background sync error on %s: %v", b.GetName(), err)
+				c.logger().Errorf("Background sync error on %s: %v", b.GetName(), err)
 				return nil // Don't fail other backends
 			}
 			c.Reconcile(b.GetName(), seenPaths, walkStart)
@@ -786,7 +790,7 @@ func (c *Cache) FetchEntry(ctx context.Context, path string, backends []backend.
 				}
 				stateMu.Unlock()
 			case terr != nil && !os.IsNotExist(terr) && !errors.Is(terr, os.ErrNotExist):
-				logrus.Debugf("vfs: tombstone read for %q on %s failed: %v", path, b.GetName(), terr)
+				c.logger().WithField("path", path).Debugf("Tombstone read on %s failed: %v", b.GetName(), terr)
 			}
 
 			stateMu.Lock()
@@ -926,7 +930,7 @@ func (c *Cache) Warmup(ctx context.Context, backends []backend.Backend) {
 	for _, b := range backends {
 		b := b
 		g.Go(func() error {
-			logrus.Infof("Scanning backend: %s", b.GetName())
+			c.logger().Infof("Scanning backend: %s", b.GetName())
 			err := b.Walk(gCtx, "", func(path string, info backend.FileInfo) error {
 				if IsReservedPath(path) {
 					// Cluster-internal state is never indexed.
@@ -947,9 +951,9 @@ func (c *Cache) Warmup(ctx context.Context, backends []backend.Backend) {
 				return nil
 			})
 			if err != nil {
-				logrus.Errorf("Error scanning backend %s: %v", b.GetName(), err)
+				c.logger().Errorf("Error scanning backend %s: %v", b.GetName(), err)
 			} else {
-				logrus.Infof("Finished scanning backend: %s", b.GetName())
+				c.logger().Infof("Finished scanning backend: %s", b.GetName())
 			}
 			return nil
 		})

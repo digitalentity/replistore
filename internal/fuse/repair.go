@@ -36,6 +36,10 @@ func NewRepairManager(fs *RepliFS, interval time.Duration, concurrency int) *Rep
 	}
 }
 
+func (m *RepairManager) logger() *logrus.Entry {
+	return logrus.WithField("component", "repair").WithField("node_id", m.fs.NodeID)
+}
+
 func (m *RepairManager) Start(ctx context.Context) {
 	if m.interval <= 0 {
 		return
@@ -62,7 +66,7 @@ func (m *RepairManager) performScrub(ctx context.Context) {
 	// If it fails, another node is already performing repairs.
 	lock, err := m.fs.acquireLock(ctx, GlobalRepairLockPath)
 	if err != nil {
-		logrus.Debug("Another node is currently performing repairs, skipping this cycle")
+		m.logger().Debug("Another node is currently performing repairs, skipping this cycle")
 		return
 	}
 	if lock != nil {
@@ -71,14 +75,14 @@ func (m *RepairManager) performScrub(ctx context.Context) {
 
 	m.enforceTombstones(ctx)
 
-	logrus.Info("Starting background repair scrub...")
+	m.logger().Info("Starting background repair scrub...")
 	degraded := m.fs.Cache.FindDegraded(m.fs.ReplicationFactor)
 	if len(degraded) == 0 {
-		logrus.Info("No degraded files found")
+		m.logger().Info("No degraded files found")
 		return
 	}
 
-	logrus.Infof("Found %d degraded files, starting repair...", len(degraded))
+	m.logger().Infof("Found %d degraded files, starting repair...", len(degraded))
 
 	g, gCtx := errgroup.WithContext(ctx)
 	g.SetLimit(m.concurrency)
@@ -87,13 +91,13 @@ func (m *RepairManager) performScrub(ctx context.Context) {
 		node := node
 		g.Go(func() error {
 			if err := m.repairNode(gCtx, node); err != nil {
-				logrus.Errorf("Failed to repair %s: %v", node.Meta.Path, err)
+				m.logger().WithField("path", node.Meta.Path).Errorf("Failed to repair: %v", err)
 			}
 			return nil // Don't fail the whole scrub on single file error
 		})
 	}
 	_ = g.Wait()
-	logrus.Info("Background repair scrub completed")
+	m.logger().Info("Background repair scrub completed")
 }
 
 // enforceTombstones makes recorded deletions stick (REVIEW.md C6): for every
@@ -124,7 +128,7 @@ func (m *RepairManager) enforceTombstone(ctx context.Context, path string, tombG
 	lock, err := m.fs.acquireLock(ctx, path)
 	if err != nil {
 		// Another node is working on this path; skip it this cycle.
-		logrus.Debugf("Tombstone enforcement: could not lock %s, skipping: %v", path, err)
+		m.logger().WithField("path", path).Debugf("Tombstone enforcement: could not lock, skipping: %v", err)
 		return
 	}
 	if lock != nil {
@@ -140,7 +144,7 @@ func (m *RepairManager) enforceTombstone(ctx context.Context, path string, tombG
 			if os.IsNotExist(err) || errors.Is(err, os.ErrNotExist) {
 				continue // definitively absent here
 			}
-			logrus.Debugf("Tombstone enforcement: stat of %s on %s failed: %v", path, name, err)
+			m.logger().WithField("path", path).Debugf("Tombstone enforcement: stat on %s failed: %v", name, err)
 			failed = true
 			continue
 		}
@@ -149,7 +153,7 @@ func (m *RepairManager) enforceTombstone(ctx context.Context, path string, tombG
 		if sc, scErr := vfs.ReadSidecar(ctx, b, path); scErr == nil {
 			gen = sc.Gen
 		} else if !errors.Is(scErr, os.ErrNotExist) && !os.IsNotExist(scErr) {
-			logrus.Debugf("Tombstone enforcement: sidecar read of %s on %s failed: %v", path, name, scErr)
+			m.logger().WithField("path", path).Debugf("Tombstone enforcement: sidecar read on %s failed: %v", name, scErr)
 			failed = true
 			continue
 		}
@@ -161,7 +165,7 @@ func (m *RepairManager) enforceTombstone(ctx context.Context, path string, tombG
 		}
 
 		// Zombie replica of the deleted version: remove data and meta sidecar.
-		logrus.Infof("Tombstone enforcement: removing zombie replica of %s (gen %d <= tombstone gen %d) from %s", path, gen, tombGen, name)
+		m.logger().WithField("path", path).Infof("Tombstone enforcement: removing zombie replica (gen %d <= tombstone gen %d) from %s", gen, tombGen, name)
 		var removeErr error
 		if info.IsDir {
 			removeErr = removeAll(ctx, b, path)
@@ -169,12 +173,12 @@ func (m *RepairManager) enforceTombstone(ctx context.Context, path string, tombG
 			removeErr = b.Remove(ctx, path)
 		}
 		if removeErr != nil && !os.IsNotExist(removeErr) && !errors.Is(removeErr, os.ErrNotExist) {
-			logrus.Warnf("Tombstone enforcement: failed to remove zombie %s from %s: %v", path, name, removeErr)
+			m.logger().WithField("path", path).Warnf("Tombstone enforcement: failed to remove zombie from %s: %v", name, removeErr)
 			failed = true
 			continue
 		}
 		if err := vfs.RemoveSidecar(ctx, b, path); err != nil {
-			logrus.Warnf("Tombstone enforcement: failed to remove sidecar of %s on %s: %v", path, name, err)
+			m.logger().WithField("path", path).Warnf("Tombstone enforcement: failed to remove sidecar on %s: %v", name, err)
 		}
 	}
 
@@ -198,7 +202,7 @@ func (m *RepairManager) enforceTombstone(ctx context.Context, path string, tombG
 func (m *RepairManager) removeTombstones(ctx context.Context, path string) {
 	for name, b := range m.fs.Backends {
 		if err := vfs.RemoveTombstone(ctx, b, path); err != nil {
-			logrus.Warnf("Failed to remove tombstone of %s from %s: %v", path, name, err)
+			m.logger().WithField("path", path).Warnf("Failed to remove tombstone from %s: %v", name, err)
 		}
 	}
 }
@@ -299,7 +303,7 @@ func (m *RepairManager) repairNode(ctx context.Context, node *vfs.Node) error {
 	// while copying. A missing sidecar means a legacy (pre-versioning) file.
 	srcSC, srcSCErr := vfs.ReadSidecar(ctx, sourceBackend, path)
 	if srcSCErr != nil && !errors.Is(srcSCErr, os.ErrNotExist) {
-		logrus.Warnf("Failed to read sidecar for %s from %s: %v", path, sourceName, srcSCErr)
+		m.logger().WithField("path", path).Warnf("Failed to read sidecar from %s: %v", sourceName, srcSCErr)
 	}
 
 	// For each target, open and copy
@@ -316,15 +320,15 @@ func (m *RepairManager) repairNode(ctx context.Context, node *vfs.Node) error {
 				if tsc, tErr := vfs.ReadSidecar(ctx, targetBackend, path); tErr == nil &&
 					tsc.Gen == srcSC.Gen && tsc.Sum != "" && tsc.Sum != srcSC.Sum {
 					atomic.AddInt64(&m.divergenceCount, 1)
-					logrus.Errorf("Divergent replicas of %s at generation %d: source %s has sum %s, target %s has sum %s; overwriting target from source",
-						path, srcSC.Gen, sourceName, srcSC.Sum, targetName, tsc.Sum)
+					m.logger().WithField("path", path).Errorf("Divergent replicas at generation %d: source %s has sum %s, target %s has sum %s; overwriting target from source",
+						srcSC.Gen, sourceName, srcSC.Sum, targetName, tsc.Sum)
 				}
 			}
 		}
 
 		dstFile, err := targetBackend.OpenFile(ctx, path, os.O_CREATE|os.O_TRUNC|os.O_RDWR, node.Meta.Mode)
 		if err != nil {
-			logrus.Warnf("Repair failed for %s on target %s: %v", path, targetName, err)
+			m.logger().WithField("path", path).Warnf("Repair failed on target %s: %v", targetName, err)
 			continue
 		}
 
@@ -334,7 +338,7 @@ func (m *RepairManager) repairNode(ctx context.Context, node *vfs.Node) error {
 		hasher := sha256.New()
 		if _, err := io.Copy(&offsetWriter{ctx: ctx, f: dstFile}, io.TeeReader(&offsetReader{ctx: ctx, f: srcFile}, hasher)); err != nil {
 			_ = dstFile.Close()
-			logrus.Warnf("Copy failed for %s to %s: %v", path, targetName, err)
+			m.logger().WithField("path", path).Warnf("Copy failed to %s: %v", targetName, err)
 			continue
 		}
 		_ = dstFile.Close()
@@ -345,7 +349,7 @@ func (m *RepairManager) repairNode(ctx context.Context, node *vfs.Node) error {
 		// source and anti-entropy never converges.
 		mtime := sourceModTime(ctx, sourceBackend, path, cachedModTime)
 		if err := targetBackend.Chtimes(ctx, path, mtime, mtime); err != nil {
-			logrus.Warnf("Failed to preserve mtime for %s on %s: %v", path, targetName, err)
+			m.logger().WithField("path", path).Warnf("Failed to preserve mtime on %s: %v", targetName, err)
 		}
 
 		// Replicate the source's version sidecar so the new copy reports the
@@ -358,13 +362,13 @@ func (m *RepairManager) repairNode(ctx context.Context, node *vfs.Node) error {
 			sc := srcSC
 			sc.Sum = sum
 			if err := vfs.WriteSidecar(ctx, targetBackend, path, sc); err != nil {
-				logrus.Warnf("Failed to copy sidecar for %s to %s: %v", path, targetName, err)
+				m.logger().WithField("path", path).Warnf("Failed to copy sidecar to %s: %v", targetName, err)
 			}
 			// The source content was just read in full, so record what we saw
 			// on the source too if its sum was unknown or stale. Non-fatal.
 			if srcSC.Sum != sum {
 				if err := vfs.WriteSidecar(ctx, sourceBackend, path, sc); err != nil {
-					logrus.Warnf("Failed to record content sum for %s on %s: %v", path, sourceName, err)
+					m.logger().WithField("path", path).Warnf("Failed to record content sum on %s: %v", sourceName, err)
 				} else {
 					srcSC.Sum = sum
 				}
@@ -384,7 +388,7 @@ func (m *RepairManager) repairNode(ctx context.Context, node *vfs.Node) error {
 			node.Meta.Backends = append(node.Meta.Backends, targetName)
 		}
 		node.Mu.Unlock()
-		logrus.Infof("Successfully repaired %s on backend %s", path, targetName)
+		m.logger().WithField("path", path).Infof("Successfully repaired on backend %s", targetName)
 	}
 
 	return nil
@@ -395,7 +399,7 @@ func (m *RepairManager) repairNode(ctx context.Context, node *vfs.Node) error {
 func sourceModTime(ctx context.Context, source backend.Backend, path string, fallback time.Time) time.Time {
 	fi, err := source.Stat(ctx, path)
 	if err != nil {
-		logrus.Debugf("Stat of %s on %s failed, using cached mtime: %v", path, source.GetName(), err)
+		logrus.WithField("component", "repair").WithField("path", path).Debugf("Stat on %s failed, using cached mtime: %v", source.GetName(), err)
 		return fallback
 	}
 	return fi.ModTime

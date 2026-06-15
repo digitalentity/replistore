@@ -48,3 +48,7 @@ backends:
     password: "password"               # SMB password
     speed: 5                           # Slower read speed
     tags: ["cold-storage"]             # Match write_affinity to ensure backups here
+  - name: "local-ssd"
+    type: "local"
+    path: "/tmp/test-storage"
+    speed: 50

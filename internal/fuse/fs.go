@@ -52,16 +52,26 @@ type RepliFS struct {
 	handles handleRegistry
 }
 
+func (f *RepliFS) logger() *logrus.Entry {
+	return logrus.WithField("component", "fuse").WithField("node_id", f.NodeID)
+}
+
+func (f *RepliFS) pathLogger(path string) *logrus.Entry {
+	return f.logger().WithField("path", path)
+}
+
 func (f *RepliFS) Root() (fs.Node, error) {
 	return &Dir{fs: f, node: f.Cache.Root}, nil
 }
 
 func (f *RepliFS) acquireLock(ctx context.Context, path string) (*vfs.DistributedLock, error) {
 	if f.LockManager == nil || f.Discovery == nil {
+		f.pathLogger(path).Debug("Distributed locking is disabled or not configured")
 		return nil, nil // Locking disabled or not configured
 	}
 	lock := vfs.NewDistributedLock(path, f.LockManager, f.Discovery)
 	if err := lock.Acquire(ctx); err != nil {
+		f.pathLogger(path).Errorf("Failed to acquire distributed lock: %v", err)
 		return nil, err
 	}
 	return lock, nil
@@ -96,7 +106,7 @@ func (f *RepliFS) removeStaleReplica(path string, backendName string) {
 			}
 			lastErr = err
 		}
-		logrus.Warnf("Failed to remove stale replica %s from backend %s: %v", path, backendName, lastErr)
+		f.pathLogger(path).Warnf("Failed to remove stale replica from backend %s: %v", backendName, lastErr)
 	}()
 }
 
@@ -116,7 +126,7 @@ func (f *RepliFS) writeSidecars(ctx context.Context, path string, sc vfs.Sidecar
 		go func(bName string, b backend.Backend) {
 			defer wg.Done()
 			if err := vfs.WriteSidecar(ctx, b, path, sc); err != nil {
-				logrus.Warnf("Failed to write sidecar (gen %d) for %s on backend %s: %v", sc.Gen, path, bName, err)
+				f.pathLogger(path).Warnf("Failed to write sidecar (gen %d) on backend %s: %v", sc.Gen, bName, err)
 			}
 		}(bName, b)
 	}
@@ -142,7 +152,7 @@ func (f *RepliFS) writeTombstones(ctx context.Context, path string, sc vfs.Sidec
 		go func(bName string, b backend.Backend) {
 			defer wg.Done()
 			if err := vfs.WriteTombstone(ctx, b, path, sc); err != nil {
-				logrus.Warnf("Failed to write tombstone (gen %d) for %s on backend %s: %v", sc.Gen, path, bName, err)
+				f.pathLogger(path).Warnf("Failed to write tombstone (gen %d) on backend %s: %v", sc.Gen, bName, err)
 				return
 			}
 			mu.Lock()
@@ -175,7 +185,7 @@ func (f *RepliFS) maxTombstoneGen(ctx context.Context, path string) int64 {
 			sc, err := vfs.ReadTombstone(ctx, b, path)
 			if err != nil {
 				if !errors.Is(err, os.ErrNotExist) && !os.IsNotExist(err) {
-					logrus.Debugf("Tombstone read for %q on %s failed: %v", path, bName, err)
+					f.pathLogger(path).Debugf("Tombstone read on %s failed: %v", bName, err)
 				}
 				return
 			}
@@ -244,16 +254,19 @@ func (d *Dir) Lookup(ctx context.Context, name string) (fs.Node, error) {
 		}
 
 		// Try lazy fetch
-		logrus.Debugf("Lazy fetching metadata for %s", childPath)
+		d.fs.pathLogger(childPath).Debug("Lazy fetching metadata")
 		node, err := d.fs.Cache.FetchEntry(ctx, childPath, d.fs.getBackendList())
 		if err != nil {
 			if errors.Is(err, os.ErrNotExist) {
+				d.fs.pathLogger(childPath).Debug("Lazy fetch: child not found on any backend")
 				return nil, syscall.ENOENT
 			}
+			d.fs.pathLogger(childPath).Errorf("Lazy fetch failed: %v", err)
 			// ErrUnavailable or any other error: we don't know whether the
 			// entry exists, so don't lie with ENOENT.
 			return nil, syscall.EIO
 		}
+		d.fs.pathLogger(childPath).Debug("Lazy fetch success")
 		child = node
 	}
 
@@ -271,9 +284,9 @@ func (d *Dir) ReadDirAll(ctx context.Context) ([]fuse.Dirent, error) {
 
 	var fetchErr error
 	if !fullyIndexed {
-		logrus.Debugf("Lazy fetching directory listing for %s", path)
+		d.fs.pathLogger(path).Debug("Lazy fetching directory listing")
 		if fetchErr = d.fs.Cache.FetchDir(ctx, path, d.fs.getBackendList()); fetchErr != nil {
-			logrus.Errorf("FetchDir failed for %s: %v", path, fetchErr)
+			d.fs.pathLogger(path).Errorf("FetchDir failed: %v", fetchErr)
 			// Return what we have anyway (unless we have nothing, see below)
 		}
 	}
@@ -342,11 +355,13 @@ func (d *Dir) Create(ctx context.Context, req *fuse.CreateRequest, resp *fuse.Cr
 	}
 
 	selectedBackends := d.fs.Selector.SelectForWrite(d.fs.ReplicationFactor, allBackendNames)
+	d.fs.pathLogger(path).Infof("Creating file with selected backends: %v (quorum: %d)", selectedBackends, d.fs.WriteQuorum)
 
 	if len(selectedBackends) == 0 {
 		if lock != nil {
 			lock.Release()
 		}
+		d.fs.pathLogger(path).Errorf("Failed to create file: no healthy backends selected")
 		return nil, nil, syscall.EIO
 	}
 
@@ -367,7 +382,7 @@ func (d *Dir) Create(ctx context.Context, req *fuse.CreateRequest, resp *fuse.Cr
 			b := d.fs.Backends[bName]
 			if parentPath != "" {
 				if err := b.MkdirAll(gCtx, parentPath, 0755); err != nil {
-					logrus.Warnf("Failed to MkdirAll parent %s on backend %s: %v", parentPath, bName, err)
+					d.fs.pathLogger(path).Warnf("Failed to MkdirAll parent %s on backend %s: %v", parentPath, bName, err)
 				}
 			}
 			sf, err := b.OpenFile(gCtx, path, os.O_CREATE|os.O_EXCL|os.O_RDWR, req.Mode)
@@ -380,7 +395,7 @@ func (d *Dir) Create(ctx context.Context, req *fuse.CreateRequest, resp *fuse.Cr
 					mu.Unlock()
 					return nil
 				}
-				logrus.Warnf("Failed to create file %s on backend %s: %v", path, bName, err)
+				d.fs.pathLogger(path).Warnf("Failed to create file on backend %s: %v", bName, err)
 				return nil // Don't fail the whole operation yet
 			}
 			mu.Lock()
@@ -399,10 +414,12 @@ func (d *Dir) Create(ctx context.Context, req *fuse.CreateRequest, resp *fuse.Cr
 			// The file already exists on at least one backend. Merge the
 			// discovered file into the cache so subsequent lookups see it.
 			if _, ferr := d.fs.Cache.FetchEntry(ctx, path, d.fs.getBackendList()); ferr != nil {
-				logrus.Warnf("FetchEntry after create conflict for %s failed: %v", path, ferr)
+				d.fs.pathLogger(path).Warnf("FetchEntry after create conflict failed: %v", ferr)
 			}
+			d.fs.pathLogger(path).Warn("Create conflict: file already exists on backend(s)")
 			return nil, nil, syscall.EEXIST
 		}
+		d.fs.pathLogger(path).Errorf("Failed to create file: write quorum not met (%d/%d)", len(successfulBackends), d.fs.WriteQuorum)
 		return nil, nil, fmt.Errorf("could not reach write quorum: %d/%d", len(successfulBackends), d.fs.WriteQuorum)
 	}
 
@@ -441,6 +458,7 @@ func (d *Dir) Create(ctx context.Context, req *fuse.CreateRequest, resp *fuse.Cr
 		}
 		_ = h.Release(ctx, nil)
 		d.removeCreated(ctx, path, toRemove)
+		d.fs.pathLogger(path).Warn("Create conflict: another operation won the race, cleaning up local orphans")
 		return nil, nil, syscall.EEXIST
 	}
 
@@ -461,6 +479,7 @@ func (d *Dir) Create(ctx context.Context, req *fuse.CreateRequest, resp *fuse.Cr
 	atomic.AddInt32(&child.OpenHandles, 1)
 	d.fs.handles.register(child, h)
 
+	d.fs.pathLogger(path).Infof("Successfully created file with generation %d", newGen)
 	return h.file, h, nil
 }
 
@@ -473,7 +492,7 @@ func (d *Dir) removeCreated(ctx context.Context, path string, backends []string)
 			continue
 		}
 		if err := b.Remove(ctx, path); err != nil {
-			logrus.Warnf("Failed to remove partially created file %s on backend %s: %v", path, bName, err)
+			d.fs.pathLogger(path).Warnf("Failed to remove partially created file on backend %s: %v", bName, err)
 		}
 	}
 }
@@ -515,12 +534,13 @@ func (d *Dir) Mkdir(ctx context.Context, req *fuse.MkdirRequest) (fs.Node, error
 	var satisfiedOn []string // backends where the directory is present (counted toward quorum)
 	g, gCtx := errgroup.WithContext(ctx)
 
+	d.fs.pathLogger(path).Infof("Creating directory on all backends (quorum: %d)", d.fs.WriteQuorum)
 	for name, b := range d.fs.Backends {
 		name, b := name, b
 		g.Go(func() error {
 			if parentPath != "" {
 				if err := b.MkdirAll(gCtx, parentPath, 0755); err != nil {
-					logrus.Warnf("Failed to MkdirAll parent %s on backend %s: %v", parentPath, name, err)
+					d.fs.pathLogger(path).Warnf("Failed to MkdirAll parent %s on backend %s: %v", parentPath, name, err)
 				}
 			}
 			err := b.Mkdir(gCtx, path, req.Mode)
@@ -530,11 +550,11 @@ func (d *Dir) Mkdir(ctx context.Context, req *fuse.MkdirRequest) (fs.Node, error
 					// by another cluster node). Verify it really is a directory.
 					info, statErr := b.Stat(gCtx, path)
 					if statErr != nil {
-						logrus.Warnf("Failed to stat existing path %s on %s: %v", path, name, statErr)
+						d.fs.pathLogger(path).Warnf("Failed to stat existing path on %s: %v", name, statErr)
 						return nil
 					}
 					if !info.IsDir {
-						logrus.Warnf("Path %s already exists on %s but is not a directory", path, name)
+						d.fs.pathLogger(path).Warnf("Path already exists on %s but is not a directory", name)
 						return nil
 					}
 					mu.Lock()
@@ -542,7 +562,7 @@ func (d *Dir) Mkdir(ctx context.Context, req *fuse.MkdirRequest) (fs.Node, error
 					mu.Unlock()
 					return nil
 				}
-				logrus.Warnf("Failed to create directory %s on %s: %v", path, name, err)
+				d.fs.pathLogger(path).Warnf("Failed to create directory on %s: %v", name, err)
 				return nil // Don't fail the whole operation if one backend fails
 			}
 			mu.Lock()
@@ -559,6 +579,7 @@ func (d *Dir) Mkdir(ctx context.Context, req *fuse.MkdirRequest) (fs.Node, error
 		for _, bName := range createdOn {
 			_ = d.fs.Backends[bName].Remove(ctx, path)
 		}
+		d.fs.pathLogger(path).Errorf("Failed to create directory: write quorum not met (%d/%d)", len(satisfiedOn), d.fs.WriteQuorum)
 		return nil, fmt.Errorf("could not reach write quorum for mkdir: %d/%d", len(satisfiedOn), d.fs.WriteQuorum)
 	}
 
@@ -570,6 +591,7 @@ func (d *Dir) Mkdir(ctx context.Context, req *fuse.MkdirRequest) (fs.Node, error
 
 	// Check conflict
 	if _, ok := d.node.Children[req.Name]; ok {
+		d.fs.pathLogger(path).Warn("Mkdir conflict: directory already exists in cache")
 		return nil, syscall.EEXIST
 	}
 
@@ -651,7 +673,9 @@ func (d *Dir) Remove(ctx context.Context, req *fuse.RemoveRequest) error {
 	// is refused and no data is touched.
 	tombGen := gen + 1
 	tomb := vfs.Sidecar{Gen: tombGen, Writer: d.fs.NodeID, Deleted: true}
+	d.fs.pathLogger(path).Infof("Removing path: writing tombstone gen %d to all backends (quorum: %d)", tombGen, d.fs.WriteQuorum)
 	if successes := d.fs.writeTombstones(ctx, path, tomb, d.fs.allBackendNames()); successes < d.fs.WriteQuorum {
+		d.fs.pathLogger(path).Errorf("Failed to remove: tombstone write quorum not met (%d/%d)", successes, d.fs.WriteQuorum)
 		return fmt.Errorf("could not reach write quorum for tombstone: %d/%d", successes, d.fs.WriteQuorum)
 	}
 
@@ -670,7 +694,7 @@ func (d *Dir) Remove(ctx context.Context, req *fuse.RemoveRequest) error {
 			if err == nil || os.IsNotExist(err) || errors.Is(err, os.ErrNotExist) {
 				successes++
 			} else {
-				logrus.Errorf("Failed to remove %s from %s: %v", path, bName, err)
+				d.fs.pathLogger(path).Errorf("Failed to remove from %s: %v", bName, err)
 			}
 			return nil
 		})
@@ -678,6 +702,7 @@ func (d *Dir) Remove(ctx context.Context, req *fuse.RemoveRequest) error {
 	_ = g.Wait()
 
 	if successes < d.fs.WriteQuorum {
+		d.fs.pathLogger(path).Errorf("Failed to remove: file deletion quorum not met (%d/%d)", successes, d.fs.WriteQuorum)
 		return fmt.Errorf("could not reach write quorum for remove: %d/%d", successes, d.fs.WriteQuorum)
 	}
 
@@ -689,7 +714,7 @@ func (d *Dir) Remove(ctx context.Context, req *fuse.RemoveRequest) error {
 			continue
 		}
 		if err := vfs.RemoveSidecar(ctx, b, path); err != nil {
-			logrus.Warnf("Failed to remove sidecar for %s on backend %s: %v", path, bName, err)
+			d.fs.pathLogger(path).Warnf("Failed to remove sidecar on backend %s: %v", bName, err)
 		}
 	}
 
@@ -792,7 +817,7 @@ func (d *Dir) Rename(ctx context.Context, req *fuse.RenameRequest, newDir fs.Nod
 
 			// Ensure destination parent path exists on this backend
 			if err := b.MkdirAll(gCtx, targetParentPath, 0755); err != nil {
-				logrus.Warnf("Failed to ensure parent path %s on backend %s: %v", targetParentPath, bName, err)
+				d.fs.pathLogger(oldPath).Warnf("Failed to ensure parent path %s on backend %s: %v", targetParentPath, bName, err)
 				// Continue anyway, maybe it exists
 			}
 
@@ -806,9 +831,9 @@ func (d *Dir) Rename(ctx context.Context, req *fuse.RenameRequest, newDir fs.Nod
 				// The source dir simply doesn't exist on this backend: that is
 				// neither a success nor a failure for quorum purposes, and
 				// there is no orphan to clean up.
-				logrus.Debugf("Skipping rename of %s on %s: source does not exist", oldPath, bName)
+				d.fs.pathLogger(oldPath).Debugf("Skipping rename on %s: source does not exist", bName)
 			default:
-				logrus.Warnf("Failed to rename %s to %s on %s: %v", oldPath, newPath, bName, err)
+				d.fs.pathLogger(oldPath).Warnf("Failed to rename to %s on %s: %v", newPath, bName, err)
 				failures = append(failures, bName)
 				lastErr = err
 			}
@@ -823,6 +848,7 @@ func (d *Dir) Rename(ctx context.Context, req *fuse.RenameRequest, newDir fs.Nod
 			b := d.fs.Backends[bName]
 			_ = b.Rename(ctx, newPath, oldPath)
 		}
+		d.fs.pathLogger(oldPath).Errorf("Failed to rename to %s: write quorum not met (%d/%d)", newPath, len(successful), d.fs.WriteQuorum)
 		if lastErr != nil {
 			return lastErr
 		}
@@ -842,7 +868,7 @@ func (d *Dir) Rename(ctx context.Context, req *fuse.RenameRequest, newDir fs.Nod
 	tomb := vfs.Sidecar{Gen: oldTombGen, Writer: d.fs.NodeID, Deleted: true}
 	all := d.fs.allBackendNames()
 	if n := d.fs.writeTombstones(ctx, oldPath, tomb, all); n < len(all) {
-		logrus.Warnf("Tombstone for renamed path %s reached only %d/%d backends", oldPath, n, len(all))
+		d.fs.pathLogger(oldPath).Warnf("Tombstone for renamed path reached only %d/%d backends", n, len(all))
 	}
 
 	// The new path's lineage must start above BOTH the source generation
@@ -858,7 +884,7 @@ func (d *Dir) Rename(ctx context.Context, req *fuse.RenameRequest, newDir fs.Nod
 	d.fs.writeSidecars(ctx, newPath, vfs.Sidecar{Gen: newGen, Writer: d.fs.NodeID}, successful)
 	for _, bName := range successful {
 		if err := vfs.RemoveSidecar(ctx, d.fs.Backends[bName], oldPath); err != nil {
-			logrus.Debugf("Failed to remove old sidecar for %s on %s: %v", oldPath, bName, err)
+			d.fs.pathLogger(oldPath).Debugf("Failed to remove old sidecar on %s: %v", bName, err)
 		}
 	}
 
@@ -869,12 +895,12 @@ func (d *Dir) Rename(ctx context.Context, req *fuse.RenameRequest, newDir fs.Nod
 			oldMetaDir := vfs.ReservedDir + "/meta/" + oldPath
 			newMetaDir := vfs.ReservedDir + "/meta/" + newPath
 			if err := b.Rename(ctx, oldMetaDir, newMetaDir); err != nil && !os.IsNotExist(err) && !errors.Is(err, os.ErrNotExist) {
-				logrus.Debugf("Failed to rename sidecar directory %s to %s on %s: %v", oldMetaDir, newMetaDir, bName, err)
+				d.fs.pathLogger(oldPath).Debugf("Failed to rename sidecar directory %s to %s on %s: %v", oldMetaDir, newMetaDir, bName, err)
 			}
 			oldTombDir := vfs.ReservedDir + "/tombstones/" + oldPath
 			newTombDir := vfs.ReservedDir + "/tombstones/" + newPath
 			if err := b.Rename(ctx, oldTombDir, newTombDir); err != nil && !os.IsNotExist(err) && !errors.Is(err, os.ErrNotExist) {
-				logrus.Debugf("Failed to rename tombstone directory %s to %s on %s: %v", oldTombDir, newTombDir, bName, err)
+				d.fs.pathLogger(oldPath).Debugf("Failed to rename tombstone directory %s to %s on %s: %v", oldTombDir, newTombDir, bName, err)
 			}
 		}
 	}
@@ -1071,7 +1097,7 @@ func (f *File) Setattr(ctx context.Context, req *fuse.SetattrRequest, resp *fuse
 			mu.Lock()
 			defer mu.Unlock()
 			if err != nil {
-				logrus.Warnf("Truncate failed on backend %s: %v", bName, err)
+				f.fs.pathLogger(path).Warnf("Truncate failed on backend %s: %v", bName, err)
 				failures = append(failures, bName)
 				lastErr = err
 			} else {
@@ -1083,8 +1109,10 @@ func (f *File) Setattr(ctx context.Context, req *fuse.SetattrRequest, resp *fuse
 	_ = g.Wait()
 
 	if successes < f.fs.WriteQuorum {
+		f.fs.pathLogger(path).Errorf("Failed to truncate: write quorum not met (%d/%d, last error: %v)", successes, f.fs.WriteQuorum, lastErr)
 		return fmt.Errorf("could not reach write quorum during truncate: %d/%d (last error: %v)", successes, f.fs.WriteQuorum, lastErr)
 	}
+	f.fs.pathLogger(path).Debugf("Truncated file to size %d (quorum %d met)", size, successes)
 
 	f.node.Mu.Lock()
 	if len(failures) > 0 {
@@ -1212,11 +1240,13 @@ func (f *File) Open(ctx context.Context, req *fuse.OpenRequest, resp *fuse.OpenR
 				}
 			}
 
+			f.fs.pathLogger(path).Infof("File is degraded (%d/%d backends); starting inline heal from %s to target backends: %v", len(backends), f.fs.ReplicationFactor, sourceBackendName, targetBackends)
 			// For each target backend:
 			for _, targetName := range targetBackends {
 				sourceBackend := f.fs.Backends[sourceBackendName]
 				srcFile, err := sourceBackend.OpenFile(ctx, path, os.O_RDONLY, 0)
 				if err != nil {
+					f.fs.pathLogger(path).Errorf("Inline heal: failed to open source file on %s: %v", sourceBackendName, err)
 					_ = h.Release(ctx, nil)
 					return nil, err
 				}
@@ -1228,6 +1258,7 @@ func (f *File) Open(ctx context.Context, req *fuse.OpenRequest, resp *fuse.OpenR
 				targetBackend := f.fs.Backends[targetName]
 				dstFile, err := targetBackend.OpenFile(ctx, path, os.O_CREATE|os.O_TRUNC|os.O_RDWR, mode)
 				if err != nil {
+					f.fs.pathLogger(path).Errorf("Inline heal: failed to create target file on %s: %v", targetName, err)
 					_ = srcFile.Close()
 					_ = h.Release(ctx, nil)
 					return nil, err
@@ -1258,7 +1289,7 @@ func (f *File) Open(ctx context.Context, req *fuse.OpenRequest, resp *fuse.OpenR
 				f.node.Mu.RUnlock()
 				mtime := sourceModTime(ctx, sourceBackend, path, cachedModTime)
 				if err := targetBackend.Chtimes(ctx, path, mtime, mtime); err != nil {
-					logrus.Warnf("Failed to preserve mtime for %s on %s: %v", path, targetName, err)
+					f.fs.pathLogger(path).Warnf("Failed to preserve mtime on %s: %v", targetName, err)
 				}
 
 				// Update the cache node's metadata: acquire f.node.Mu.Lock(), append the target backend name to f.node.Meta.Backends if not already present, and unlock.
@@ -1275,9 +1306,11 @@ func (f *File) Open(ctx context.Context, req *fuse.OpenRequest, resp *fuse.OpenR
 				}
 				f.node.Mu.Unlock()
 
+				f.fs.pathLogger(path).Infof("Inline heal: successfully replicated to backend %s", targetName)
 				// Update the local backends slice variable to include the new backend so that it is opened for writing by the subsequent loop.
 				backends = append(backends, targetName)
 			}
+			f.fs.pathLogger(path).Info("Inline heal completed")
 		}
 
 		// Generation bump: exactly once per write session, under the path and
@@ -1321,12 +1354,12 @@ func (f *File) Open(ctx context.Context, req *fuse.OpenRequest, resp *fuse.OpenR
 		for _, bName := range candidates {
 			b, ok := f.fs.Backends[bName]
 			if !ok {
-				logrus.Warnf("Backend %s listed for %s is not configured", bName, path)
+				f.fs.pathLogger(path).Warnf("Backend %s listed is not configured", bName)
 				continue
 			}
 			sf, err := b.OpenFile(ctx, path, os.O_RDONLY, 0)
 			if err != nil {
-				logrus.Warnf("Read-only open of %s failed on backend %s: %v", path, bName, err)
+				f.fs.pathLogger(path).Warnf("Read-only open failed on backend %s: %v", bName, err)
 				lastErr = err
 				continue
 			}
@@ -1335,16 +1368,19 @@ func (f *File) Open(ctx context.Context, req *fuse.OpenRequest, resp *fuse.OpenR
 			break
 		}
 		if !opened {
+			f.fs.pathLogger(path).Errorf("Failed to open read-only file on any backend")
 			if lastErr == nil {
 				return nil, syscall.EIO
 			}
 			return nil, lastErr
 		}
+		f.fs.pathLogger(path).Debugf("Opened read-only file handle on backends: %v", candidates)
 	} else {
 		for _, bName := range backends {
 			b := f.fs.Backends[bName]
 			sf, err := b.OpenFile(ctx, path, int(req.Flags), 0)
 			if err != nil {
+				f.fs.pathLogger(path).Errorf("Failed to open write file on backend %s: %v", bName, err)
 				_ = h.Release(ctx, nil)
 				return nil, err
 			}
@@ -1363,6 +1399,7 @@ func (f *File) Open(ctx context.Context, req *fuse.OpenRequest, resp *fuse.OpenR
 		// Only write handles matter for node-level Fsync; keep the registry
 		// small by not tracking read-only handles.
 		f.fs.handles.register(f.node, h)
+		f.fs.pathLogger(path).Debugf("Opened write file handle on backends: %v", backends)
 	}
 
 	h.file = f
@@ -1405,7 +1442,7 @@ func (h *FileHandle) Read(ctx context.Context, req *fuse.ReadRequest, resp *fuse
 
 		n, err := sf.ReadAt(ctx, buf, req.Offset)
 		if err != nil && err != io.EOF {
-			logrus.Warnf("Read failed on backend %s: %v. Retrying...", currentBackendName, err)
+			h.file.fs.pathLogger(h.file.node.Meta.Path).Warnf("Read failed on backend %s: %v. Retrying...", currentBackendName, err)
 
 			tried[currentBackendName] = true
 
@@ -1483,7 +1520,7 @@ func (h *FileHandle) Write(ctx context.Context, req *fuse.WriteRequest, resp *fu
 			mu.Lock()
 			defer mu.Unlock()
 			if err != nil {
-				logrus.Warnf("Write failed on backend %s: %v", name, err)
+				h.file.fs.pathLogger(h.file.node.Meta.Path).Warnf("Write failed on backend %s: %v", name, err)
 				failures = append(failures, name)
 				lastErr = err
 			} else {
@@ -1604,7 +1641,7 @@ func (h *FileHandle) syncBackends(ctx context.Context) error {
 			mu.Lock()
 			defer mu.Unlock()
 			if err != nil {
-				logrus.Warnf("Sync failed on backend %s: %v", name, err)
+				h.file.fs.pathLogger(h.file.node.Meta.Path).Warnf("Sync failed on backend %s: %v", name, err)
 				failures = append(failures, name)
 				lastErr = err
 			} else {
@@ -1616,6 +1653,7 @@ func (h *FileHandle) syncBackends(ctx context.Context) error {
 	_ = g.Wait()
 
 	if successes < h.file.fs.WriteQuorum {
+		h.file.fs.pathLogger(h.file.node.Meta.Path).Errorf("Failed to sync: write quorum not met (%d/%d, last error: %v)", successes, h.file.fs.WriteQuorum, lastErr)
 		return fmt.Errorf("could not reach write quorum during sync: %d/%d (last error: %v)", successes, h.file.fs.WriteQuorum, lastErr)
 	}
 
@@ -1643,6 +1681,9 @@ func (h *FileHandle) Release(ctx context.Context, req *fuse.ReleaseRequest) erro
 	h.backends = nil
 	if h.lock != nil {
 		h.lock.Release()
+	}
+	if h.file != nil {
+		h.file.fs.pathLogger(h.file.node.Meta.Path).Debug("Released file handle")
 	}
 	return nil
 }

@@ -90,6 +90,7 @@ func (l *DistributedLock) Acquire(ctx context.Context) error {
 	for attempt := 1; attempt <= acquireMaxAttempts; attempt++ {
 		lastErr = l.tryAcquire(ctx)
 		if lastErr == nil {
+			l.log.Infof("Successfully acquired distributed lock (fencing token: %s)", l.FencingToken)
 			return nil
 		}
 		if attempt == acquireMaxAttempts {
@@ -194,6 +195,7 @@ func (l *DistributedLock) tryAcquire(ctx context.Context) error {
 }
 
 func (l *DistributedLock) Release() {
+	l.log.Info("Releasing distributed lock")
 	l.mu.Lock()
 	l.isValid = false
 	l.mu.Unlock()
@@ -208,6 +210,7 @@ func (l *DistributedLock) startRenewal(peers []string) {
 	l.cancelRenewal = cancel
 	l.renewalWg.Add(1)
 
+	l.log.Debugf("Starting background lock renewal for peers: %v", peers)
 	go func() {
 		defer l.renewalWg.Done()
 		ticker := time.NewTicker(l.Manager.LeaseTTL / 2)
@@ -280,6 +283,7 @@ func (l *DistributedLock) renew(peers []string) bool {
 		l.mu.Lock()
 		l.expiresAt = time.Now().Add(l.Manager.LeaseTTL)
 		l.mu.Unlock()
+		l.log.Debugf("Successfully renewed distributed lock lease (%d/%d)", successes, quorum)
 	}
 	return ok
 }

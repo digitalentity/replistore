@@ -13,6 +13,7 @@ type HealthMonitor struct {
 	backends map[string]Backend
 	status   map[string]bool
 	mu       sync.RWMutex
+	log      *logrus.Entry
 }
 
 func NewHealthMonitor(backends map[string]Backend) *HealthMonitor {
@@ -24,6 +25,7 @@ func NewHealthMonitor(backends map[string]Backend) *HealthMonitor {
 		backends: backends,
 		status:   status,
 		mu:       sync.RWMutex{},
+		log:      logrus.WithField("component", "health-monitor"),
 	}
 }
 
@@ -57,12 +59,12 @@ func (m *HealthMonitor) checkAll(ctx context.Context) {
 			m.mu.Lock()
 			if err != nil {
 				if m.status[name] {
-					logrus.Warnf("Backend %s is DOWN: %v", name, err)
+					m.log.Warnf("Backend %s is DOWN: %v", name, err)
 				}
 				m.status[name] = false
 			} else {
 				if !m.status[name] {
-					logrus.Infof("Backend %s is UP", name)
+					m.log.Infof("Backend %s is UP", name)
 				}
 				m.status[name] = true
 			}
