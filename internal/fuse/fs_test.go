@@ -3,6 +3,7 @@ package fuse
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -297,7 +298,7 @@ func TestFile_Read_Failover(t *testing.T) {
 
 	fileHandle := h.(*FileHandle)
 
-	mockFile1.On("ReadAt", mock.Anything, mock.Anything, int64(0)).Return(0, fmt.Errorf("connection lost"))
+	mockFile1.On("ReadAt", mock.Anything, mock.Anything, int64(0)).Return(0, errors.New("connection lost"))
 	mockFile1.On("Close").Return(nil)
 
 	b2.On("OpenFile", mock.Anything, "failover.txt", os.O_RDONLY, mock.Anything).Return(mockFile2, nil)
@@ -337,7 +338,7 @@ func TestFile_Open_ReadOnly_Failover(t *testing.T) {
 
 	// The FirstSelector deterministically picks b1; it is down, so Open
 	// must fail over to b2.
-	b1.On("OpenFile", mock.Anything, "ro_failover.txt", os.O_RDONLY, mock.Anything).Return(nil, fmt.Errorf("connection refused"))
+	b1.On("OpenFile", mock.Anything, "ro_failover.txt", os.O_RDONLY, mock.Anything).Return(nil, errors.New("connection refused"))
 	b2.On("OpenFile", mock.Anything, "ro_failover.txt", os.O_RDONLY, mock.Anything).Return(mockFile2, nil)
 
 	h, err := file.Open(context.Background(), &fuse.OpenRequest{Flags: fuse.OpenReadOnly}, &fuse.OpenResponse{})
@@ -370,7 +371,7 @@ func TestFile_Open_ReadOnly_AllBackendsFail(t *testing.T) {
 	node, _ := dir.Lookup(context.Background(), "ro_fail.txt")
 	file := node.(*File)
 
-	openErr := fmt.Errorf("connection refused")
+	openErr := errors.New("connection refused")
 	b1.On("OpenFile", mock.Anything, "ro_fail.txt", os.O_RDONLY, mock.Anything).Return(nil, openErr)
 	b2.On("OpenFile", mock.Anything, "ro_fail.txt", os.O_RDONLY, mock.Anything).Return(nil, openErr)
 
@@ -416,7 +417,7 @@ func TestFile_Write_Quorum(t *testing.T) {
 
 	data := []byte("hello")
 	mockFile1.On("WriteAt", mock.Anything, data, int64(0)).Return(5, nil)
-	mockFile2.On("WriteAt", mock.Anything, data, int64(0)).Return(0, fmt.Errorf("disk full"))
+	mockFile2.On("WriteAt", mock.Anything, data, int64(0)).Return(0, errors.New("disk full"))
 	mockFile2.On("Close").Return(nil)
 
 	// The stale partial replica must be removed from the failed backend
@@ -483,7 +484,7 @@ func TestFile_Fsync_WithWriteHandle(t *testing.T) {
 	assert.NotNil(t, h)
 
 	mockFile1.On("Sync", mock.Anything).Return(nil)
-	mockFile2.On("Sync", mock.Anything).Return(fmt.Errorf("sync error"))
+	mockFile2.On("Sync", mock.Anything).Return(errors.New("sync error"))
 	mockFile2.On("Close").Return(nil)
 
 	removed := make(chan struct{})
@@ -566,7 +567,7 @@ func TestLookup_AllBackendsUnavailable(t *testing.T) {
 	lazyDir, _ := dir.Lookup(context.Background(), "lazy")
 
 	// Backend errors transiently — we must not report ENOENT
-	b1.On("Stat", mock.Anything, "lazy/file.txt").Return(backend.FileInfo{}, fmt.Errorf("conn reset"))
+	b1.On("Stat", mock.Anything, "lazy/file.txt").Return(backend.FileInfo{}, errors.New("conn reset"))
 
 	node, err := (lazyDir.(*Dir)).Lookup(context.Background(), "file.txt")
 	assert.Equal(t, syscall.EIO, err)
@@ -619,7 +620,7 @@ func TestMkdir_Quorum(t *testing.T) {
 
 	b1.On("Mkdir", mock.Anything, "new-dir", mock.Anything).Return(nil)
 	b1.On("Remove", mock.Anything, "new-dir").Return(nil) // Rollback
-	b2.On("Mkdir", mock.Anything, "new-dir", mock.Anything).Return(fmt.Errorf("failed"))
+	b2.On("Mkdir", mock.Anything, "new-dir", mock.Anything).Return(errors.New("failed"))
 
 	req := &fuse.MkdirRequest{Name: "new-dir"}
 	_, err := dir.Mkdir(context.Background(), req)
@@ -729,7 +730,7 @@ func TestRemove_Quorum(t *testing.T) {
 	expectTombstoneWrite(b1, "remove.txt")
 	expectTombstoneWrite(b2, "remove.txt")
 	b1.On("Remove", mock.Anything, "remove.txt").Return(nil)
-	b2.On("Remove", mock.Anything, "remove.txt").Return(fmt.Errorf("not found"))
+	b2.On("Remove", mock.Anything, "remove.txt").Return(errors.New("not found"))
 
 	req := &fuse.RemoveRequest{Name: "remove.txt"}
 	err := dir.Remove(context.Background(), req)
@@ -894,7 +895,7 @@ func TestFile_Write_QuorumFailure(t *testing.T) {
 
 	data := []byte("hello")
 	mockFile1.On("WriteAt", mock.Anything, data, int64(0)).Return(5, nil)
-	mockFile2.On("WriteAt", mock.Anything, data, int64(0)).Return(0, fmt.Errorf("disk full"))
+	mockFile2.On("WriteAt", mock.Anything, data, int64(0)).Return(0, errors.New("disk full"))
 	mockFile2.On("Close").Return(nil)
 
 	removed := make(chan struct{})
@@ -942,7 +943,7 @@ func TestDir_Create_QuorumFailure(t *testing.T) {
 	dir := root.(*Dir)
 
 	b1.On("OpenFile", mock.Anything, "new_fail.txt", os.O_CREATE|os.O_EXCL|os.O_RDWR, os.FileMode(0644)).Return(mockFile1, nil)
-	b2.On("OpenFile", mock.Anything, "new_fail.txt", os.O_CREATE|os.O_EXCL|os.O_RDWR, os.FileMode(0644)).Return(nil, fmt.Errorf("permission denied"))
+	b2.On("OpenFile", mock.Anything, "new_fail.txt", os.O_CREATE|os.O_EXCL|os.O_RDWR, os.FileMode(0644)).Return(nil, errors.New("permission denied"))
 
 	mockFile1.On("Close").Return(nil)
 	b1.On("Remove", mock.Anything, "new_fail.txt").Return(nil)
@@ -1280,7 +1281,7 @@ func TestFile_Setattr_Truncate_QuorumFailure(t *testing.T) {
 	file := node.(*File)
 
 	b1.On("Truncate", mock.Anything, "trunc_fail.txt", int64(0)).Return(nil)
-	b2.On("Truncate", mock.Anything, "trunc_fail.txt", int64(0)).Return(fmt.Errorf("disk error"))
+	b2.On("Truncate", mock.Anything, "trunc_fail.txt", int64(0)).Return(errors.New("disk error"))
 
 	req := &fuse.SetattrRequest{Valid: fuse.SetattrSize, Size: 0}
 	resp := &fuse.SetattrResponse{}
@@ -1319,7 +1320,7 @@ func TestFile_Setattr_Truncate_PartialFailureEvictsBackend(t *testing.T) {
 	file := node.(*File)
 
 	b1.On("Truncate", mock.Anything, "trunc_part.txt", int64(5)).Return(nil)
-	b2.On("Truncate", mock.Anything, "trunc_part.txt", int64(5)).Return(fmt.Errorf("disk error"))
+	b2.On("Truncate", mock.Anything, "trunc_part.txt", int64(5)).Return(errors.New("disk error"))
 	// The generation bump only goes to the surviving backend.
 	expectSidecarWrite(b1, "trunc_part.txt")
 
@@ -1597,7 +1598,7 @@ func TestRemove_TombstoneQuorumFailureKeepsData(t *testing.T) {
 
 	// b1's tombstone write succeeds, b2's fails at the mkdir: 1/2 < quorum.
 	expectTombstoneWrite(b1, "safe.txt")
-	b2.On("MkdirAll", mock.Anything, gopath.Dir(vfs.TombstonePath("safe.txt")), os.FileMode(0755)).Return(fmt.Errorf("backend down"))
+	b2.On("MkdirAll", mock.Anything, gopath.Dir(vfs.TombstonePath("safe.txt")), os.FileMode(0755)).Return(errors.New("backend down"))
 
 	err := dir.Remove(context.Background(), &fuse.RemoveRequest{Name: "safe.txt"})
 	assert.Error(t, err)

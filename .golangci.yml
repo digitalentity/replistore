@@ -57,7 +57,7 @@ linters:
     - recvcheck
     - tagalign
     # - testifylint
-    - testpackage
+    # - testpackage
     - thelper
     - unused
     - unconvert

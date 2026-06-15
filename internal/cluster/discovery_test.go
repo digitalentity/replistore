@@ -32,7 +32,7 @@ func newEntryFile(t *testing.T, id, addr string, seq int64) *bmock.MockFile {
 // expectEntryListing makes the backend list and serve the given peer entries.
 func expectEntryListing(t *testing.T, b *bmock.MockBackend, entries ...peerEntry) {
 	t.Helper()
-	var infos []backend.FileInfo
+	infos := make([]backend.FileInfo, 0, len(entries))
 	for _, e := range entries {
 		infos = append(infos, backend.FileInfo{Name: e.ID + ".json", Size: 64})
 		b.On("OpenFile", mock.Anything, peersDir+"/"+e.ID+".json", os.O_RDONLY, os.FileMode(0)).
@@ -45,9 +45,9 @@ func TestDiscovery_StartWritesEntryToAllBackends(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	var backends []backend.Backend
-	var files []*bmock.MockFile
-	var mocks []*bmock.MockBackend
+	backends := make([]backend.Backend, 0, 2)
+	files := make([]*bmock.MockFile, 0, 2)
+	mocks := make([]*bmock.MockBackend, 0, 2)
 	for _, name := range []string{"b1", "b2"} {
 		f := &bmock.MockFile{}
 		f.On("WriteAt", mock.Anything, mock.Anything, int64(0)).Return(64, nil)

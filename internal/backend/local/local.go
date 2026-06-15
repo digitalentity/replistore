@@ -1,7 +1,9 @@
+// Package local implements a local directory backend for replica storage.
 package local
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -33,7 +35,7 @@ func init() {
 	backend.Register("local", func(name string, options map[string]interface{}) (backend.Backend, error) {
 		path, _ := options["path"].(string)
 		if path == "" {
-			return nil, fmt.Errorf("local backend requires 'path' option")
+			return nil, errors.New("local backend requires 'path' option")
 		}
 		speed := 10
 		if speedVal, ok := options["speed"].(float64); ok {

@@ -1,3 +1,4 @@
+// Package backend defines the interfaces and shared types for replica backends.
 package backend
 
 import (

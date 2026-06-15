@@ -1,6 +1,8 @@
+// Package config handles loading and validation of the replistore configuration.
 package config
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -102,17 +104,17 @@ func LoadConfig(path string) (*Config, error) {
 
 	if cfg.ListenAddr != "" {
 		if cfg.ExpectedClusterSize < 2 {
-			return nil, fmt.Errorf("expected_cluster_size must be >= 2 when listen_addr is set: distributed locking requires a known cluster size for quorum")
+			return nil, errors.New("expected_cluster_size must be >= 2 when listen_addr is set: distributed locking requires a known cluster size for quorum")
 		}
 		if cfg.AdvertiseAddr == "" {
-			return nil, fmt.Errorf("advertise_addr must be set when listen_addr is set: peers need a reachable host:port address for this node")
+			return nil, errors.New("advertise_addr must be set when listen_addr is set: peers need a reachable host:port address for this node")
 		}
 		host, _, err := net.SplitHostPort(cfg.AdvertiseAddr)
 		if err != nil || host == "" {
 			return nil, fmt.Errorf("advertise_addr %q is not a valid host:port address", cfg.AdvertiseAddr)
 		}
 		if cfg.ClusterSecret == "" {
-			return nil, fmt.Errorf("cluster_secret must be set when listen_addr is set: lock datagrams between nodes are authenticated with HMAC-SHA256 using this shared secret")
+			return nil, errors.New("cluster_secret must be set when listen_addr is set: lock datagrams between nodes are authenticated with HMAC-SHA256 using this shared secret")
 		}
 		if len(cfg.ClusterSecret) < 16 {
 			return nil, fmt.Errorf("cluster_secret must be at least 16 characters long (got %d)", len(cfg.ClusterSecret))

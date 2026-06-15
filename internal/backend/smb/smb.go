@@ -1,3 +1,4 @@
+// Package smb implements an SMB2/3 share backend for replica storage.
 package smb
 
 import (
@@ -175,7 +176,7 @@ func (b *SMBBackend) getShare() (*smb2.Share, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if b.share == nil {
-		return nil, fmt.Errorf("not connected")
+		return nil, errors.New("not connected")
 	}
 	return b.share, nil
 }
@@ -215,7 +216,7 @@ func isConnectionError(err error) bool {
 	return false
 }
 
-func (b *SMBBackend) execute(ctx context.Context, op func() error) error {
+func (b *SMBBackend) execute(op func() error) error {
 	if err := b.ensureConnected(); err != nil {
 		return err
 	}
@@ -240,7 +241,7 @@ func toSMBPath(path string) string {
 }
 
 func (b *SMBBackend) Ping(ctx context.Context) error {
-	return b.execute(ctx, func() error {
+	return b.execute(func() error {
 		share, err := b.getShare()
 		if err != nil {
 			return err
@@ -255,7 +256,7 @@ func (b *SMBBackend) Ping(ctx context.Context) error {
 
 func (b *SMBBackend) ReadDir(ctx context.Context, path string) ([]backend.FileInfo, error) {
 	var results []backend.FileInfo
-	err := b.execute(ctx, func() error {
+	err := b.execute(func() error {
 		share, err := b.getShare()
 		if err != nil {
 			return err
@@ -285,7 +286,7 @@ func (b *SMBBackend) ReadDir(ctx context.Context, path string) ([]backend.FileIn
 
 func (b *SMBBackend) Stat(ctx context.Context, path string) (backend.FileInfo, error) {
 	var fi backend.FileInfo
-	err := b.execute(ctx, func() error {
+	err := b.execute(func() error {
 		share, err := b.getShare()
 		if err != nil {
 			return err
@@ -312,7 +313,7 @@ func (b *SMBBackend) Stat(ctx context.Context, path string) (backend.FileInfo, e
 
 func (b *SMBBackend) OpenFile(ctx context.Context, path string, flag int, perm os.FileMode) (backend.File, error) {
 	var file backend.File
-	err := b.execute(ctx, func() error {
+	err := b.execute(func() error {
 		share, err := b.getShare()
 		if err != nil {
 			return err
@@ -332,7 +333,7 @@ func (b *SMBBackend) OpenFile(ctx context.Context, path string, flag int, perm o
 }
 
 func (b *SMBBackend) Mkdir(ctx context.Context, path string, perm os.FileMode) error {
-	return b.execute(ctx, func() error {
+	return b.execute(func() error {
 		share, err := b.getShare()
 		if err != nil {
 			return err
@@ -349,7 +350,7 @@ func (b *SMBBackend) MkdirAll(ctx context.Context, path string, perm os.FileMode
 	if path == "" || path == "." {
 		return nil
 	}
-	return b.execute(ctx, func() error {
+	return b.execute(func() error {
 		share, err := b.getShare()
 		if err != nil {
 			return err
@@ -363,7 +364,7 @@ func (b *SMBBackend) MkdirAll(ctx context.Context, path string, perm os.FileMode
 }
 
 func (b *SMBBackend) Remove(ctx context.Context, path string) error {
-	return b.execute(ctx, func() error {
+	return b.execute(func() error {
 		share, err := b.getShare()
 		if err != nil {
 			return err
@@ -377,7 +378,7 @@ func (b *SMBBackend) Remove(ctx context.Context, path string) error {
 }
 
 func (b *SMBBackend) Rename(ctx context.Context, oldPath, newPath string) error {
-	return b.execute(ctx, func() error {
+	return b.execute(func() error {
 		share, err := b.getShare()
 		if err != nil {
 			return err
@@ -392,7 +393,7 @@ func (b *SMBBackend) Rename(ctx context.Context, oldPath, newPath string) error 
 }
 
 func (b *SMBBackend) Chtimes(ctx context.Context, path string, atime, mtime time.Time) error {
-	return b.execute(ctx, func() error {
+	return b.execute(func() error {
 		share, err := b.getShare()
 		if err != nil {
 			return err
@@ -406,7 +407,7 @@ func (b *SMBBackend) Chtimes(ctx context.Context, path string, atime, mtime time
 }
 
 func (b *SMBBackend) Truncate(ctx context.Context, path string, size int64) error {
-	return b.execute(ctx, func() error {
+	return b.execute(func() error {
 		share, err := b.getShare()
 		if err != nil {
 			return err
@@ -420,7 +421,7 @@ func (b *SMBBackend) Truncate(ctx context.Context, path string, size int64) erro
 }
 
 func (b *SMBBackend) Walk(ctx context.Context, path string, fn func(path string, info backend.FileInfo) error) error {
-	return b.execute(ctx, func() error {
+	return b.execute(func() error {
 		share, err := b.getShare()
 		if err != nil {
 			return err

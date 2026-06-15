@@ -4,6 +4,7 @@ import (
 	"context"
 	cryptorand "crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"math/rand"
 	"sync"
@@ -200,7 +201,7 @@ func (l *DistributedLock) tryAcquire(ctx context.Context) error {
 	// Rollback if quorum not reached
 	l.log.Warnf("Failed to reach quorum (%d/%d), rolling back", successes, quorum)
 	l.rollback(grantedPeers, fencingToken)
-	return fmt.Errorf("failed to acquire distributed lock")
+	return errors.New("failed to acquire distributed lock")
 }
 
 func (l *DistributedLock) Release() {

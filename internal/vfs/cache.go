@@ -1,3 +1,4 @@
+// Package vfs implements the virtual filesystem cache, replication logic, and selector components.
 package vfs
 
 import (

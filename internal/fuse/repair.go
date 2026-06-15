@@ -540,10 +540,10 @@ type offsetReader struct {
 	offset int64
 }
 
-func (r *offsetReader) Read(p []byte) (n int, err error) {
-	n, err = r.f.ReadAt(r.ctx, p, r.offset)
+func (r *offsetReader) Read(p []byte) (int, error) {
+	n, err := r.f.ReadAt(r.ctx, p, r.offset)
 	r.offset += int64(n)
-	return
+	return n, err
 }
 
 type offsetWriter struct {
@@ -552,10 +552,10 @@ type offsetWriter struct {
 	offset int64
 }
 
-func (w *offsetWriter) Write(p []byte) (n int, err error) {
-	n, err = w.f.WriteAt(w.ctx, p, w.offset)
+func (w *offsetWriter) Write(p []byte) (int, error) {
+	n, err := w.f.WriteAt(w.ctx, p, w.offset)
 	w.offset += int64(n)
-	return
+	return n, err
 }
 
 func removeAll(ctx context.Context, b backend.Backend, path string) error {

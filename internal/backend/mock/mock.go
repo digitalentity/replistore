@@ -1,3 +1,4 @@
+// Package mock provides mock implementations of the backend interface for testing.
 package mock
 
 import (

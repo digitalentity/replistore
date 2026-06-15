@@ -16,7 +16,7 @@ backends:
   - name: "b1"
     address: "1.2.3.4"
 `
-	tmpFile, err := os.CreateTemp("", "config.yaml")
+	tmpFile, err := os.CreateTemp(t.TempDir(), "config.yaml")
 	assert.NoError(t, err)
 	defer os.Remove(tmpFile.Name())
 
@@ -36,7 +36,7 @@ func TestLoadConfig_Defaults(t *testing.T) {
 	content := `
 mount_point: "/tmp/test"
 `
-	tmpFile, err := os.CreateTemp("", "config.yaml")
+	tmpFile, err := os.CreateTemp(t.TempDir(), "config.yaml")
 	assert.NoError(t, err)
 	defer os.Remove(tmpFile.Name())
 
@@ -52,7 +52,7 @@ mount_point: "/tmp/test"
 func TestLoadConfig_ExpectedClusterSize(t *testing.T) {
 	writeConfig := func(t *testing.T, content string) string {
 		t.Helper()
-		tmpFile, err := os.CreateTemp("", "config.yaml")
+		tmpFile, err := os.CreateTemp(t.TempDir(), "config.yaml")
 		assert.NoError(t, err)
 		t.Cleanup(func() { os.Remove(tmpFile.Name()) })
 
@@ -98,7 +98,7 @@ mount_point: "/tmp/test"
 func TestLoadConfig_AdvertiseAddr(t *testing.T) {
 	writeConfig := func(t *testing.T, content string) string {
 		t.Helper()
-		tmpFile, err := os.CreateTemp("", "config.yaml")
+		tmpFile, err := os.CreateTemp(t.TempDir(), "config.yaml")
 		assert.NoError(t, err)
 		t.Cleanup(func() { os.Remove(tmpFile.Name()) })
 
@@ -168,7 +168,7 @@ mount_point: "/tmp/test"
 func TestLoadConfig_ClusterSecret(t *testing.T) {
 	writeConfig := func(t *testing.T, content string) string {
 		t.Helper()
-		tmpFile, err := os.CreateTemp("", "config.yaml")
+		tmpFile, err := os.CreateTemp(t.TempDir(), "config.yaml")
 		assert.NoError(t, err)
 		t.Cleanup(func() { os.Remove(tmpFile.Name()) })
 

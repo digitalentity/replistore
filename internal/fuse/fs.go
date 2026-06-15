@@ -1,3 +1,4 @@
+// Package fuse implements the FUSE filesystem layer translating OS syscalls to VFS operations.
 package fuse
 
 import (
@@ -68,7 +69,7 @@ func (f *RepliFS) Root() (fs.Node, error) {
 func (f *RepliFS) acquireLock(ctx context.Context, path string) (*vfs.DistributedLock, error) {
 	if f.LockManager == nil || f.Discovery == nil {
 		f.pathLogger(path).Debug("Distributed locking is disabled or not configured")
-		return nil, nil // Locking disabled or not configured
+		return nil, nil //nolint:nilnil // Locking disabled or not configured
 	}
 	lock := vfs.NewDistributedLock(path, f.LockManager, f.Discovery)
 	if err := lock.Acquire(ctx); err != nil {

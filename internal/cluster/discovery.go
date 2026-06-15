@@ -1,3 +1,4 @@
+// Package cluster handles mDNS discovery, clustering, and distributed RPC services.
 package cluster
 
 import (
