@@ -1,4 +1,4 @@
-package backend
+package local
 
 import (
 	"context"
@@ -9,6 +9,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/digitalentity/replistore/internal/backend"
 )
 
 type LocalBackend struct {
@@ -28,7 +30,7 @@ func NewLocalBackend(name, path string, speed int, tags []string) *LocalBackend 
 }
 
 func init() {
-	Register("local", func(name string, options map[string]interface{}) (Backend, error) {
+	backend.Register("local", func(name string, options map[string]interface{}) (backend.Backend, error) {
 		path, _ := options["path"].(string)
 		if path == "" {
 			return nil, fmt.Errorf("local backend requires 'path' option")
@@ -109,7 +111,7 @@ func (b *LocalBackend) resolve(subPath string) string {
 	return filepath.Join(b.Path, cleaned)
 }
 
-func (b *LocalBackend) ReadDir(ctx context.Context, path string) ([]FileInfo, error) {
+func (b *LocalBackend) ReadDir(ctx context.Context, path string) ([]backend.FileInfo, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -118,13 +120,13 @@ func (b *LocalBackend) ReadDir(ctx context.Context, path string) ([]FileInfo, er
 	if err != nil {
 		return nil, err
 	}
-	results := []FileInfo{}
+	results := []backend.FileInfo{}
 	for _, e := range entries {
 		info, err := e.Info()
 		if err != nil {
 			return nil, err
 		}
-		results = append(results, FileInfo{
+		results = append(results, backend.FileInfo{
 			Name:    info.Name(),
 			Size:    info.Size(),
 			Mode:    info.Mode(),
@@ -135,16 +137,16 @@ func (b *LocalBackend) ReadDir(ctx context.Context, path string) ([]FileInfo, er
 	return results, nil
 }
 
-func (b *LocalBackend) Stat(ctx context.Context, path string) (FileInfo, error) {
+func (b *LocalBackend) Stat(ctx context.Context, path string) (backend.FileInfo, error) {
 	if err := ctx.Err(); err != nil {
-		return FileInfo{}, err
+		return backend.FileInfo{}, err
 	}
 	realPath := b.resolve(path)
 	info, err := os.Stat(realPath)
 	if err != nil {
-		return FileInfo{}, err
+		return backend.FileInfo{}, err
 	}
-	return FileInfo{
+	return backend.FileInfo{
 		Name:    info.Name(),
 		Size:    info.Size(),
 		Mode:    info.Mode(),
@@ -153,7 +155,7 @@ func (b *LocalBackend) Stat(ctx context.Context, path string) (FileInfo, error) 
 	}, nil
 }
 
-func (b *LocalBackend) Walk(ctx context.Context, path string, fn func(path string, info FileInfo) error) error {
+func (b *LocalBackend) Walk(ctx context.Context, path string, fn func(path string, info backend.FileInfo) error) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -180,7 +182,7 @@ func (b *LocalBackend) Walk(ctx context.Context, path string, fn func(path strin
 			return err
 		}
 
-		return fn(rel, FileInfo{
+		return fn(rel, backend.FileInfo{
 			Name:    info.Name(),
 			Size:    info.Size(),
 			Mode:    info.Mode(),
@@ -190,7 +192,7 @@ func (b *LocalBackend) Walk(ctx context.Context, path string, fn func(path strin
 	})
 }
 
-func (b *LocalBackend) OpenFile(ctx context.Context, path string, flag int, perm os.FileMode) (File, error) {
+func (b *LocalBackend) OpenFile(ctx context.Context, path string, flag int, perm os.FileMode) (backend.File, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}

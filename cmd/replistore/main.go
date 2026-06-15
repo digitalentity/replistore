@@ -12,6 +12,7 @@ import (
 	"bazil.org/fuse"
 	"bazil.org/fuse/fs"
 	"github.com/digitalentity/replistore/internal/backend"
+	_ "github.com/digitalentity/replistore/internal/backend/local"
 	_ "github.com/digitalentity/replistore/internal/backend/smb"
 	"github.com/digitalentity/replistore/internal/cluster"
 	"github.com/digitalentity/replistore/internal/config"

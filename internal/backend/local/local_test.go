@@ -1,4 +1,4 @@
-package backend
+package local
 
 import (
 	"context"
@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/digitalentity/replistore/internal/backend"
 )
 
 func TestLocalBackend_Lifecycle(t *testing.T) {
@@ -17,7 +19,7 @@ func TestLocalBackend_Lifecycle(t *testing.T) {
 	opts := map[string]interface{}{
 		"path": tmpDir,
 	}
-	b, err := Create("local", "test-local", opts)
+	b, err := backend.Create("local", "test-local", opts)
 	if err != nil {
 		t.Fatalf("failed to create local backend: %v", err)
 	}
@@ -95,7 +97,7 @@ func TestLocalBackend_Lifecycle(t *testing.T) {
 
 	// 7. Walk
 	walked := map[string]bool{}
-	err = b.Walk(ctx, ".", func(path string, info FileInfo) error {
+	err = b.Walk(ctx, ".", func(path string, info backend.FileInfo) error {
 		walked[path] = info.IsDir
 		return nil
 	})
