@@ -761,6 +761,9 @@ func TestRemove_DirFansOutToAllBackends(t *testing.T) {
 	root, _ := fs.Root()
 	dir := root.(*Dir)
 
+	b1.On("ReadDir", mock.Anything, "subdir").Return([]backend.FileInfo{}, nil)
+	b2.On("ReadDir", mock.Anything, "subdir").Return([]backend.FileInfo{}, os.ErrNotExist)
+
 	b1.On("Remove", mock.Anything, "subdir").Return(nil)
 	// The directory being already absent on b2 counts as success for delete.
 	b2.On("Remove", mock.Anything, "subdir").Return(os.ErrNotExist)
@@ -776,6 +779,43 @@ func TestRemove_DirFansOutToAllBackends(t *testing.T) {
 
 	_, ok := cache.Get("subdir")
 	assert.False(t, ok)
+
+	b1.AssertExpectations(t)
+	b2.AssertExpectations(t)
+}
+
+func TestRemove_NonEmptyDirFailsWithENOTEMPTY(t *testing.T) {
+	b1 := &test.MockBackend{NameVal: "b1"}
+	b2 := &test.MockBackend{NameVal: "b2"}
+
+	cache := vfs.NewCache()
+	cache.Upsert("subdir", vfs.Metadata{Name: "subdir", Path: "subdir", IsDir: true, Mode: os.ModeDir | 0755}, "b1")
+
+	fs := &RepliFS{
+		Cache:             cache,
+		Backends:          map[string]backend.Backend{"b1": b1, "b2": b2},
+		ReplicationFactor: 2,
+		WriteQuorum:       2,
+		Selector:          vfs.NewRandomSelector(nil),
+	}
+
+	root, _ := fs.Root()
+	dir := root.(*Dir)
+
+	// FetchDir will see a child file on b1
+	b1.On("ReadDir", mock.Anything, "subdir").Return([]backend.FileInfo{
+		{Name: "child.txt", IsDir: false, Size: 100},
+	}, nil)
+	b2.On("ReadDir", mock.Anything, "subdir").Return([]backend.FileInfo{}, os.ErrNotExist)
+
+	req := &fuse.RemoveRequest{Name: "subdir", Dir: true}
+	err := dir.Remove(context.Background(), req)
+
+	assert.Equal(t, syscall.ENOTEMPTY, err)
+
+	// Ensure no deletions or tombstones were attempted
+	b1.AssertNotCalled(t, "Remove", mock.Anything, mock.Anything)
+	b2.AssertNotCalled(t, "Remove", mock.Anything, mock.Anything)
 
 	b1.AssertExpectations(t)
 	b2.AssertExpectations(t)

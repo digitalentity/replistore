@@ -605,6 +605,20 @@ func (d *Dir) Remove(ctx context.Context, req *fuse.RemoveRequest) error {
 	child.Mu.Unlock()
 
 	if isDir {
+		// M12: Emptiness check in the unified view.
+		// Fetch a fresh directory listing from all configured backends to make sure we don't have undiscovered children.
+		if err := d.fs.Cache.FetchDir(ctx, path, d.fs.getBackendList()); err != nil && !errors.Is(err, os.ErrNotExist) && !errors.Is(err, vfs.ErrUnavailable) {
+			return err
+		}
+
+		child.Mu.RLock()
+		hasChildren := len(child.Children) > 0
+		child.Mu.RUnlock()
+
+		if hasChildren {
+			return syscall.ENOTEMPTY
+		}
+
 		// Directories are presence-sets: the cached Meta.Backends list may be
 		// incomplete (per-backend mtimes differ), so fan the delete out to ALL
 		// configured backends to avoid leaving subtrees that resurrect on the

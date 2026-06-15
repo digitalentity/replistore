@@ -70,7 +70,6 @@ One-liners for the items still open in [REVIEW.md](REVIEW.md); see the finding b
 - **M2:** negative lookups are never cached; path-probing workloads fan a `Stat` out to every backend per miss.
 - **M7:** backend reconnects ignore context deadlines; a down backend stalls health checks beyond their budget.
 - **M11:** rename-over-existing-target is not atomic and likely fails (SMB2 rename without the replace flag).
-- **M12:** `Remove` on directories doesn't check emptiness in the unified view; children on non-listed backends can survive.
 - **H4 residual:** a single renewal round missing quorum declares the lock lost immediately, instead of retrying until the lease deadline passes.
 - **H7/H8 residuals:** repair doesn't serialize against in-flight writes on already-open handles; a read handle's `tried` set never resets.
 - **L-nits (L1/L3/L5/L6/L7):** hardcoded lock timeouts, ad-hoc path helpers, shutdown without backend `Close()` sweep, unset FUSE attr `Valid`/`Uid`/`Gid`, `markAllIndexed` ignoring per-backend scan errors.
@@ -81,6 +80,7 @@ The test suite is mock-based throughout; a real-cluster smoke test of the sideca
 
 Major items delivered during the 2026-06 remediation, newest first:
 
+- (Remediation) — M12: emptiness verification for directory removes checks child existence in unified view, returning ENOTEMPTY.
 - (Remediation) — C6-dirs: directory deletes and renames write tombstones and sidecars; repair enforces directory tombstones.
 - (Remediation) — M3: walkStart timestamp captured in syncAll and sweep skipped for nodes updated during/after walk.
 - (Remediation) — M4: active open handles tracked on vfs.Node and checked to prevent cache node pruning during sync.

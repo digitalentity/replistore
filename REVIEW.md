@@ -11,7 +11,7 @@ Architecture changes made during remediation (beyond the original findings):
 - **UDP lock transport** replaced net/rpc-over-TCP (`dcf5a7b`): JWS-compact (HS256) datagrams signed with the mandatory `cluster_secret`; pinned header; crypto/rand request IDs; retransmit with backoff.
 - **Version-metadata substrate** (`41f3fa5`, `b1800e1`, `4fff8cf`, `87355f5`): per-file generation sidecars under `.replistore/meta/`, tombstones under `.replistore/tombstones/`, repair-time sha256 sums; the reserved tree is hidden from the mount (`1c0c463`).
 
-Remaining open items, roughly by value: read-quorum/staleness semantics for lazy fetches (C8 residual); M2 negative-lookup cache; M7 ctx-aware backend reconnects; M11 rename-over-existing-target atomicity; M12 rmdir emptiness check in the unified view; H4 renewal grace period; L1/L3/L5/L6/L7 nits. The test suite is mock-based throughout — a real-cluster smoke test of the sidecar/tombstone machinery is advised before production use.
+Remaining open items, roughly by value: read-quorum/staleness semantics for lazy fetches (C8 residual); M2 negative-lookup cache; M7 ctx-aware backend reconnects; M11 rename-over-existing-target atomicity; H4 renewal grace period; L1/L3/L5/L6/L7 nits. The test suite is mock-based throughout — a real-cluster smoke test of the sidecar/tombstone machinery is advised before production use.
 
 ---
 
@@ -248,6 +248,8 @@ bazil/fuse dispatches `Fsync` to the *node* (`NodeFsyncer`), so `FileHandle.Fsyn
 POSIX `rename` must atomically replace an existing target. SMB2 rename fails if the target exists (go-smb2 does not set the replace flag), so `mv a b` with `b` present errors; the cache's `Rename` would also silently overwrite the target node, leaking its replicas (never deleted on backends). **Fix:** detect existing target in `Dir.Rename`; implement replace as locked delete-then-rename (with tombstone, per C6), and document the non-atomicity window.
 
 ### M12. `Remove` on directories doesn't check emptiness in the unified view
+> **Status: FIXED** in this remediation — unified check added to fetch children from backends and verify the directory is empty, returning `ENOTEMPTY` if children exist.
+
 `Dir.Remove` relies on backends rejecting non-empty directory deletion. The cache may know children (from other backends) that the quorum-satisfying backends don't have — the directory is then removed from the namespace while children replicas survive on non-listed backends (compounds C5/C6). **Fix:** return `ENOTEMPTY` if the cached node has children after a fresh `FetchDir`; only then fan out.
 
 ### M13. `CallWithContext` leaks goroutines and writes into reply values after abandonment
