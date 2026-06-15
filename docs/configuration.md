@@ -8,6 +8,9 @@ RepliStore uses a YAML-based configuration file. Environment variables are expan
 # The local path where RepliStore will be mounted.
 mount_point: "/mnt/replistore"
 
+# The local directory where state files (like the serialized cache) are stored.
+state_dir: "state"
+
 # Number of copies for each file.
 replication_factor: 2
 
@@ -63,6 +66,10 @@ backends:
 
 ### `mount_point` (string)
 The absolute path on your local system where the RepliStore virtual filesystem will be available.
+
+### `state_dir` (string)
+The local directory path where cluster and node-specific state files are stored (such as the serialized metadata cache file).
+- **Default:** "state" (relative to process working directory).
 
 ### `replication_factor` (int)
 The number of backends a new file should be written to. If the number of available backends is less than this value, RepliStore will use all available backends.

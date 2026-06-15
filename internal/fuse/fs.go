@@ -35,6 +35,7 @@ type RepliFS struct {
 	NodeID string
 
 	MaxIODuration time.Duration
+	CacheTTL      time.Duration
 
 	// pathLocks serializes same-path mutations within this process. The
 	// distributed lock manager (when enabled) only arbitrates between nodes
@@ -235,7 +236,6 @@ func (d *Dir) Attr(ctx context.Context, a *fuse.Attr) error {
 func (d *Dir) Lookup(ctx context.Context, name string) (fs.Node, error) {
 	d.node.Mu.RLock()
 	child, ok := d.node.Children[name]
-	fullyIndexed := d.node.FullyIndexed
 	path := d.node.Meta.Path
 	d.node.Mu.RUnlock()
 
@@ -248,25 +248,39 @@ func (d *Dir) Lookup(ctx context.Context, name string) (fs.Node, error) {
 		return nil, syscall.ENOENT
 	}
 
-	if !ok {
-		if fullyIndexed {
-			return nil, syscall.ENOENT
-		}
+	stale := false
+	if ok && d.fs.CacheTTL > 0 {
+		child.Mu.RLock()
+		stale = time.Since(child.LastUpdated) > d.fs.CacheTTL
+		child.Mu.RUnlock()
+	}
 
-		// Try lazy fetch
-		d.fs.pathLogger(childPath).Debug("Lazy fetching metadata")
+	if !ok || stale {
+		if !ok {
+			d.fs.pathLogger(childPath).Debug("Lazy fetching metadata")
+		} else {
+			d.fs.pathLogger(childPath).Debug("Re-validating stale metadata")
+		}
 		node, err := d.fs.Cache.FetchEntry(ctx, childPath, d.fs.getBackendList())
 		if err != nil {
 			if errors.Is(err, os.ErrNotExist) {
-				d.fs.pathLogger(childPath).Debug("Lazy fetch: child not found on any backend")
+				d.fs.pathLogger(childPath).Debug("Lazy fetch/Revalidate: child not found on any backend")
+				if ok {
+					d.fs.Cache.Evict(childPath)
+				}
 				return nil, syscall.ENOENT
 			}
-			d.fs.pathLogger(childPath).Errorf("Lazy fetch failed: %v", err)
-			// ErrUnavailable or any other error: we don't know whether the
-			// entry exists, so don't lie with ENOENT.
-			return nil, syscall.EIO
+			d.fs.pathLogger(childPath).Errorf("Lazy fetch/Revalidate failed: %v", err)
+			if ok {
+				d.fs.pathLogger(childPath).Warnf("Using stale cached entry for %s", childPath)
+				node = child
+			} else {
+				// ErrUnavailable or any other error: we don't know whether the
+				// entry exists, so don't lie with ENOENT.
+				return nil, syscall.EIO
+			}
 		}
-		d.fs.pathLogger(childPath).Debug("Lazy fetch success")
+		d.fs.pathLogger(childPath).Debug("Lazy fetch/Revalidate success")
 		child = node
 	}
 
@@ -279,12 +293,17 @@ func (d *Dir) Lookup(ctx context.Context, name string) (fs.Node, error) {
 func (d *Dir) ReadDirAll(ctx context.Context) ([]fuse.Dirent, error) {
 	d.node.Mu.RLock()
 	fullyIndexed := d.node.FullyIndexed
+	stale := d.fs.CacheTTL > 0 && time.Since(d.node.LastUpdated) > d.fs.CacheTTL
 	path := d.node.Meta.Path
 	d.node.Mu.RUnlock()
 
 	var fetchErr error
-	if !fullyIndexed {
-		d.fs.pathLogger(path).Debug("Lazy fetching directory listing")
+	if !fullyIndexed || stale {
+		if !fullyIndexed {
+			d.fs.pathLogger(path).Debug("Lazy fetching directory listing")
+		} else {
+			d.fs.pathLogger(path).Debug("Re-validating stale directory listing")
+		}
 		if fetchErr = d.fs.Cache.FetchDir(ctx, path, d.fs.getBackendList()); fetchErr != nil {
 			d.fs.pathLogger(path).Errorf("FetchDir failed: %v", fetchErr)
 			// Return what we have anyway (unless we have nothing, see below)

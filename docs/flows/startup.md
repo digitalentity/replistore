@@ -4,20 +4,21 @@ When RepliStore starts, it goes through a "warmup" phase to build its internal m
 
 ## Process Overview
 
-1.  **Configuration Loading:** Loads the `config.yaml` file to get the list of backends and mount point.
+1.  **Configuration Loading:** Loads the `config.yaml` file to get the list of backends, mount point, and state directory (`state_dir`).
 2.  **Backend Connection:** Attempts to `Connect()` to all configured SMB shares.
-3.  **Parallel Scan:**
-    - For each connected backend, a `go-routine` is started to perform a recursive `Walk`.
-    - This scan retrieves the names, sizes, modes, and modification times of all files and folders.
-4.  **Cache Population:**
-    - As each file is found, the `vfs.Cache.Upsert` method is called.
-    - The cache builds a unified tree by merging entries from different backends.
-    - If a file exists on multiple backends, it is recorded as a single entry with multiple backend locations.
+3.  **Local Cache Loading:**
+    - If a valid `cache.json` file exists in the configured `state_dir`, it is loaded directly into the in-memory `vfs.Cache` to enable immediate filesystem serving.
+    - The `last_reconciled` timestamp is checked against `cache_refresh_interval`.
+4.  **Parallel Scan / Warmup:**
+    - If the loaded cache is relatively fresh (the time since `last_reconciled` is less than `cache_refresh_interval`), the initial background warmup scan is **skipped**.
+    - If the cache is stale or does not exist, a background scan walk is started across all connected backends to validate and reconcile the cache.
+    - Once the scan completes successfully, `last_reconciled` is updated to the current time, and the cache is saved back to `cache.json`.
 5.  **FUSE Mounting:**
-    - Once the initial scan of all backends completes, the FUSE filesystem is mounted at the specified `mount_point`.
-6.  **Background Synchronization:**
-    - After the initial warmup, a background synchronization loop starts (based on `cache_refresh_interval`).
-    - It re-scans backends to reconcile the in-memory cache with any external changes, including additions, modifications, and deletions.
+    - The FUSE filesystem is mounted immediately at the specified `mount_point` (serving requests instantly using the loaded cache, or progressively as the scan populates it).
+6.  **Background Sync and Periodic Saving:**
+    - A background sync loop periodically runs based on `cache_refresh_interval` to reconcile cache with external changes, updating `last_reconciled` upon completion.
+    - A background save loop periodically serializes the cache to `cache.json` every 30 seconds.
+    - A signal handler ensures the cache is written to disk upon clean termination.
 7.  **Serve Requests:**
     - The system begins serving user requests.
 

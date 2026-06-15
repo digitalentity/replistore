@@ -1,6 +1,9 @@
 # The local path where the RepliStore filesystem will be mounted.
 mount_point: "/tmp/replistore_mount"
 
+# The local directory where state files (like the serialized cache) are stored.
+state_dir: "state"
+
 # The number of backend replicas to write for each file.
 replication_factor: 2
 

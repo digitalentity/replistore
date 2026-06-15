@@ -5,6 +5,7 @@ import (
 	"flag"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -85,20 +86,75 @@ func main() {
 	monitor := backend.NewHealthMonitor(backends)
 	monitor.Start(ctx, 10*time.Second)
 
-	// Warmup Cache (Background)
-	cache := vfs.NewCache()
-	go func() {
-		logrus.Info("Starting background metadata warmup...")
-		cache.Warmup(ctx, backendList)
-		logrus.Info("Initial metadata cache warmup complete")
-	}()
-
-	// Start background sync
+	// Start background sync config
 	refreshInterval, err := time.ParseDuration(cfg.CacheRefreshInterval)
 	if err != nil {
 		logrus.Warnf("Invalid cache_refresh_interval '%s', defaulting to 5m: %v", cfg.CacheRefreshInterval, err)
 		refreshInterval = 5 * time.Minute
 	}
+
+	// Warmup/Load Cache (Background & Disk-backed)
+	cache := vfs.NewCache()
+	cacheFile := filepath.Join(cfg.StateDir, "cache.json")
+	loadedFromDisk := false
+	cacheFresh := false
+
+	if err := os.MkdirAll(cfg.StateDir, 0755); err != nil {
+		logrus.Errorf("Failed to create state directory %s: %v", cfg.StateDir, err)
+	} else {
+		if _, err := os.Stat(cacheFile); err == nil {
+			logrus.Infof("Loading metadata cache from disk: %s", cacheFile)
+			if err := cache.LoadFromFile(cacheFile); err != nil {
+				logrus.Errorf("Failed to load metadata cache: %v", err)
+			} else {
+				loadedFromDisk = true
+				logrus.Info("Metadata cache loaded successfully from disk")
+
+				cache.Mu.RLock()
+				lastRecon := cache.LastReconciled
+				cache.Mu.RUnlock()
+				if !lastRecon.IsZero() && time.Since(lastRecon) < refreshInterval {
+					cacheFresh = true
+					logrus.Infof("Loaded cache is fresh (last reconciled: %v, threshold: %v). Skipping initial background scan.", lastRecon.Format(time.RFC3339), refreshInterval)
+				}
+			}
+		}
+	}
+
+	go func() {
+		if cacheFresh {
+			return
+		}
+		if loadedFromDisk {
+			logrus.Info("Metadata cache loaded from disk is stale. Starting background validation scan...")
+		} else {
+			logrus.Info("Starting background metadata warmup...")
+		}
+		cache.Warmup(ctx, backendList)
+		logrus.Info("Metadata cache warmup/validation complete")
+		if err := cache.SaveToFile(cacheFile); err != nil {
+			logrus.Errorf("Failed to save metadata cache to disk: %v", err)
+		}
+	}()
+
+	// Periodic cache save to disk (every 30 seconds)
+	go func() {
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				if err := cache.SaveToFile(cacheFile); err != nil {
+					logrus.Errorf("Failed to periodically save metadata cache to disk: %v", err)
+				} else {
+					logrus.Debug("Periodically saved metadata cache to disk")
+				}
+			}
+		}
+	}()
+
 	if refreshInterval > 0 {
 		cache.StartSync(ctx, backendList, refreshInterval)
 		logrus.Infof("Background metadata sync started (interval: %v)", refreshInterval)
@@ -144,6 +200,7 @@ func main() {
 		Discovery:         disco,
 		NodeID:            nodeID,
 		MaxIODuration:     maxIODuration,
+		CacheTTL:          refreshInterval,
 	}
 
 	// Initialize and start Repair Manager
@@ -176,6 +233,14 @@ func main() {
 		// unmount, then release backend connections. os.Exit below skips
 		// deferred cleanup, so close the FUSE conn and backends explicitly.
 		cancel()
+
+		logrus.Info("Saving metadata cache to disk before exit...")
+		if err := cache.SaveToFile(cacheFile); err != nil {
+			logrus.Errorf("Failed to save metadata cache to disk at shutdown: %v", err)
+		} else {
+			logrus.Info("Metadata cache saved successfully")
+		}
+
 		fuse.Unmount(cfg.MountPoint)
 		_ = c.Close()
 		for name, b := range backends {

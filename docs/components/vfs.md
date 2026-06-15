@@ -10,10 +10,24 @@ The `Cache` structure is an in-memory tree of `Node` objects. Each node contains
 - `Mu`: A read-write mutex for thread-safe access to the node's properties and children.
 
 ### Startup (Warmup Phase)
-During startup, `Cache.Warmup` performs a parallel recursive scan (`Walk`) of all configured backends in the background. It populates the cache with the unified view of all files while the mount is already serving requests; directories not yet fully indexed are fetched on demand.
-- If a file exists on multiple backends, its replicas are reconciled (see below) into a single entry.
-- The `Backends` list in the metadata stores all locations for that file.
-- The reserved `.replistore` tree (peer registry, sidecars, tombstones) is excluded from the scan and never appears in the namespace.
+During startup, RepliStore attempts to load the metadata cache from local disk (if `state_dir` is configured and a saved cache exists).
+- **If disk cache exists:** It loads instantly, enabling immediate mount and survival during backend outages.
+- **If disk cache does not exist:** `Cache.Warmup` performs a parallel recursive scan (`Walk`) of all configured backends in the background. It populates the cache with the unified view of all files while the mount is already serving requests; directories not yet fully indexed are fetched on demand.
+- Replicas are reconciled (see below) into a single entry.
+- The reserved `.replistore` tree is excluded from the scan and never appears in the namespace.
+
+### Cache Disk Persistence
+To survive crash scenarios and node restarts, the cache is saved to disk:
+- **Periodically:** Every 30 seconds via a background save loop.
+- **Graceful Shutdown:** Instantly when the process intercepts termination signals (SIGINT, SIGTERM).
+- **Atomic Writing:** Writes state to a temporary file (`cache.json.tmp`) and renames it atomically to prevent corruption.
+
+### Soft-Timeout / Stale Re-validation
+If a cached metadata entry is accessed and its age exceeds `CacheTTL` (configured via `cache_refresh_interval`):
+- FUSE lookup and directory listing operations trigger a lazy background fetch to re-validate it.
+- **If backend is online:** The cache is updated with the fresh state.
+- **If backend confirms file deletion (ErrNotExist):** The entry is permanently evicted.
+- **If backend is offline (ErrUnavailable/transient error):** The entry is **not** evicted; the filesystem falls back to serving the stale cached data instead of failing with I/O errors.
 
 ### Replica Reconciliation (Generation-Aware)
 RepliStore does not trust raw backend mtimes as version vectors — each SMB server stamps mtime with its own clock. Instead, every write session bumps a per-file **generation counter** stored in a sidecar at `.replistore/meta/<path>.json` on each backend holding a replica (a replica with no sidecar reports generation 0, i.e. a legacy file). Merge rules:

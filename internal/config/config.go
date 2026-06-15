@@ -59,6 +59,7 @@ type SelectorConfig struct {
 
 type Config struct {
 	MountPoint           string          `yaml:"mount_point"`
+	StateDir             string          `yaml:"state_dir"`
 	ReplicationFactor    int             `yaml:"replication_factor"`
 	WriteQuorum          int             `yaml:"write_quorum"`
 	CacheRefreshInterval string          `yaml:"cache_refresh_interval"`
@@ -139,6 +140,10 @@ func LoadConfig(path string) (*Config, error) {
 
 	if cfg.MaxIODuration == "" {
 		cfg.MaxIODuration = "1s"
+	}
+
+	if cfg.StateDir == "" {
+		cfg.StateDir = "state"
 	}
 
 	return &cfg, nil

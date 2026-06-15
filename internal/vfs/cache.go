@@ -2,6 +2,7 @@ package vfs
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"strings"
@@ -52,8 +53,9 @@ type Node struct {
 }
 
 type Cache struct {
-	Root *Node
-	Mu   sync.RWMutex
+	Root           *Node
+	LastReconciled time.Time
+	Mu             sync.RWMutex
 }
 
 func (c *Cache) logger() *logrus.Entry {
@@ -295,6 +297,10 @@ func (c *Cache) syncAll(ctx context.Context, backends []backend.Backend) {
 		c.evict(path)
 	}
 	c.markAllIndexed(c.Root)
+
+	c.Mu.Lock()
+	c.LastReconciled = time.Now()
+	c.Mu.Unlock()
 }
 
 // evict unlinks the node at path from its parent. Used when sync determines a
@@ -955,6 +961,10 @@ func (c *Cache) Warmup(ctx context.Context, backends []backend.Backend) {
 
 	// Mark all directories as FullyIndexed once we finished the whole scan
 	c.markAllIndexed(c.Root)
+
+	c.Mu.Lock()
+	c.LastReconciled = time.Now()
+	c.Mu.Unlock()
 }
 
 func (c *Cache) markAllIndexed(node *Node) {
@@ -989,3 +999,92 @@ func (c *Cache) walk(node *Node, fn func(*Node)) {
 		c.walk(child, fn)
 	}
 }
+
+type serializedNode struct {
+	Meta         Metadata                   `json:"meta"`
+	FullyIndexed bool                       `json:"fully_indexed"`
+	LastUpdated  time.Time                  `json:"last_updated"`
+	Children     map[string]*serializedNode `json:"children,omitempty"`
+}
+
+func (n *Node) toSerialized() *serializedNode {
+	n.Mu.RLock()
+	defer n.Mu.RUnlock()
+
+	sn := &serializedNode{
+		Meta:         n.Meta,
+		FullyIndexed: n.FullyIndexed,
+		LastUpdated:  n.LastUpdated,
+		Children:     make(map[string]*serializedNode),
+	}
+
+	for k, child := range n.Children {
+		sn.Children[k] = child.toSerialized()
+	}
+
+	return sn
+}
+
+func (sn *serializedNode) toNode() *Node {
+	n := &Node{
+		Meta:         sn.Meta,
+		FullyIndexed: sn.FullyIndexed,
+		LastUpdated:  sn.LastUpdated,
+		Children:     make(map[string]*Node),
+	}
+
+	for k, child := range sn.Children {
+		n.Children[k] = child.toNode()
+	}
+
+	return n
+}
+
+type serializedCache struct {
+	Root           *serializedNode `json:"root"`
+	LastReconciled time.Time       `json:"last_reconciled"`
+}
+
+func (c *Cache) SaveToFile(path string) error {
+	c.Mu.RLock()
+	defer c.Mu.RUnlock()
+
+	sc := &serializedCache{
+		Root:           c.Root.toSerialized(),
+		LastReconciled: c.LastReconciled,
+	}
+	data, err := json.MarshalIndent(sc, "", "  ")
+	if err != nil {
+		return err
+	}
+
+	tmpPath := path + ".tmp"
+	if err := os.WriteFile(tmpPath, data, 0644); err != nil {
+		return err
+	}
+
+	return os.Rename(tmpPath, path)
+}
+
+func (c *Cache) LoadFromFile(path string) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+
+	var sc serializedCache
+	if err := json.Unmarshal(data, &sc); err != nil {
+		return err
+	}
+
+	c.Mu.Lock()
+	c.Root = sc.Root.toNode()
+	c.LastReconciled = sc.LastReconciled
+	c.Mu.Unlock()
+	return nil
+}
+
+func (c *Cache) Evict(path string) {
+	c.evict(path)
+}
+

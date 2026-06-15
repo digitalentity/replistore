@@ -532,3 +532,34 @@ func TestIsReservedPath(t *testing.T) {
 	assert.False(t, vfs.IsReservedPath("dir/.replistore"))
 	assert.False(t, vfs.IsReservedPath("data.txt"))
 }
+
+func TestCache_SaveAndLoad(t *testing.T) {
+	cache := vfs.NewCache()
+	now := time.Now().Round(time.Second)
+	cache.Upsert("dir1/file1.txt", vfs.Metadata{
+		Name:    "file1.txt",
+		Size:    100,
+		ModTime: now,
+	}, "b1")
+	cache.LastReconciled = now.Add(-5 * time.Minute)
+
+	tempDir := t.TempDir()
+	cachePath := tempDir + "/cache.json"
+
+	err := cache.SaveToFile(cachePath)
+	assert.NoError(t, err)
+
+	loadedCache := vfs.NewCache()
+	err = loadedCache.LoadFromFile(cachePath)
+	assert.NoError(t, err)
+
+	origNode, origOk := cache.Get("dir1/file1.txt")
+	assert.True(t, origOk)
+	loadedNode, loadedOk := loadedCache.Get("dir1/file1.txt")
+	assert.True(t, loadedOk)
+
+	assert.Equal(t, origNode.Meta.Name, loadedNode.Meta.Name)
+	assert.Equal(t, origNode.Meta.Size, loadedNode.Meta.Size)
+	assert.Equal(t, origNode.Meta.Backends, loadedNode.Meta.Backends)
+	assert.Equal(t, cache.LastReconciled, loadedCache.LastReconciled)
+}
