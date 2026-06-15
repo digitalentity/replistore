@@ -34,7 +34,7 @@ RequestLock is first-come-first-served per peer; `LamportTime` only updates the 
 
 ### H4. Lease renewal is brittle: one failed round = lock lost; quorum denominator drifts from the granted set
 
-> **Status: PARTIALLY FIXED** in `881277e` — renewal quorum now derives from `expected_cluster_size`, never the live peer list, so the denominator no longer drifts. Remaining: a single renewal round missing quorum still declares the lock lost immediately (no retry until the lease deadline actually passes).
+> **Status: FIXED** — renewal quorum derives from `expected_cluster_size` (never the live peer list) since `881277e`; renewal now runs at `LeaseTTL/3` and a missed round no longer surrenders the lock. The lease is declared lost only once its deadline (`expiresAt`, advanced on each successful round) actually passes without a quorum renewal, and each round is bounded to the cadence so a hung round cannot consume the grace window.
 
 `startRenewal` declares the lock lost on the *first* renewal round that misses quorum (lock.go:156) — a single transient network blip longer than `LeaseTTL/2 = 2.5s` kills an active write handle. Also, `renew` recomputes quorum from the *current* peer count (lock.go:174) while only ever contacting the original `grantedPeers`; if membership grows after acquisition, quorum can exceed the contactable set and the lock is unrenewable by construction.
 
@@ -50,7 +50,7 @@ With `listen_addr` unset, `acquireLock` returns `(nil, nil)` and `RepairManager.
 
 ### H8. Read-only `Open` has no failover; `Read` failover ignores newly-healthy replicas
 
-> **Status: PARTIALLY FIXED** in `cb361b7 — open-time failover added; per-handle `tried` set still never resets`
+> **Status: FIXED** — open-time failover added in `cb361b7`; `Read`'s `tried` set is scoped per `Read` call (not per handle), so a backend that recovers is reopened from `Meta.Backends` on the next Read syscall — the handle is no longer permanently dead.
 
 `File.Open` read path (fs.go:717) picks one backend and returns the open error directly — a single unhealthy-but-not-yet-marked backend fails the open even though other replicas are fine. `FileHandle.Read`'s failover loop is solid, but it can never recover once every backend in `Meta.Backends` has been `tried`, even if a backend recovered seconds later (handle is permanently dead until reopened).
 
@@ -75,6 +75,8 @@ Any host on the LAN can register as a peer, grant/deny locks, call `RequestLock`
 `Ping` gets a 2 s context (monitor.go:52) but `execute → ensureConnected → connectLocked` uses a hardcoded 5 s `net.DialTimeout` and ctx-unaware SMB dial/mount, so a down backend stalls each check ~3× its budget. `smbFile` I/O only checks `ctx.Err()` before issuing the call — FUSE interrupts and timeouts can't cancel in-flight SMB ops. **Fix:** thread `ctx` into `connectLocked` (use `net.Dialer.DialContext`); accept that go-smb2 calls aren't cancellable and wrap them with a watchdog that closes the connection on deadline (the reconnect path already recovers from closed connections).
 
 ### M11. Rename-over-existing-target is not atomic and likely fails
+
+> **Status: FIXED** — `Dir.Rename` now clears an existing target before the source fan-out (`clearRenameTarget`): it enforces the POSIX type rules (a directory may only be replaced by an empty directory; otherwise `EISDIR`/`ENOTDIR`/`ENOTEMPTY`), durably tombstones the target, then removes its replicas across all backends so they are not leaked. Renaming a path onto itself is a no-op success. The replace is not a single atomic SMB operation, so a crash between the target delete and the source rename can leave the target missing — documented, acceptable.
 
 POSIX `rename` must atomically replace an existing target. SMB2 rename fails if the target exists (go-smb2 does not set the replace flag), so `mv a b` with `b` present errors; the cache's `Rename` would also silently overwrite the target node, leaking its replicas (never deleted on backends). **Fix:** detect existing target in `Dir.Rename`; implement replace as locked delete-then-rename (with tombstone, per C6), and document the non-atomicity window.
 
