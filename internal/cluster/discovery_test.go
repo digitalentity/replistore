@@ -42,8 +42,7 @@ func expectEntryListing(t *testing.T, b *bmock.MockBackend, entries ...peerEntry
 }
 
 func TestDiscovery_StartWritesEntryToAllBackends(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	backends := make([]backend.Backend, 0, 2)
 	files := make([]*bmock.MockFile, 0, 2)

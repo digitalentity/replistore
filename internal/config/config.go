@@ -4,6 +4,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"net"
 	"os"
 
@@ -11,21 +12,21 @@ import (
 )
 
 type BackendConfig struct {
-	Name     string                 `yaml:"name"`
-	Type     string                 `yaml:"type"` // e.g. "smb", "local"
-	Address  string                 `yaml:"address"`
-	Share    string                 `yaml:"share"`
-	User     string                 `yaml:"user"`
-	Password string                 `yaml:"password"`
-	Domain   string                 `yaml:"domain"`
-	Path     string                 `yaml:"path"` // For local filesystem backend
-	Speed    int                    `yaml:"speed"`
-	Tags     []string               `yaml:"tags"`
-	Options  map[string]interface{} `yaml:"options"`
+	Name     string         `yaml:"name"`
+	Type     string         `yaml:"type"` // e.g. "smb", "local"
+	Address  string         `yaml:"address"`
+	Share    string         `yaml:"share"`
+	User     string         `yaml:"user"`
+	Password string         `yaml:"password"`
+	Domain   string         `yaml:"domain"`
+	Path     string         `yaml:"path"` // For local filesystem backend
+	Speed    int            `yaml:"speed"`
+	Tags     []string       `yaml:"tags"`
+	Options  map[string]any `yaml:"options"`
 }
 
-func (bc *BackendConfig) ToOptions() map[string]interface{} {
-	opts := map[string]interface{}{}
+func (bc *BackendConfig) ToOptions() map[string]any {
+	opts := map[string]any{}
 	if bc.Address != "" {
 		opts["address"] = bc.Address
 	}
@@ -48,9 +49,7 @@ func (bc *BackendConfig) ToOptions() map[string]interface{} {
 	if bc.Tags != nil {
 		opts["tags"] = bc.Tags
 	}
-	for k, v := range bc.Options {
-		opts[k] = v
-	}
+	maps.Copy(opts, bc.Options)
 	return opts
 }
 

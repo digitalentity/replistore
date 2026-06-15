@@ -2,6 +2,7 @@ package vfs
 
 import (
 	"math/rand"
+	"slices"
 	"sort"
 	"time"
 
@@ -91,7 +92,7 @@ func (s *RandomSelector) SelectForWrite(count int, allBackends []string) []strin
 
 	perm := s.r.Perm(len(healthyBackends))
 	res := make([]string, count)
-	for i := 0; i < count; i++ {
+	for i := range count {
 		res[i] = healthyBackends[perm[i]]
 	}
 	return res
@@ -119,10 +120,8 @@ func (s *SpaceAwareSelector) hasAffinityTag(b backend.Backend) bool {
 	}
 	tags := b.GetTags()
 	for _, t := range tags {
-		for _, aff := range s.writeAffinity {
-			if t == aff {
-				return true
-			}
+		if slices.Contains(s.writeAffinity, t) {
+			return true
 		}
 	}
 	return false

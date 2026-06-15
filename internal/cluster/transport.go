@@ -74,7 +74,7 @@ func newRID() string {
 
 // signMessage builds a complete JWS compact serialization (HS256) datagram
 // for the given message type, request ID and body.
-func signMessage(secret []byte, typ, rid string, body interface{}) ([]byte, error) {
+func signMessage(secret []byte, typ, rid string, body any) ([]byte, error) {
 	bodyJSON, err := json.Marshal(body)
 	if err != nil {
 		return nil, err
@@ -145,7 +145,7 @@ const (
 //
 // Handlers are idempotent per (NodeID, LockID), so retransmitted requests
 // are harmless duplicates on the server side.
-func CallUDP(ctx context.Context, secret []byte, peerAddr, typ string, req, resp interface{}) error {
+func CallUDP(ctx context.Context, secret []byte, peerAddr, typ string, req, resp any) error {
 	raddr, err := net.ResolveUDPAddr("udp", peerAddr)
 	if err != nil {
 		return err
@@ -251,7 +251,7 @@ func (m *LockManager) serveLoop() {
 			continue
 		}
 
-		var respBody interface{}
+		var respBody any
 		switch claims.Typ {
 		case TypRequestLock:
 			var req LockRequest

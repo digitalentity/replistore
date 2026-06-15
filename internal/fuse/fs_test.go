@@ -87,7 +87,7 @@ func expectNoTombstone(b *bmock.MockBackend, dataPath string) {
 // expectTombstoneGen makes b serve a tombstone at the given generation for
 // dataPath (used by the Create/Rename tombstone-generation reads).
 func expectTombstoneGen(b *bmock.MockBackend, dataPath string, gen int64) {
-	payload := []byte(fmt.Sprintf(`{"v":1,"gen":%d,"writer":"w","deleted":true}`, gen))
+	payload := fmt.Appendf(nil, `{"v":1,"gen":%d,"writer":"w","deleted":true}`, gen)
 	f := &bmock.MockFile{}
 	f.On("ReadAt", mock.Anything, mock.Anything, int64(0)).Run(func(args mock.Arguments) {
 		copy(args.Get(1).([]byte), payload)

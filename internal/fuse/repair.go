@@ -1,6 +1,7 @@
 package fuse
 
 import (
+	"slices"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -25,7 +26,7 @@ type RepairManager struct {
 	// different non-empty content sums during repair (REVIEW.md C4).
 	// Incremented atomically; a diagnostic counter intended to feed future
 	// metrics.
-	divergenceCount int64
+	divergenceCount atomic.Int64
 }
 
 func NewRepairManager(fs *RepliFS, interval time.Duration, concurrency int) *RepairManager {
@@ -95,7 +96,6 @@ func (m *RepairManager) performScrub(ctx context.Context) {
 	g.SetLimit(m.concurrency)
 
 	for _, node := range degraded {
-		node := node
 		g.Go(func() error {
 			if err := m.repairNode(gCtx, node); err != nil {
 				m.logger().WithField("path", node.Meta.Path).Errorf("Failed to repair: %v", err)
@@ -105,7 +105,6 @@ func (m *RepairManager) performScrub(ctx context.Context) {
 	}
 
 	for _, node := range overReplicated {
-		node := node
 		g.Go(func() error {
 			if err := m.pruneNode(gCtx, node); err != nil {
 				m.logger().WithField("path", node.Meta.Path).Errorf("Failed to prune: %v", err)
@@ -337,7 +336,7 @@ func (m *RepairManager) repairNode(ctx context.Context, node *vfs.Node) error {
 			if _, statErr := targetBackend.Stat(ctx, path); statErr == nil {
 				if tsc, tErr := vfs.ReadSidecar(ctx, targetBackend, path); tErr == nil &&
 					tsc.Gen == srcSC.Gen && tsc.Sum != "" && tsc.Sum != srcSC.Sum {
-					atomic.AddInt64(&m.divergenceCount, 1)
+					m.divergenceCount.Add(1)
 					m.logger().WithField("path", path).Errorf("Divergent replicas at generation %d: source %s has sum %s, target %s has sum %s; overwriting target from source",
 						srcSC.Gen, sourceName, srcSC.Sum, targetName, tsc.Sum)
 				}
@@ -395,13 +394,7 @@ func (m *RepairManager) repairNode(ctx context.Context, node *vfs.Node) error {
 
 		// Update metadata
 		node.Mu.Lock()
-		found := false
-		for _, b := range node.Meta.Backends {
-			if b == targetName {
-				found = true
-				break
-			}
-		}
+		found := slices.Contains(node.Meta.Backends, targetName)
 		if !found {
 			node.Meta.Backends = append(node.Meta.Backends, targetName)
 		}
@@ -503,13 +496,7 @@ func (m *RepairManager) pruneNode(ctx context.Context, node *vfs.Node) error {
 		node.Mu.Lock()
 		newBackends := make([]string, 0, len(node.Meta.Backends))
 		for _, b := range node.Meta.Backends {
-			pruned := false
-			for _, p := range prunedSuccessfully {
-				if b == p {
-					pruned = true
-					break
-				}
-			}
+			pruned := slices.Contains(prunedSuccessfully, b)
 			if !pruned {
 				newBackends = append(newBackends, b)
 			}
@@ -533,7 +520,7 @@ func sourceModTime(ctx context.Context, source backend.Backend, path string, fal
 	return fi.ModTime
 }
 
-// Helpers to adapt backend.File to io.Reader/Writer
+// Helpers to adapt backend.File to io.Reader/Writer.
 type offsetReader struct {
 	ctx    context.Context
 	f      backend.File
@@ -585,8 +572,8 @@ func removeAll(ctx context.Context, b backend.Backend, path string) error {
 	}
 
 	// Remove dirs in reverse order (bottom-up)
-	for i := len(dirs) - 1; i >= 0; i-- {
-		d := dirs[i]
+	for _, v := range slices.Backward(dirs) {
+		d := v
 		if err := b.Remove(ctx, d); err != nil && !os.IsNotExist(err) && !errors.Is(err, os.ErrNotExist) {
 			return err
 		}

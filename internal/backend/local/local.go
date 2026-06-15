@@ -32,7 +32,7 @@ func NewLocalBackend(name, path string, speed int, tags []string) *LocalBackend 
 }
 
 func init() {
-	backend.Register("local", func(name string, options map[string]interface{}) (backend.Backend, error) {
+	backend.Register("local", func(name string, options map[string]any) (backend.Backend, error) {
 		path, _ := options["path"].(string)
 		if path == "" {
 			return nil, errors.New("local backend requires 'path' option")
@@ -44,7 +44,7 @@ func init() {
 			speed = speedVal
 		}
 		var tags []string
-		if tList, ok := options["tags"].([]interface{}); ok {
+		if tList, ok := options["tags"].([]any); ok {
 			for _, t := range tList {
 				if s, ok := t.(string); ok {
 					tags = append(tags, s)

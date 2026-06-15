@@ -53,29 +53,26 @@ type Grant struct {
 
 // LamportClock provides atomic logical time operations.
 type LamportClock struct {
-	time int64
+	time atomic.Int64
 }
 
 func (c *LamportClock) Tick() int64 {
-	return atomic.AddInt64(&c.time, 1)
+	return c.time.Add(1)
 }
 
 func (c *LamportClock) Update(received int64) int64 {
 	for {
-		local := atomic.LoadInt64(&c.time)
-		next := local
-		if received > local {
-			next = received
-		}
+		local := c.time.Load()
+		next := max(received, local)
 		next++
-		if atomic.CompareAndSwapInt64(&c.time, local, next) {
+		if c.time.CompareAndSwap(local, next) {
 			return next
 		}
 	}
 }
 
 func (c *LamportClock) Get() int64 {
-	return atomic.LoadInt64(&c.time)
+	return c.time.Load()
 }
 
 // LockManager handles the local lock table and Lamport clock for a node.
@@ -151,7 +148,7 @@ func (m *LockManager) janitorLoop() {
 // prematurely.
 func (m *LockManager) sweepExpiredGrants(now time.Time) {
 	slack := m.LeaseTTL
-	m.grants.Range(func(key, val interface{}) bool {
+	m.grants.Range(func(key, val any) bool {
 		grant := val.(Grant)
 		if now.After(grant.ExpiresAt.Add(slack)) {
 			// CompareAndDelete so a grant re-issued for this path between the

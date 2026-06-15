@@ -6,7 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -96,7 +98,7 @@ func (f *RepliFS) removeStaleReplica(path string, backendName string) {
 	}
 	go func() {
 		var lastErr error
-		for attempt := 0; attempt < 2; attempt++ {
+		for attempt := range 2 {
 			if attempt > 0 {
 				time.Sleep(5 * time.Second)
 			}
@@ -397,7 +399,6 @@ func (d *Dir) Create(ctx context.Context, req *fuse.CreateRequest, resp *fuse.Cr
 	g, gCtx := errgroup.WithContext(ctx)
 
 	for _, bName := range selectedBackends {
-		bName := bName // capture for goroutine
 		g.Go(func() error {
 			b := d.fs.Backends[bName]
 			if parentPath != "" {
@@ -556,7 +557,6 @@ func (d *Dir) Mkdir(ctx context.Context, req *fuse.MkdirRequest) (fs.Node, error
 
 	d.fs.pathLogger(path).Infof("Creating directory on all backends (quorum: %d)", d.fs.WriteQuorum)
 	for name, b := range d.fs.Backends {
-		name, b := name, b
 		g.Go(func() error {
 			if parentPath != "" {
 				if err := b.MkdirAll(gCtx, parentPath, 0755); err != nil {
@@ -703,7 +703,6 @@ func (d *Dir) Remove(ctx context.Context, req *fuse.RemoveRequest) error {
 	var mu sync.Mutex
 	g, gCtx := errgroup.WithContext(ctx)
 	for _, bName := range backends {
-		bName := bName
 		b := d.fs.Backends[bName]
 		g.Go(func() error {
 			err := b.Remove(gCtx, path)
@@ -796,7 +795,6 @@ func (d *Dir) clearRenameTarget(ctx context.Context, targetDir *Dir, name, newPa
 	var successes int
 	g, gCtx := errgroup.WithContext(ctx)
 	for _, bName := range all {
-		bName := bName
 		b := d.fs.Backends[bName]
 		g.Go(func() error {
 			err := b.Remove(gCtx, newPath)
@@ -929,7 +927,6 @@ func (d *Dir) Rename(ctx context.Context, req *fuse.RenameRequest, newDir fs.Nod
 
 	g, gCtx := errgroup.WithContext(ctx)
 	for _, bName := range backends {
-		bName := bName
 		g.Go(func() error {
 			b := d.fs.Backends[bName]
 
@@ -1048,13 +1045,7 @@ func (d *Dir) Rename(ctx context.Context, req *fuse.RenameRequest, newDir fs.Nod
 			sourceNode.Mu.Lock()
 			newBackends := make([]string, 0, len(sourceNode.Meta.Backends))
 			for _, bName := range sourceNode.Meta.Backends {
-				failed := false
-				for _, fName := range failures {
-					if bName == fName {
-						failed = true
-						break
-					}
-				}
+				failed := slices.Contains(failures, bName)
 				if !failed {
 					newBackends = append(newBackends, bName)
 				}
@@ -1119,7 +1110,6 @@ func (f *File) Fsync(ctx context.Context, req *fuse.FsyncRequest) error {
 
 	g, gCtx := errgroup.WithContext(ctx)
 	for _, bName := range backends {
-		bName := bName
 		g.Go(func() error {
 			b, ok := f.fs.Backends[bName]
 			if !ok {
@@ -1154,7 +1144,7 @@ func (f *File) Fsync(ctx context.Context, req *fuse.FsyncRequest) error {
 	_ = g.Wait()
 
 	if successes < f.fs.WriteQuorum && len(backends) > 0 {
-		return fmt.Errorf("could not reach write quorum during fsync: %d/%d (last error: %v)", successes, f.fs.WriteQuorum, lastErr)
+		return fmt.Errorf("could not reach write quorum during fsync: %d/%d (last error: %w)", successes, f.fs.WriteQuorum, lastErr)
 	}
 
 	return nil
@@ -1201,7 +1191,6 @@ func (f *File) Setattr(ctx context.Context, req *fuse.SetattrRequest, resp *fuse
 
 	g, gCtx := errgroup.WithContext(ctx)
 	for _, bName := range backends {
-		bName := bName
 		g.Go(func() error {
 			b, ok := f.fs.Backends[bName]
 			if !ok {
@@ -1228,7 +1217,7 @@ func (f *File) Setattr(ctx context.Context, req *fuse.SetattrRequest, resp *fuse
 
 	if successes < f.fs.WriteQuorum {
 		f.fs.pathLogger(path).Errorf("Failed to truncate: write quorum not met (%d/%d, last error: %v)", successes, f.fs.WriteQuorum, lastErr)
-		return fmt.Errorf("could not reach write quorum during truncate: %d/%d (last error: %v)", successes, f.fs.WriteQuorum, lastErr)
+		return fmt.Errorf("could not reach write quorum during truncate: %d/%d (last error: %w)", successes, f.fs.WriteQuorum, lastErr)
 	}
 	f.fs.pathLogger(path).Debugf("Truncated file to size %d (quorum %d met)", size, successes)
 
@@ -1239,13 +1228,7 @@ func (f *File) Setattr(ctx context.Context, req *fuse.SetattrRequest, resp *fuse
 		// delete the stale replica below (best effort).
 		newBackends := make([]string, 0, len(f.node.Meta.Backends))
 		for _, bName := range f.node.Meta.Backends {
-			failed := false
-			for _, fName := range failures {
-				if bName == fName {
-					failed = true
-					break
-				}
-			}
+			failed := slices.Contains(failures, bName)
 			if !failed {
 				newBackends = append(newBackends, bName)
 			}
@@ -1412,13 +1395,7 @@ func (f *File) Open(ctx context.Context, req *fuse.OpenRequest, resp *fuse.OpenR
 
 				// Update the cache node's metadata: acquire f.node.Mu.Lock(), append the target backend name to f.node.Meta.Backends if not already present, and unlock.
 				f.node.Mu.Lock()
-				found := false
-				for _, b := range f.node.Meta.Backends {
-					if b == targetName {
-						found = true
-						break
-					}
-				}
+				found := slices.Contains(f.node.Meta.Backends, targetName)
 				if !found {
 					f.node.Meta.Backends = append(f.node.Meta.Backends, targetName)
 				}
@@ -1559,7 +1536,7 @@ func (h *FileHandle) Read(ctx context.Context, req *fuse.ReadRequest, resp *fuse
 		}
 
 		n, err := sf.ReadAt(ctx, buf, req.Offset)
-		if err != nil && err != io.EOF {
+		if err != nil && !errors.Is(err, io.EOF) {
 			h.file.fs.pathLogger(h.file.node.Meta.Path).Warnf("Read failed on backend %s: %v. Retrying...", currentBackendName, err)
 
 			tried[currentBackendName] = true
@@ -1620,9 +1597,7 @@ func (h *FileHandle) Write(ctx context.Context, req *fuse.WriteRequest, resp *fu
 
 	h.mu.Lock()
 	backends := make(map[string]backend.File, len(h.backends))
-	for k, v := range h.backends {
-		backends[k] = v
-	}
+	maps.Copy(backends, h.backends)
 	h.mu.Unlock()
 
 	var mu sync.Mutex
@@ -1632,7 +1607,6 @@ func (h *FileHandle) Write(ctx context.Context, req *fuse.WriteRequest, resp *fu
 
 	g, gCtx := errgroup.WithContext(ctx)
 	for name, sf := range backends {
-		name, sf := name, sf
 		g.Go(func() error {
 			_, err := sf.WriteAt(gCtx, req.Data, req.Offset)
 			mu.Lock()
@@ -1653,7 +1627,7 @@ func (h *FileHandle) Write(ctx context.Context, req *fuse.WriteRequest, resp *fu
 		if len(failures) > 0 {
 			h.cleanupFailedBackends(failures)
 		}
-		return fmt.Errorf("could not reach write quorum: %d/%d (last error: %v)", successes, h.file.fs.WriteQuorum, lastErr)
+		return fmt.Errorf("could not reach write quorum: %d/%d (last error: %w)", successes, h.file.fs.WriteQuorum, lastErr)
 	}
 
 	// Remove failed backends from the handle and from VFS metadata
@@ -1701,13 +1675,7 @@ func (h *FileHandle) cleanupFailedBackends(failures []string) {
 	h.file.node.Mu.Lock()
 	newBackends := make([]string, 0, len(h.file.node.Meta.Backends))
 	for _, bName := range h.file.node.Meta.Backends {
-		failed := false
-		for _, fName := range failures {
-			if bName == fName {
-				failed = true
-				break
-			}
-		}
+		failed := slices.Contains(failures, bName)
 		if !failed {
 			newBackends = append(newBackends, bName)
 		}
@@ -1737,9 +1705,7 @@ func (h *FileHandle) syncBackends(ctx context.Context) error {
 
 	h.mu.Lock()
 	backends := make(map[string]backend.File, len(h.backends))
-	for k, v := range h.backends {
-		backends[k] = v
-	}
+	maps.Copy(backends, h.backends)
 	h.mu.Unlock()
 
 	if len(backends) == 0 {
@@ -1753,7 +1719,6 @@ func (h *FileHandle) syncBackends(ctx context.Context) error {
 
 	g, gCtx := errgroup.WithContext(ctx)
 	for name, sf := range backends {
-		name, sf := name, sf
 		g.Go(func() error {
 			err := sf.Sync(gCtx)
 			mu.Lock()
@@ -1772,7 +1737,7 @@ func (h *FileHandle) syncBackends(ctx context.Context) error {
 
 	if successes < h.file.fs.WriteQuorum {
 		h.file.fs.pathLogger(h.file.node.Meta.Path).Errorf("Failed to sync: write quorum not met (%d/%d, last error: %v)", successes, h.file.fs.WriteQuorum, lastErr)
-		return fmt.Errorf("could not reach write quorum during sync: %d/%d (last error: %v)", successes, h.file.fs.WriteQuorum, lastErr)
+		return fmt.Errorf("could not reach write quorum during sync: %d/%d (last error: %w)", successes, h.file.fs.WriteQuorum, lastErr)
 	}
 
 	if len(failures) > 0 {

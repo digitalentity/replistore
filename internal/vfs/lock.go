@@ -169,7 +169,6 @@ func (l *DistributedLock) tryAcquire(ctx context.Context) error {
 
 	// 2. Remote Requests
 	for _, p := range peers {
-		p := p
 		g.Go(func() error {
 			var resp cluster.LockResponse
 			err := cluster.CallUDP(gCtx, l.Manager.Secret, p.Address, cluster.TypRequestLock, req, &resp)
@@ -273,7 +272,6 @@ func (l *DistributedLock) renew(peers []string) bool {
 	defer cancel()
 
 	for _, pID := range peers {
-		pID := pID
 		g.Go(func() error {
 			var status cluster.LockStatus
 			var err error
@@ -321,7 +319,6 @@ func (l *DistributedLock) rollback(peers []string, token string) {
 	defer cancel()
 
 	for _, pID := range peers {
-		pID := pID
 		g.Go(func() error {
 			var status cluster.LockStatus
 			if pID == l.Manager.NodeID {

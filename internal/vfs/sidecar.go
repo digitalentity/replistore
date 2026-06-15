@@ -97,7 +97,7 @@ func readMetaDoc(ctx context.Context, b backend.Backend, scPath string) (Sidecar
 
 	buf := make([]byte, 4096)
 	n, err := f.ReadAt(ctx, buf, 0)
-	if err != nil && !(err == io.EOF && n > 0) {
+	if err != nil && (err != io.EOF || n <= 0) {
 		return sc, err
 	}
 

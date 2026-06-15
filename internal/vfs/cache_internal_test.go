@@ -174,7 +174,7 @@ func mockWalk(b *bmock.MockBackend, entries map[string]backend.FileInfo) {
 // mockSidecarRead makes b serve a valid sidecar with the given generation for
 // path.
 func mockSidecarRead(b *bmock.MockBackend, path string, gen int64) {
-	payload := []byte(fmt.Sprintf(`{"v":1,"gen":%d,"writer":"w","deleted":false}`, gen))
+	payload := fmt.Appendf(nil, `{"v":1,"gen":%d,"writer":"w","deleted":false}`, gen)
 	f := &bmock.MockFile{}
 	f.On("ReadAt", mock.Anything, mock.Anything, int64(0)).Run(func(args mock.Arguments) {
 		copy(args.Get(1).([]byte), payload)
@@ -206,7 +206,7 @@ func mockTombstoneTree(b *bmock.MockBackend, tombs map[string]int64) {
 // mockTombstoneRead makes b serve a tombstone with the given generation for
 // path.
 func mockTombstoneRead(b *bmock.MockBackend, path string, gen int64) {
-	payload := []byte(fmt.Sprintf(`{"v":1,"gen":%d,"writer":"w","deleted":true}`, gen))
+	payload := fmt.Appendf(nil, `{"v":1,"gen":%d,"writer":"w","deleted":true}`, gen)
 	f := &bmock.MockFile{}
 	f.On("ReadAt", mock.Anything, mock.Anything, int64(0)).Run(func(args mock.Arguments) {
 		copy(args.Get(1).([]byte), payload)

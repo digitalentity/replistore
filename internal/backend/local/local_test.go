@@ -2,6 +2,7 @@ package local
 
 import (
 	"context"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -16,7 +17,7 @@ func TestLocalBackend_Lifecycle(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	// 1. Create the backend via factory Create
-	opts := map[string]interface{}{
+	opts := map[string]any{
 		"path": tmpDir,
 	}
 	b, err := backend.Create("local", "test-local", opts)
@@ -155,7 +156,7 @@ func TestLocalBackend_Lifecycle(t *testing.T) {
 
 	readBuf := make([]byte, 10)
 	rn, rerr := rf.ReadAt(ctx, readBuf, 0)
-	if rerr != nil && rerr != io.EOF {
+	if rerr != nil && !errors.Is(rerr, io.EOF) {
 		t.Fatalf("read truncated file failed: %v", rerr)
 	}
 	if rn != 5 {

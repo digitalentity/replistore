@@ -47,7 +47,7 @@ func NewSMBBackend(name, addr, share, user, pass, domain string, speed int, tags
 }
 
 func init() {
-	backend.Register("smb", func(name string, options map[string]interface{}) (backend.Backend, error) {
+	backend.Register("smb", func(name string, options map[string]any) (backend.Backend, error) {
 		addr, _ := options["address"].(string)
 		share, _ := options["share"].(string)
 		user, _ := options["user"].(string)
@@ -60,7 +60,7 @@ func init() {
 			speed = speedVal
 		}
 		var tags []string
-		if tList, ok := options["tags"].([]interface{}); ok {
+		if tList, ok := options["tags"].([]any); ok {
 			for _, t := range tList {
 				if s, ok := t.(string); ok {
 					tags = append(tags, s)

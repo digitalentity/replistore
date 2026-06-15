@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -193,7 +192,7 @@ func TestRepairManager_RepairNode_DetectsDivergentReplicas(t *testing.T) {
 
 	// Source sidecar: gen 7 with the (matching) content sum.
 	srcSidecar := &bmock.MockFile{}
-	srcPayload := []byte(fmt.Sprintf(`{"v":1,"gen":7,"writer":"node-x","deleted":false,"sum":"%s"}`, srcSum))
+	srcPayload := fmt.Appendf(nil, `{"v":1,"gen":7,"writer":"node-x","deleted":false,"sum":"%s"}`, srcSum)
 	b1.On("OpenFile", mock.Anything, vfs.SidecarPath("repair.txt"), os.O_RDONLY, os.FileMode(0)).Return(srcSidecar, nil)
 	srcSidecar.On("ReadAt", mock.Anything, mock.Anything, int64(0)).Run(func(args mock.Arguments) {
 		copy(args.Get(1).([]byte), srcPayload)
@@ -204,7 +203,7 @@ func TestRepairManager_RepairNode_DetectsDivergentReplicas(t *testing.T) {
 	// non-empty sum: divergence must be detected before the overwrite.
 	b2.On("Stat", mock.Anything, "repair.txt").Return(backend.FileInfo{Name: "repair.txt", Size: 17}, nil)
 	tgtSidecar := &bmock.MockFile{}
-	tgtPayload := []byte(fmt.Sprintf(`{"v":1,"gen":7,"writer":"node-y","deleted":false,"sum":"%s"}`, divergentSum))
+	tgtPayload := fmt.Appendf(nil, `{"v":1,"gen":7,"writer":"node-y","deleted":false,"sum":"%s"}`, divergentSum)
 	b2.On("OpenFile", mock.Anything, vfs.SidecarPath("repair.txt"), os.O_RDONLY, os.FileMode(0)).Return(tgtSidecar, nil)
 	tgtSidecar.On("ReadAt", mock.Anything, mock.Anything, int64(0)).Run(func(args mock.Arguments) {
 		copy(args.Get(1).([]byte), tgtPayload)
@@ -226,7 +225,7 @@ func TestRepairManager_RepairNode_DetectsDivergentReplicas(t *testing.T) {
 	assert.NoError(t, err)
 
 	// The divergence was counted exactly once.
-	assert.Equal(t, int64(1), atomic.LoadInt64(&mgr.divergenceCount))
+	assert.Equal(t, int64(1), mgr.divergenceCount.Load())
 
 	node.Mu.RLock()
 	assert.ElementsMatch(t, []string{"b1", "b2"}, node.Meta.Backends)
@@ -307,7 +306,7 @@ func mockTombstoneTree(b *bmock.MockBackend, tombs map[string]int64) {
 		}
 	}).Return(nil)
 	for path, gen := range tombs {
-		payload := []byte(fmt.Sprintf(`{"v":1,"gen":%d,"writer":"w","deleted":true}`, gen))
+		payload := fmt.Appendf(nil, `{"v":1,"gen":%d,"writer":"w","deleted":true}`, gen)
 		f := &bmock.MockFile{}
 		f.On("ReadAt", mock.Anything, mock.Anything, int64(0)).Run(func(args mock.Arguments) {
 			copy(args.Get(1).([]byte), payload)
@@ -319,7 +318,7 @@ func mockTombstoneTree(b *bmock.MockBackend, tombs map[string]int64) {
 
 // mockSidecarGen makes b serve a sidecar with the given generation for path.
 func mockSidecarGen(b *bmock.MockBackend, path string, gen int64) {
-	payload := []byte(fmt.Sprintf(`{"v":1,"gen":%d,"writer":"w","deleted":false}`, gen))
+	payload := fmt.Appendf(nil, `{"v":1,"gen":%d,"writer":"w","deleted":false}`, gen)
 	f := &bmock.MockFile{}
 	f.On("ReadAt", mock.Anything, mock.Anything, int64(0)).Run(func(args mock.Arguments) {
 		copy(args.Get(1).([]byte), payload)

@@ -47,7 +47,7 @@ type Backend interface {
 	Close() error
 }
 
-type Factory func(name string, options map[string]interface{}) (Backend, error)
+type Factory func(name string, options map[string]any) (Backend, error)
 
 var (
 	factoriesMu sync.RWMutex
@@ -60,7 +60,7 @@ func Register(typeName string, factory Factory) {
 	factories[strings.ToLower(typeName)] = factory
 }
 
-func Create(typeName string, name string, options map[string]interface{}) (Backend, error) {
+func Create(typeName string, name string, options map[string]any) (Backend, error) {
 	factoriesMu.RLock()
 	factory, ok := factories[strings.ToLower(typeName)]
 	factoriesMu.RUnlock()

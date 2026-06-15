@@ -144,10 +144,7 @@ func mergeMeta(existing *Metadata, incoming Metadata, incomingBackends []string)
 		return
 	}
 
-	maxGen := existing.Gen
-	if incoming.Gen > maxGen {
-		maxGen = incoming.Gen
-	}
+	maxGen := max(incoming.Gen, existing.Gen)
 
 	// Generations are comparable only when both sides have one (or neither
 	// does); a lone Gen 0 just means "observed without sidecar knowledge".
@@ -363,7 +360,6 @@ func GatherTombstones(ctx context.Context, backends []backend.Backend) map[strin
 
 	g, gCtx := errgroup.WithContext(ctx)
 	for _, b := range backends {
-		b := b
 		g.Go(func() error {
 			tombs := listTombstones(gCtx, b)
 			mu.Lock()
@@ -623,7 +619,7 @@ func splitPath(path string) []string {
 		return nil
 	}
 	var res []string
-	for _, s := range strings.Split(path, "/") {
+	for s := range strings.SplitSeq(path, "/") {
 		if s != "" {
 			res = append(res, s)
 		}
@@ -754,7 +750,6 @@ func (c *Cache) FetchEntry(ctx context.Context, path string, backends []backend.
 
 	g, gCtx := errgroup.WithContext(ctx)
 	for _, b := range backends {
-		b := b
 		g.Go(func() error {
 			info, err := b.Stat(gCtx, path)
 			if err != nil {
@@ -845,7 +840,6 @@ func (c *Cache) FetchDir(ctx context.Context, path string, backends []backend.Ba
 
 	g, gCtx := errgroup.WithContext(ctx)
 	for _, b := range backends {
-		b := b
 		g.Go(func() error {
 			entries, err := b.ReadDir(gCtx, path)
 			if err != nil {
@@ -928,7 +922,6 @@ func (c *Cache) Get(path string) (*Node, bool) {
 func (c *Cache) Warmup(ctx context.Context, backends []backend.Backend) {
 	g, gCtx := errgroup.WithContext(ctx)
 	for _, b := range backends {
-		b := b
 		g.Go(func() error {
 			c.logger().Infof("Scanning backend: %s", b.GetName())
 			err := b.Walk(gCtx, "", func(path string, info backend.FileInfo) error {

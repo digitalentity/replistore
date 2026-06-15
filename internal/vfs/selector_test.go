@@ -1,7 +1,6 @@
 package vfs_test
 
 import (
-	"context"
 	"testing"
 	"time"
 
@@ -32,7 +31,7 @@ func TestSpaceAwareSelector_SelectForRead(t *testing.T) {
 
 	// Since b1 and b3 have speed 10, and b2 has speed 5, SelectForRead should only pick b1 or b3
 	selectedCount := map[string]int{}
-	for i := 0; i < 100; i++ {
+	for range 100 {
 		b := selector.SelectForRead(meta)
 		selectedCount[b]++
 	}
@@ -46,14 +45,13 @@ func TestSpaceAwareSelector_SelectForRead(t *testing.T) {
 	b2.On("Ping", mock.Anything).Return(nil)
 	b3.On("Ping", mock.Anything).Return(nil)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	monitor.Start(ctx, 1*time.Millisecond)
 	time.Sleep(10 * time.Millisecond) // Wait for health check to run
 
 	// Since b1 is unhealthy, only b3 (speed 10) is the fastest healthy candidate
-	for i := 0; i < 50; i++ {
+	for range 50 {
 		b := selector.SelectForRead(meta)
 		assert.Equal(t, "b3", b, "should select b3 since b1 is down and b2 is slower")
 	}

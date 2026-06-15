@@ -116,7 +116,7 @@ func TestLockManager_SweepExpiredGrants(t *testing.T) {
 
 	countGrants := func() int {
 		n := 0
-		m.grants.Range(func(_, _ interface{}) bool {
+		m.grants.Range(func(_, _ any) bool {
 			n++
 			return true
 		})

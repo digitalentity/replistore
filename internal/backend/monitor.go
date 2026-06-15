@@ -48,7 +48,6 @@ func (m *HealthMonitor) checkAll(ctx context.Context) {
 	g, gCtx := errgroup.WithContext(ctx)
 
 	for name, b := range m.backends {
-		name, b := name, b
 		g.Go(func() error {
 			// Each ping gets its own sub-timeout
 			pingCtx, cancel := context.WithTimeout(gCtx, 2*time.Second)
