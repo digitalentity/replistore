@@ -8,19 +8,73 @@ run:
 linters:
   disable:
     - errcheck
+    - funcorder
+    - exhaustruct
+    - gochecknoglobals
   enable:
-    - govet
     - ineffassign
     - staticcheck
-    - unused
+    - bidichk
+    - containedctx
+    - contextcheck
+    - copyloopvar
+    - dupl
+    - dupword
+    - durationcheck
+    - errchkjson
+    - errname
+    - errorlint
+    - exhaustive
+    - gochecksumtype
+    - goconst
+    - gocritic
+    - godot
+    - godox
+    - gosec
+    - govet
+    - grouper
+    - iface
+    - importas
+    - inamedparam
+    - intrange
+    - iotamixing
+    - ireturn
+    - loggercheck
     - misspell
+    - mnd
+    - modernize
+    - nestif
+    - nilerr
+    - nilnil
+    # - nlreturn
+    - noctx
+    - nonamedreturns
+    - perfsprint
+    - prealloc
+    - predeclared
+    - promlinter
     - revive
+    - recvcheck
+    - tagalign
+    # - testifylint
+    - testpackage
+    - thelper
+    - unused
+    - unconvert
+    - unparam
+    - usestdlibvars
+    - usetesting
   settings:
+    godox:
+      keywords:
+        - NOTE
+        - OPTIMIZE
+        - HACK
+        - TODO
+        - FIXME
     staticcheck:
       checks:
         - "all"
-        - "-QF1001"
-        - "-ST1000"
     revive:
       rules:
         - name: exported
