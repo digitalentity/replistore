@@ -451,7 +451,7 @@ func resolveGlobalState(ctx context.Context, perBackend map[string]map[string]Me
 	resolved := make(map[string]*Metadata, len(candidates))
 	var dead []string
 	for path, cands := range candidates {
-		if tombGen, ok := tombstones[path]; ok && !anyDir(cands) {
+		if tombGen, ok := tombstones[path]; ok {
 			loadGenerations(ctx, path, cands, byName)
 			cands = dropZombies(cands, tombGen)
 			if len(cands) == 0 {
@@ -464,20 +464,6 @@ func resolveGlobalState(ctx context.Context, perBackend map[string]map[string]Me
 		resolved[path] = foldCandidates(cands)
 	}
 	return resolved, dead
-}
-
-// anyDir reports whether any candidate is a directory. Only FILE tombstones
-// exist in this phase, so a path occupied by a directory anywhere ignores
-// tombstones entirely. TODO(C6-dirs): directory deletions still rely on the
-// all-backends fan-out in Dir.Remove and can resurrect from an offline
-// backend.
-func anyDir(cands []Metadata) bool {
-	for _, m := range cands {
-		if m.IsDir {
-			return true
-		}
-	}
-	return false
 }
 
 // dropZombies returns the candidates whose generation is strictly above the
@@ -785,24 +771,22 @@ func (c *Cache) FetchEntry(ctx context.Context, path string, backends []backend.
 				IsDir:   info.IsDir,
 				Path:    path,
 			}
-			if !info.IsDir {
-				// One extra read for a single path is cheap and gives
-				// mergeMeta real version knowledge (missing sidecar → Gen 0).
-				meta.Gen = sidecarGen(gCtx, b, path)
-				// Read the tombstone alongside the sidecar: a replica at or
-				// below the recorded deletion generation is a zombie and must
-				// not be admitted (REVIEW.md C6).
-				switch tsc, terr := ReadTombstone(gCtx, b, path); {
-				case terr == nil && tsc.Deleted:
-					stateMu.Lock()
-					if !tombFound || tsc.Gen > maxTombGen {
-						tombFound = true
-						maxTombGen = tsc.Gen
-					}
-					stateMu.Unlock()
-				case terr != nil && !os.IsNotExist(terr) && !errors.Is(terr, os.ErrNotExist):
-					logrus.Debugf("vfs: tombstone read for %q on %s failed: %v", path, b.GetName(), terr)
+			// One extra read for a single path is cheap and gives
+			// mergeMeta real version knowledge (missing sidecar → Gen 0).
+			meta.Gen = sidecarGen(gCtx, b, path)
+			// Read the tombstone alongside the sidecar: a replica at or
+			// below the recorded deletion generation is a zombie and must
+			// not be admitted (REVIEW.md C6).
+			switch tsc, terr := ReadTombstone(gCtx, b, path); {
+			case terr == nil && tsc.Deleted:
+				stateMu.Lock()
+				if !tombFound || tsc.Gen > maxTombGen {
+					tombFound = true
+					maxTombGen = tsc.Gen
 				}
+				stateMu.Unlock()
+			case terr != nil && !os.IsNotExist(terr) && !errors.Is(terr, os.ErrNotExist):
+				logrus.Debugf("vfs: tombstone read for %q on %s failed: %v", path, b.GetName(), terr)
 			}
 
 			stateMu.Lock()
@@ -831,7 +815,7 @@ func (c *Cache) FetchEntry(ctx context.Context, path string, backends []backend.
 		return nil, ErrUnavailable
 	}
 
-	if !bestMeta.IsDir && tombFound && maxTombGen >= bestMeta.Gen {
+	if tombFound && maxTombGen >= bestMeta.Gen {
 		// The winning replica is a zombie of a deleted version: the recorded
 		// deletion generation is at least as new as anything found.
 		return nil, os.ErrNotExist

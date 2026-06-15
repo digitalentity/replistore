@@ -66,7 +66,6 @@ Integrate with external secret providers (e.g., HashiCorp Vault) or system keyri
 
 One-liners for the items still open in [REVIEW.md](REVIEW.md); see the finding bodies there for details.
 
-- **C6-dirs:** tombstones cover files only; directory deletions can still resurrect from a backend that missed the remove.
 - **C8 residual:** no read-quorum/staleness semantics for lazy fetches — a single responding backend is treated as authoritative.
 - **M2:** negative lookups are never cached; path-probing workloads fan a `Stat` out to every backend per miss.
 - **M7:** backend reconnects ignore context deadlines; a down backend stalls health checks beyond their budget.
@@ -82,6 +81,7 @@ The test suite is mock-based throughout; a real-cluster smoke test of the sideca
 
 Major items delivered during the 2026-06 remediation, newest first:
 
+- (Remediation) — C6-dirs: directory deletes and renames write tombstones and sidecars; repair enforces directory tombstones.
 - (Remediation) — M3: walkStart timestamp captured in syncAll and sweep skipped for nodes updated during/after walk.
 - (Remediation) — M4: active open handles tracked on vfs.Node and checked to prevent cache node pruning during sync.
 - `8266ec7` — `File.Fsync` routed through open write handles; background rename orphan cleanup; `findPeer` optimization.

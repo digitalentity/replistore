@@ -560,6 +560,9 @@ func (d *Dir) Mkdir(ctx context.Context, req *fuse.MkdirRequest) (fs.Node, error
 		return nil, fmt.Errorf("could not reach write quorum for mkdir: %d/%d", len(satisfiedOn), d.fs.WriteQuorum)
 	}
 
+	newGen := d.fs.maxTombstoneGen(ctx, path) + 1
+	d.fs.writeSidecars(ctx, path, vfs.Sidecar{Gen: newGen, Writer: d.fs.NodeID}, satisfiedOn)
+
 	d.node.Mu.Lock()
 	defer d.node.Mu.Unlock()
 
@@ -574,6 +577,7 @@ func (d *Dir) Mkdir(ctx context.Context, req *fuse.MkdirRequest) (fs.Node, error
 		Mode:     req.Mode | os.ModeDir,
 		IsDir:    true,
 		Backends: satisfiedOn,
+		Gen:      newGen,
 	}
 	child := &vfs.Node{
 		Meta:     meta,
@@ -624,19 +628,15 @@ func (d *Dir) Remove(ctx context.Context, req *fuse.RemoveRequest) error {
 		defer lock.Release()
 	}
 
-	if !isDir {
-		// Make the deletion durable BEFORE destroying any data (REVIEW.md C6):
-		// write a tombstone at the deletion generation to ALL configured
-		// backends, so a replica on a backend that misses the delete cannot
-		// resurrect via background sync. Without a tombstone quorum the remove
-		// is refused and no data is touched.
-		// TODO(C6-dirs): directory deletions still rely on the all-backends
-		// fan-out below and can resurrect from an offline backend.
-		tombGen := gen + 1
-		tomb := vfs.Sidecar{Gen: tombGen, Writer: d.fs.NodeID, Deleted: true}
-		if successes := d.fs.writeTombstones(ctx, path, tomb, d.fs.allBackendNames()); successes < d.fs.WriteQuorum {
-			return fmt.Errorf("could not reach write quorum for tombstone: %d/%d", successes, d.fs.WriteQuorum)
-		}
+	// Make the deletion durable BEFORE destroying any data (REVIEW.md C6):
+	// write a tombstone at the deletion generation to ALL configured
+	// backends, so a replica on a backend that misses the delete cannot
+	// resurrect via background sync. Without a tombstone quorum the remove
+	// is refused and no data is touched.
+	tombGen := gen + 1
+	tomb := vfs.Sidecar{Gen: tombGen, Writer: d.fs.NodeID, Deleted: true}
+	if successes := d.fs.writeTombstones(ctx, path, tomb, d.fs.allBackendNames()); successes < d.fs.WriteQuorum {
+		return fmt.Errorf("could not reach write quorum for tombstone: %d/%d", successes, d.fs.WriteQuorum)
 	}
 
 	var successes int
@@ -665,18 +665,15 @@ func (d *Dir) Remove(ctx context.Context, req *fuse.RemoveRequest) error {
 		return fmt.Errorf("could not reach write quorum for remove: %d/%d", successes, d.fs.WriteQuorum)
 	}
 
-	if !isDir {
-		// Best-effort sidecar cleanup on the backends that held the file.
-		// Directories have no sidecars. Durability is carried by the
-		// tombstones written above, not by this cleanup.
-		for _, bName := range backends {
-			b, okB := d.fs.Backends[bName]
-			if !okB {
-				continue
-			}
-			if err := vfs.RemoveSidecar(ctx, b, path); err != nil {
-				logrus.Warnf("Failed to remove sidecar for %s on backend %s: %v", path, bName, err)
-			}
+	// Best-effort sidecar cleanup on the backends that held the file or directory.
+	// Durability is carried by the tombstones written above, not by this cleanup.
+	for _, bName := range backends {
+		b, okB := d.fs.Backends[bName]
+		if !okB {
+			continue
+		}
+		if err := vfs.RemoveSidecar(ctx, b, path); err != nil {
+			logrus.Warnf("Failed to remove sidecar for %s on backend %s: %v", path, bName, err)
 		}
 	}
 
@@ -816,46 +813,55 @@ func (d *Dir) Rename(ctx context.Context, req *fuse.RenameRequest, newDir fs.Nod
 		return syscall.EIO
 	}
 
-	var newGen int64
-	if !isDir {
-		// The renamed file starts a new lineage at the new path and the old
-		// lineage is tombstoned (REVIEW.md C6). Best-effort tombstone at the
-		// old path on ALL configured backends: the rename already reached
-		// quorum, so a missed tombstone only delays convergence (a stale
-		// replica at oldPath survives until the next remove/scrub), it does
-		// not lose data — so the rename is not failed. The old-path tombstone
-		// stays in the SOURCE lineage: it only needs to exceed the old
-		// replicas' generation (gen), so it is gen+1 specifically — not the
-		// possibly-larger new-path generation computed below.
-		oldTombGen := gen + 1
-		tomb := vfs.Sidecar{Gen: oldTombGen, Writer: d.fs.NodeID, Deleted: true}
-		all := d.fs.allBackendNames()
-		if n := d.fs.writeTombstones(ctx, oldPath, tomb, all); n < len(all) {
-			logrus.Warnf("Tombstone for renamed path %s reached only %d/%d backends", oldPath, n, len(all))
+	// The renamed file or directory starts a new lineage at the new path and the old
+	// lineage is tombstoned (REVIEW.md C6). Best-effort tombstone at the
+	// old path on ALL configured backends: the rename already reached
+	// quorum, so a missed tombstone only delays convergence (a stale
+	// replica at oldPath survives until the next remove/scrub), it does
+	// not lose data — so the rename is not failed. The old-path tombstone
+	// stays in the SOURCE lineage: it only needs to exceed the old
+	// replicas' generation (gen), so it is gen+1 specifically — not the
+	// possibly-larger new-path generation computed below.
+	oldTombGen := gen + 1
+	tomb := vfs.Sidecar{Gen: oldTombGen, Writer: d.fs.NodeID, Deleted: true}
+	all := d.fs.allBackendNames()
+	if n := d.fs.writeTombstones(ctx, oldPath, tomb, all); n < len(all) {
+		logrus.Warnf("Tombstone for renamed path %s reached only %d/%d backends", oldPath, n, len(all))
+	}
+
+	// The new path's lineage must start above BOTH the source generation
+	// and any tombstone already recorded at newPath: a tombstone at gen T
+	// dooms every replica at gen <= T (dropZombies / enforceTombstone), so
+	// renaming onto a tombstoned path at gen+1 alone could produce a
+	// zombie-in-waiting.
+	newGen := max(gen, d.fs.maxTombstoneGen(ctx, newPath)) + 1
+
+	// Fresh sidecar at the new path with the bumped generation on every
+	// backend the rename succeeded on (best-effort, like all sidecar
+	// writes), plus best-effort cleanup of the now-orphaned old sidecar.
+	d.fs.writeSidecars(ctx, newPath, vfs.Sidecar{Gen: newGen, Writer: d.fs.NodeID}, successful)
+	for _, bName := range successful {
+		if err := vfs.RemoveSidecar(ctx, d.fs.Backends[bName], oldPath); err != nil {
+			logrus.Debugf("Failed to remove old sidecar for %s on %s: %v", oldPath, bName, err)
 		}
+	}
 
-		// The new path's lineage must start above BOTH the source generation
-		// and any tombstone already recorded at newPath: a tombstone at gen T
-		// dooms every replica at gen <= T (dropZombies / enforceTombstone), so
-		// renaming onto a tombstoned path at gen+1 alone could produce a
-		// zombie-in-waiting.
-		newGen = max(gen, d.fs.maxTombstoneGen(ctx, newPath)) + 1
-
-		// Fresh sidecar at the new path with the bumped generation on every
-		// backend the rename succeeded on (best-effort, like all sidecar
-		// writes), plus best-effort cleanup of the now-orphaned old sidecar.
-		d.fs.writeSidecars(ctx, newPath, vfs.Sidecar{Gen: newGen, Writer: d.fs.NodeID}, successful)
+	// For directory renames, rename the sidecar subfolders under meta/ and tombstones/ (REVIEW C6-dirs)
+	if isDir {
 		for _, bName := range successful {
-			if err := vfs.RemoveSidecar(ctx, d.fs.Backends[bName], oldPath); err != nil {
-				logrus.Debugf("Failed to remove old sidecar for %s on %s: %v", oldPath, bName, err)
+			b := d.fs.Backends[bName]
+			oldMetaDir := vfs.ReservedDir + "/meta/" + oldPath
+			newMetaDir := vfs.ReservedDir + "/meta/" + newPath
+			if err := b.Rename(ctx, oldMetaDir, newMetaDir); err != nil && !os.IsNotExist(err) && !errors.Is(err, os.ErrNotExist) {
+				logrus.Debugf("Failed to rename sidecar directory %s to %s on %s: %v", oldMetaDir, newMetaDir, bName, err)
+			}
+			oldTombDir := vfs.ReservedDir + "/tombstones/" + oldPath
+			newTombDir := vfs.ReservedDir + "/tombstones/" + newPath
+			if err := b.Rename(ctx, oldTombDir, newTombDir); err != nil && !os.IsNotExist(err) && !errors.Is(err, os.ErrNotExist) {
+				logrus.Debugf("Failed to rename tombstone directory %s to %s on %s: %v", oldTombDir, newTombDir, bName, err)
 			}
 		}
 	}
-	// TODO(meta-dir-rename): the sidecar tree mirrors the data tree, so
-	// renaming a data directory D leaves the sidecars under
-	// .replistore/meta/D stale (replicas of moved files report generation 0
-	// until rewritten). TODO(C6-dirs): directory renames also write no
-	// tombstones, so a subtree on an offline backend can resurrect.
 
 	// Update Cache
 	if !d.fs.Cache.Rename(oldPath, newPath) {
@@ -863,12 +869,10 @@ func (d *Dir) Rename(ctx context.Context, req *fuse.RenameRequest, newDir fs.Nod
 		return syscall.EIO
 	}
 
-	if !isDir {
-		// The new path carries the bumped generation written above.
-		sourceNode.Mu.Lock()
-		sourceNode.Meta.Gen = newGen
-		sourceNode.Mu.Unlock()
-	}
+	// The new path carries the bumped generation written above.
+	sourceNode.Mu.Lock()
+	sourceNode.Meta.Gen = newGen
+	sourceNode.Mu.Unlock()
 
 	if isDir {
 		// The renamed directory now exists exactly on the backends where the

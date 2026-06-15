@@ -414,6 +414,11 @@ func TestCache_FetchEntryDirUnionsBackends(t *testing.T) {
 		ModTime: now.Add(-time.Hour),
 	}, nil)
 
+	b1.On("OpenFile", mock.Anything, vfs.SidecarPath(path), os.O_RDONLY, os.FileMode(0)).Return(nil, os.ErrNotExist).Maybe()
+	b1.On("OpenFile", mock.Anything, vfs.TombstonePath(path), os.O_RDONLY, os.FileMode(0)).Return(nil, os.ErrNotExist).Maybe()
+	b2.On("OpenFile", mock.Anything, vfs.SidecarPath(path), os.O_RDONLY, os.FileMode(0)).Return(nil, os.ErrNotExist).Maybe()
+	b2.On("OpenFile", mock.Anything, vfs.TombstonePath(path), os.O_RDONLY, os.FileMode(0)).Return(nil, os.ErrNotExist).Maybe()
+
 	node, err := cache.FetchEntry(ctx, path, []backend.Backend{b1, b2})
 	assert.NoError(t, err)
 	assert.NotNil(t, node)

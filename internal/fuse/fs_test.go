@@ -654,6 +654,11 @@ func TestMkdir_AlreadyExistsCountsTowardQuorum(t *testing.T) {
 	b2.On("Mkdir", mock.Anything, "existing-dir", mock.Anything).Return(os.ErrExist)
 	b2.On("Stat", mock.Anything, "existing-dir").Return(backend.FileInfo{Name: "existing-dir", IsDir: true}, nil)
 
+	expectNoTombstone(b1, "existing-dir")
+	expectNoTombstone(b2, "existing-dir")
+	expectSidecarWrite(b1, "existing-dir")
+	expectSidecarWrite(b2, "existing-dir")
+
 	req := &fuse.MkdirRequest{Name: "existing-dir", Mode: 0755}
 	node, err := dir.Mkdir(context.Background(), req)
 
@@ -759,6 +764,11 @@ func TestRemove_DirFansOutToAllBackends(t *testing.T) {
 	b1.On("Remove", mock.Anything, "subdir").Return(nil)
 	// The directory being already absent on b2 counts as success for delete.
 	b2.On("Remove", mock.Anything, "subdir").Return(os.ErrNotExist)
+
+	expectTombstoneWrite(b1, "subdir")
+	expectTombstoneWrite(b2, "subdir")
+	expectSidecarRemove(b1, "subdir")
+	expectSidecarRemove(b2, "subdir")
 
 	req := &fuse.RemoveRequest{Name: "subdir", Dir: true}
 	err := dir.Remove(context.Background(), req)
@@ -1101,6 +1111,9 @@ func TestDir_Mkdir_MkdirAllParent(t *testing.T) {
 
 	b1.On("MkdirAll", mock.Anything, "parent", os.FileMode(0755)).Return(nil)
 	b1.On("Mkdir", mock.Anything, "parent/new-sub-dir", os.FileMode(0755)).Return(nil)
+
+	expectNoTombstone(b1, "parent/new-sub-dir")
+	expectSidecarWrite(b1, "parent/new-sub-dir")
 
 	req := &fuse.MkdirRequest{Name: "new-sub-dir", Mode: 0755}
 	node, err := dir.Mkdir(context.Background(), req)

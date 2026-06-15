@@ -129,6 +129,20 @@ func TestDir_Rename_DirFansOutToAllBackends(t *testing.T) {
 	b2.On("MkdirAll", mock.Anything, "", os.FileMode(0755)).Return(nil)
 	b2.On("Rename", mock.Anything, "olddir", "newdir").Return(nil)
 
+	expectNoTombstone(b1, "newdir")
+	expectNoTombstone(b2, "newdir")
+	expectTombstoneWrite(b1, "olddir")
+	expectTombstoneWrite(b2, "olddir")
+	expectSidecarWrite(b1, "newdir")
+	expectSidecarWrite(b2, "newdir")
+	expectSidecarRemove(b1, "olddir")
+	expectSidecarRemove(b2, "olddir")
+
+	b1.On("Rename", mock.Anything, ".replistore/meta/olddir", ".replistore/meta/newdir").Return(nil).Maybe()
+	b1.On("Rename", mock.Anything, ".replistore/tombstones/olddir", ".replistore/tombstones/newdir").Return(nil).Maybe()
+	b2.On("Rename", mock.Anything, ".replistore/meta/olddir", ".replistore/meta/newdir").Return(nil).Maybe()
+	b2.On("Rename", mock.Anything, ".replistore/tombstones/olddir", ".replistore/tombstones/newdir").Return(nil).Maybe()
+
 	req := &fuse.RenameRequest{OldName: "olddir", NewName: "newdir"}
 	err := root.Rename(context.Background(), req, root)
 	assert.NoError(t, err)
@@ -167,6 +181,16 @@ func TestDir_Rename_DirNotExistIsSkipped(t *testing.T) {
 	// Source dir simply doesn't exist on b2: neither success nor failure,
 	// and no async orphan removal must be triggered.
 	b2.On("Rename", mock.Anything, "olddir", "newdir").Return(os.ErrNotExist)
+
+	expectNoTombstone(b1, "newdir")
+	expectNoTombstone(b2, "newdir")
+	expectTombstoneWrite(b1, "olddir")
+	expectTombstoneWrite(b2, "olddir")
+	expectSidecarWrite(b1, "newdir")
+	expectSidecarRemove(b1, "olddir")
+
+	b1.On("Rename", mock.Anything, ".replistore/meta/olddir", ".replistore/meta/newdir").Return(nil).Maybe()
+	b1.On("Rename", mock.Anything, ".replistore/tombstones/olddir", ".replistore/tombstones/newdir").Return(nil).Maybe()
 
 	req := &fuse.RenameRequest{OldName: "olddir", NewName: "newdir"}
 	err := root.Rename(context.Background(), req, root)

@@ -11,7 +11,7 @@ Architecture changes made during remediation (beyond the original findings):
 - **UDP lock transport** replaced net/rpc-over-TCP (`dcf5a7b`): JWS-compact (HS256) datagrams signed with the mandatory `cluster_secret`; pinned header; crypto/rand request IDs; retransmit with backoff.
 - **Version-metadata substrate** (`41f3fa5`, `b1800e1`, `4fff8cf`, `87355f5`): per-file generation sidecars under `.replistore/meta/`, tombstones under `.replistore/tombstones/`, repair-time sha256 sums; the reserved tree is hidden from the mount (`1c0c463`).
 
-Remaining open items, roughly by value: directory tombstones (C6-dirs); read-quorum/staleness semantics for lazy fetches (C8 residual); M2 negative-lookup cache; M7 ctx-aware backend reconnects; M11 rename-over-existing-target atomicity; M12 rmdir emptiness check in the unified view; H4 renewal grace period; L1/L3/L5/L6/L7 nits. The test suite is mock-based throughout — a real-cluster smoke test of the sidecar/tombstone machinery is advised before production use.
+Remaining open items, roughly by value: read-quorum/staleness semantics for lazy fetches (C8 residual); M2 negative-lookup cache; M7 ctx-aware backend reconnects; M11 rename-over-existing-target atomicity; M12 rmdir emptiness check in the unified view; H4 renewal grace period; L1/L3/L5/L6/L7 nits. The test suite is mock-based throughout — a real-cluster smoke test of the sidecar/tombstone machinery is advised before production use.
 
 ---
 
@@ -89,7 +89,7 @@ Replica metadata reconciliation (`Cache.Upsert`, `syncAll`, `FetchEntry` — int
 
 ### C6. No tombstones: deletes and renames resurrect from any backend that missed the operation
 
-> **Status: FIXED** in `4fff8cf` — tombstones at .replistore/tombstones/<path> with quorum-gated deletes, sync/lazy-fetch suppression, repair-driven zombie cleanup and GC. Residual: directory deletions (TODO C6-dirs).
+> **Status: FIXED** in `4fff8cf` — tombstones at .replistore/tombstones/<path> with quorum-gated deletes, sync/lazy-fetch suppression, repair-driven zombie cleanup and GC. Residual directory deletions (C6-dirs) also fixed: directory deletes and renames write tombstones and sidecars, and repair cleans up directory trees.
 
 `Remove` deletes only from the backends in `Meta.Backends` (already a lossy subset, see C4/C5) and requires only `write_quorum` successes. Any replica that was offline, failed the delete, or was dropped from the list by LWW still holds the file. The next `syncAll`/`FetchEntry` happily re-adds it to the namespace. Same for `Rename`: the old path resurrects from backends where the rename or the async orphan-cleanup `Remove` (fs.go:494) failed. For an eventually-consistent system with no oplog, deletion without tombstones is structurally unsound — "deleted" is indistinguishable from "not yet replicated".
 

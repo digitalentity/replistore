@@ -144,12 +144,6 @@ func (m *RepairManager) enforceTombstone(ctx context.Context, path string, tombG
 			failed = true
 			continue
 		}
-		if info.IsDir {
-			// A directory occupies the path; file tombstones don't apply to
-			// directories (TODO(C6-dirs)). Keep the tombstone untouched.
-			failed = true
-			continue
-		}
 
 		gen := int64(0) // missing sidecar = legacy replica at generation 0
 		if sc, scErr := vfs.ReadSidecar(ctx, b, path); scErr == nil {
@@ -168,8 +162,14 @@ func (m *RepairManager) enforceTombstone(ctx context.Context, path string, tombG
 
 		// Zombie replica of the deleted version: remove data and meta sidecar.
 		logrus.Infof("Tombstone enforcement: removing zombie replica of %s (gen %d <= tombstone gen %d) from %s", path, gen, tombGen, name)
-		if err := b.Remove(ctx, path); err != nil && !os.IsNotExist(err) && !errors.Is(err, os.ErrNotExist) {
-			logrus.Warnf("Tombstone enforcement: failed to remove zombie %s from %s: %v", path, name, err)
+		var removeErr error
+		if info.IsDir {
+			removeErr = removeAll(ctx, b, path)
+		} else {
+			removeErr = b.Remove(ctx, path)
+		}
+		if removeErr != nil && !os.IsNotExist(removeErr) && !errors.Is(removeErr, os.ErrNotExist) {
+			logrus.Warnf("Tombstone enforcement: failed to remove zombie %s from %s: %v", path, name, removeErr)
 			failed = true
 			continue
 		}
@@ -424,4 +424,45 @@ func (w *offsetWriter) Write(p []byte) (n int, err error) {
 	n, err = w.f.WriteAt(w.ctx, p, w.offset)
 	w.offset += int64(n)
 	return
+}
+
+func removeAll(ctx context.Context, b backend.Backend, path string) error {
+	var files []string
+	var dirs []string
+	err := b.Walk(ctx, path, func(p string, info backend.FileInfo) error {
+		if info.IsDir {
+			dirs = append(dirs, p)
+		} else {
+			files = append(files, p)
+		}
+		return nil
+	})
+	if err != nil {
+		if os.IsNotExist(err) || errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+
+	// Remove all files
+	for _, f := range files {
+		if err := b.Remove(ctx, f); err != nil && !os.IsNotExist(err) && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		_ = vfs.RemoveSidecar(ctx, b, f)
+	}
+
+	// Remove dirs in reverse order (bottom-up)
+	for i := len(dirs) - 1; i >= 0; i-- {
+		d := dirs[i]
+		if err := b.Remove(ctx, d); err != nil && !os.IsNotExist(err) && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+	}
+
+	// Finally, remove the directory itself
+	if err := b.Remove(ctx, path); err != nil && !os.IsNotExist(err) && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return nil
 }
