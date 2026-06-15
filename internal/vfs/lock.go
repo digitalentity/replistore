@@ -80,6 +80,10 @@ const (
 	acquireMaxAttempts = 4
 	acquireBaseBackoff = 50 * time.Millisecond
 	acquireMaxBackoff  = 400 * time.Millisecond
+
+	// renewalCadenceDivisor sets the renewal interval to LeaseTTL/3, giving
+	// roughly three renewal attempts per lease before the deadline passes.
+	renewalCadenceDivisor = 3
 )
 
 // Acquire attempts to get a quorum of peers to grant the lock. On quorum
@@ -218,7 +222,12 @@ func (l *DistributedLock) startRenewal(peers []string) {
 	l.log.Debugf("Starting background lock renewal for peers: %v", peers)
 	go func() {
 		defer l.renewalWg.Done()
-		ticker := time.NewTicker(l.Manager.LeaseTTL / 2)
+		// Renew on a faster cadence than the lease lasts (TTL/3) so a single
+		// transient failure leaves room for two more attempts before the lease
+		// deadline. A missed round does NOT immediately surrender the lock: the
+		// lease is only declared lost once its deadline (expiresAt, advanced on
+		// every successful round) actually passes without a quorum renewal.
+		ticker := time.NewTicker(l.Manager.LeaseTTL / renewalCadenceDivisor)
 		defer ticker.Stop()
 
 		for {
@@ -227,13 +236,17 @@ func (l *DistributedLock) startRenewal(peers []string) {
 				l.rollback(peers, l.FencingToken)
 				return
 			case <-ticker.C:
-				if !l.renew(peers) {
-					l.log.Error("Failed to renew lease quorum, lock lost")
+				if l.renew(peers) {
+					continue
+				}
+				if time.Now().After(l.ExpiresAt()) {
+					l.log.Error("Lease deadline passed without a quorum renewal, lock lost")
 					l.mu.Lock()
 					l.isValid = false
 					l.mu.Unlock()
 					return
 				}
+				l.log.Warnf("Renewal round missed quorum, retrying before lease deadline (%v)", l.ExpiresAt())
 			}
 		}
 	}()
@@ -253,8 +266,9 @@ func (l *DistributedLock) renew(peers []string) bool {
 	}
 
 	g, gCtx := errgroup.WithContext(context.Background())
-	// Renewal should have a strict timeout
-	gCtx, cancel := context.WithTimeout(gCtx, l.Manager.LeaseTTL/2)
+	// Bound each round to the renewal cadence so a hung round cannot eat the
+	// grace window the retry loop relies on.
+	gCtx, cancel := context.WithTimeout(gCtx, l.Manager.LeaseTTL/renewalCadenceDivisor)
 	defer cancel()
 
 	for _, pID := range peers {

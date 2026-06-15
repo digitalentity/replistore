@@ -104,6 +104,49 @@ func TestDistributedLock_Renewal(t *testing.T) {
 	lock.Release()
 }
 
+// TestDistributedLock_RenewalGracePeriod verifies H4: a single renewal round
+// that misses quorum does NOT immediately surrender the lock. The lock stays
+// valid until the lease deadline actually passes without a successful round.
+func TestDistributedLock_RenewalGracePeriod(t *testing.T) {
+	n1 := cluster.NewLockManager("node1")
+	n1.Secret = testClusterSecret
+	n1.ExpectedClusterSize = 2
+	n1.LeaseTTL = 600 * time.Millisecond
+	_, _ = n1.Start("127.0.0.1:0")
+	defer n1.Stop()
+
+	n2 := cluster.NewLockManager("node2")
+	n2.Secret = testClusterSecret
+	n2.ExpectedClusterSize = 2
+	n2.LeaseTTL = 600 * time.Millisecond
+	addr2, _ := n2.Start("127.0.0.1:0")
+
+	disco1 := cluster.NewDiscovery("node1", "", nil)
+	disco1.Peers["node2"] = cluster.Peer{ID: "node2", Address: addr2, LastSeen: time.Now()}
+
+	lock := vfs.NewDistributedLock("grace/path", n1, disco1)
+
+	err := lock.Acquire(context.Background())
+	assert.NoError(t, err)
+	assert.True(t, lock.IsValid())
+
+	// Kill the peer: every subsequent renewal round can reach only the local
+	// node (1 of 2), missing quorum.
+	n2.Stop()
+
+	// One cadence (LeaseTTL/3 = 200ms) plus margin later, at least one renewal
+	// round has failed, yet the lease deadline (~600ms out) has not passed: the
+	// lock must still be held.
+	time.Sleep(300 * time.Millisecond)
+	assert.True(t, lock.IsValid(), "lock surrendered on a single missed renewal round")
+
+	// Past the lease deadline with no successful round, the lock is lost.
+	time.Sleep(500 * time.Millisecond)
+	assert.False(t, lock.IsValid(), "lock not surrendered after lease deadline passed")
+
+	lock.Release()
+}
+
 func TestDistributedLock_SameNodeMutualExclusion(t *testing.T) {
 	n1 := cluster.NewLockManager("node1")
 	n1.Secret = testClusterSecret
@@ -228,7 +271,8 @@ func TestDistributedLock_IsValidWithBuffer(t *testing.T) {
 	// If we check with a buffer of 600ms, it should be invalid since lease is only 500ms
 	assert.False(t, lock.IsValidWithBuffer(600*time.Millisecond))
 
-	// Wait 100ms, now remaining is ~400ms. Since LeaseTTL/2 is 250ms, no background renewal has ticked yet.
+	// Wait 100ms, now remaining is ~400ms. The first renewal tick fires at
+	// LeaseTTL/3 (~167ms), so no background renewal has advanced the lease yet.
 	time.Sleep(100 * time.Millisecond)
 	assert.True(t, lock.IsValidWithBuffer(200*time.Millisecond))
 	assert.False(t, lock.IsValidWithBuffer(450*time.Millisecond))
