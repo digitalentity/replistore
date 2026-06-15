@@ -96,10 +96,11 @@ func (b *SMBBackend) GetName() string {
 	return b.Name
 }
 
-func (b *SMBBackend) Close() {
+func (b *SMBBackend) Close() error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.closeLocked()
+	return nil
 }
 
 func (b *SMBBackend) closeLocked() {

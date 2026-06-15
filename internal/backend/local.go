@@ -73,6 +73,11 @@ func (b *LocalBackend) GetName() string {
 	return b.Name
 }
 
+// Close is a no-op: the local backend holds no persistent connection.
+func (b *LocalBackend) Close() error {
+	return nil
+}
+
 func (b *LocalBackend) Connect() error {
 	fi, err := os.Stat(b.Path)
 	if err != nil {

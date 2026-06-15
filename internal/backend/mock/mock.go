@@ -21,6 +21,11 @@ func (m *MockBackend) GetName() string {
 	return m.NameVal
 }
 
+// Close is a no-op for the in-memory mock backend.
+func (m *MockBackend) Close() error {
+	return nil
+}
+
 func (m *MockBackend) GetSpeed() int {
 	return m.SpeedVal
 }

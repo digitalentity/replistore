@@ -41,6 +41,9 @@ type Backend interface {
 	Rename(ctx context.Context, oldPath, newPath string) error
 	Chtimes(ctx context.Context, path string, atime, mtime time.Time) error
 	Truncate(ctx context.Context, path string, size int64) error
+	// Close releases any connection/session resources held by the backend.
+	// It is safe to call on an already-closed backend.
+	Close() error
 }
 
 type Factory func(name string, options map[string]interface{}) (Backend, error)

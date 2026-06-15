@@ -172,8 +172,17 @@ func main() {
 		if lockMgr != nil {
 			lockMgr.Stop()
 		}
+		// Cancel before unmount so background scans/repairs stop racing the
+		// unmount, then release backend connections. os.Exit below skips
+		// deferred cleanup, so close the FUSE conn and backends explicitly.
 		cancel()
 		fuse.Unmount(cfg.MountPoint)
+		_ = c.Close()
+		for name, b := range backends {
+			if err := b.Close(); err != nil {
+				logrus.Warnf("Error closing backend %s: %v", name, err)
+			}
+		}
 		os.Exit(0)
 	}()
 
