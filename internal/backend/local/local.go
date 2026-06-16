@@ -72,7 +72,11 @@ func (b *LocalBackend) GetFreeSpace() (uint64, error) {
 		return 0, err
 	}
 
-	return stat.Bavail * uint64(stat.Bsize), nil
+	if stat.Bsize < 0 {
+		return 0, fmt.Errorf("local backend: negative block size %d", stat.Bsize)
+	}
+
+	return stat.Bavail * uint64(stat.Bsize), nil //nolint:gosec // checked non-negative
 }
 
 func (b *LocalBackend) GetName() string {
@@ -88,7 +92,7 @@ func (b *LocalBackend) Connect() error {
 	fi, err := os.Stat(b.Path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			if err := os.MkdirAll(b.Path, 0755); err != nil {
+			if err := os.MkdirAll(b.Path, 0750); err != nil {
 				return fmt.Errorf("local backend root path %q does not exist and could not be created: %w", b.Path, err)
 			}
 
@@ -209,7 +213,7 @@ func (b *LocalBackend) OpenFile(ctx context.Context, path string, flag int, perm
 		return nil, err
 	}
 	realPath := b.resolve(path)
-	f, err := os.OpenFile(realPath, flag, perm)
+	f, err := os.OpenFile(realPath, flag, perm) //nolint:gosec // G304: path is resolved inside local backend root
 	if err != nil {
 		return nil, err
 	}

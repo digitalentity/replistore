@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"math"
 	"os"
 	"slices"
 	"strings"
@@ -248,7 +249,11 @@ func (d *Dir) Attr(ctx context.Context, a *fuse.Attr) error {
 	defer d.node.Mu.RUnlock()
 
 	a.Mode = d.node.Meta.Mode
-	a.Size = uint64(d.node.Meta.Size)
+	if d.node.Meta.Size < 0 {
+		a.Size = 0
+	} else {
+		a.Size = uint64(d.node.Meta.Size) //nolint:gosec // checked non-negative
+	}
 	a.Mtime = d.node.Meta.ModTime
 
 	return nil
@@ -1254,7 +1259,11 @@ func (f *File) Attr(ctx context.Context, a *fuse.Attr) error {
 	defer f.node.Mu.RUnlock()
 
 	a.Mode = f.node.Meta.Mode
-	a.Size = uint64(f.node.Meta.Size)
+	if f.node.Meta.Size < 0 {
+		a.Size = 0
+	} else {
+		a.Size = uint64(f.node.Meta.Size) //nolint:gosec // checked non-negative
+	}
 	a.Mtime = f.node.Meta.ModTime
 
 	return nil
@@ -1369,7 +1378,10 @@ func (f *File) Setattr(ctx context.Context, req *fuse.SetattrRequest, resp *fuse
 	copy(backends, f.node.Meta.Backends)
 	f.node.Mu.RUnlock()
 
-	size := int64(req.Size)
+	if req.Size > math.MaxInt64 {
+		return fuse.Errno(syscall.EFBIG)
+	}
+	size := int64(req.Size) //nolint:gosec // checked bound by MaxInt64
 
 	var mu sync.Mutex
 	var successes int

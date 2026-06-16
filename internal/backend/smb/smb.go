@@ -236,7 +236,7 @@ func (b *SMBBackend) execute(op func() error) error {
 
 	err := op()
 	if err != nil && isConnectionError(err) {
-		b.Close()
+		_ = b.Close()
 		if reconnectErr := b.ensureConnected(); reconnectErr != nil {
 			return err
 		}

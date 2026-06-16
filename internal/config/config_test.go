@@ -23,7 +23,7 @@ backends:
 
 	_, err = tmpFile.WriteString(content)
 	require.NoError(t, err)
-	tmpFile.Close()
+	require.NoError(t, tmpFile.Close())
 
 	cfg, err := config.LoadConfig(tmpFile.Name())
 	require.NoError(t, err)
@@ -43,7 +43,7 @@ mount_point: "/tmp/test"
 
 	_, err = tmpFile.WriteString(content)
 	require.NoError(t, err)
-	tmpFile.Close()
+	require.NoError(t, tmpFile.Close())
 
 	cfg, err := config.LoadConfig(tmpFile.Name())
 	require.NoError(t, err)
@@ -55,11 +55,11 @@ func TestLoadConfig_ExpectedClusterSize(t *testing.T) {
 		t.Helper()
 		tmpFile, err := os.CreateTemp(t.TempDir(), "config.yaml")
 		require.NoError(t, err)
-		t.Cleanup(func() { os.Remove(tmpFile.Name()) })
+		t.Cleanup(func() { _ = os.Remove(tmpFile.Name()) })
 
 		_, err = tmpFile.WriteString(content)
 		require.NoError(t, err)
-		tmpFile.Close()
+		require.NoError(t, tmpFile.Close())
 
 		return tmpFile.Name()
 	}
@@ -102,11 +102,11 @@ func TestLoadConfig_AdvertiseAddr(t *testing.T) {
 		t.Helper()
 		tmpFile, err := os.CreateTemp(t.TempDir(), "config.yaml")
 		require.NoError(t, err)
-		t.Cleanup(func() { os.Remove(tmpFile.Name()) })
+		t.Cleanup(func() { _ = os.Remove(tmpFile.Name()) })
 
 		_, err = tmpFile.WriteString(content)
 		require.NoError(t, err)
-		tmpFile.Close()
+		require.NoError(t, tmpFile.Close())
 
 		return tmpFile.Name()
 	}
@@ -173,11 +173,11 @@ func TestLoadConfig_ClusterSecret(t *testing.T) {
 		t.Helper()
 		tmpFile, err := os.CreateTemp(t.TempDir(), "config.yaml")
 		require.NoError(t, err)
-		t.Cleanup(func() { os.Remove(tmpFile.Name()) })
+		t.Cleanup(func() { _ = os.Remove(tmpFile.Name()) })
 
 		_, err = tmpFile.WriteString(content)
 		require.NoError(t, err)
-		tmpFile.Close()
+		require.NoError(t, tmpFile.Close())
 
 		return tmpFile.Name()
 	}

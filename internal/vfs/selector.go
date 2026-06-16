@@ -21,7 +21,7 @@ type RandomSelector struct {
 
 func NewRandomSelector(monitor *backend.HealthMonitor) *RandomSelector {
 	return &RandomSelector{
-		r:       rand.New(rand.NewSource(time.Now().UnixNano())),
+		r:       rand.New(rand.NewSource(time.Now().UnixNano())), //nolint:gosec // weak random ok for selecting replica
 		monitor: monitor,
 	}
 }
@@ -111,7 +111,7 @@ type SpaceAwareSelector struct {
 
 func NewSpaceAwareSelector(backends map[string]backend.Backend, monitor *backend.HealthMonitor, writeAffinity []string) *SpaceAwareSelector {
 	return &SpaceAwareSelector{
-		r:             rand.New(rand.NewSource(time.Now().UnixNano())),
+		r:             rand.New(rand.NewSource(time.Now().UnixNano())), //nolint:gosec // weak random ok for selecting replica
 		monitor:       monitor,
 		backends:      backends,
 		writeAffinity: writeAffinity,

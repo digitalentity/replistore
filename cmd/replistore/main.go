@@ -222,7 +222,9 @@ func main() {
 			logrus.Info("Metadata cache saved successfully")
 		}
 
-		fuse.Unmount(cfg.MountPoint)
+		if err := fuse.Unmount(cfg.MountPoint); err != nil {
+			logrus.Warnf("Failed to unmount %s: %v", cfg.MountPoint, err)
+		}
 		_ = c.Close()
 		for name, b := range backends {
 			if err := b.Close(); err != nil {
@@ -243,7 +245,7 @@ func main() {
 // whether it was reconciled within refreshInterval (letting the caller skip the
 // initial background scan). A missing file or any failure yields false, false.
 func loadCacheFromDisk(stateDir, cacheFile string, cache *vfs.Cache, refreshInterval time.Duration) (bool, bool) {
-	if err := os.MkdirAll(stateDir, 0755); err != nil {
+	if err := os.MkdirAll(stateDir, 0750); err != nil {
 		logrus.Errorf("Failed to create state directory %s: %v", stateDir, err)
 
 		return false, false

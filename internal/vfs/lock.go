@@ -112,7 +112,7 @@ func (l *DistributedLock) Acquire(ctx context.Context) error {
 		}
 
 		// Full jitter: sleep a random duration in [0, backoff).
-		wait := time.Duration(rand.Int63n(int64(backoff)))
+		wait := time.Duration(rand.Int63n(int64(backoff))) //nolint:gosec // weak random ok for backoff jitter
 		backoff *= 2
 		if backoff > acquireMaxBackoff {
 			backoff = acquireMaxBackoff

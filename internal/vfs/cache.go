@@ -1112,7 +1112,7 @@ func (c *Cache) SaveToFile(path string) error {
 	}
 
 	tmpPath := path + ".tmp"
-	if err := os.WriteFile(tmpPath, data, 0644); err != nil {
+	if err := os.WriteFile(tmpPath, data, 0600); err != nil {
 		return err
 	}
 
@@ -1120,7 +1120,7 @@ func (c *Cache) SaveToFile(path string) error {
 }
 
 func (c *Cache) LoadFromFile(path string) error {
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) //nolint:gosec // G304: path is metadata cache path passed by configuration
 	if err != nil {
 		return err
 	}

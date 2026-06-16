@@ -30,7 +30,7 @@ linters:
     - gocritic
     - godot
     - godox
-    # - gosec
+    - gosec
     - govet
     - grouper
     - iface

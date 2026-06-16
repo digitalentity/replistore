@@ -36,7 +36,7 @@ func TestSMBBackend_AutoReconnect(t *testing.T) {
 			conns = append(conns, conn)
 			mu.Unlock()
 
-			conn.Close()
+			_ = conn.Close()
 		}
 	}()
 

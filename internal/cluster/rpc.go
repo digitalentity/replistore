@@ -125,7 +125,7 @@ func (m *LockManager) Stop() {
 		close(m.stopCh)
 	})
 	if m.conn != nil {
-		m.conn.Close()
+		_ = m.conn.Close()
 	}
 }
 
