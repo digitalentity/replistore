@@ -25,6 +25,11 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
+const (
+	replicaRemovalRetryDelay = 5 * time.Second
+	replicaRemovalTimeout    = 10 * time.Second
+)
+
 type RepliFS struct {
 	Cache             *vfs.Cache
 	Backends          map[string]backend.Backend
@@ -108,9 +113,9 @@ func (f *RepliFS) removeStaleReplica(path string, backendName string) {
 		var lastErr error
 		for attempt := range 2 {
 			if attempt > 0 {
-				time.Sleep(5 * time.Second)
+				time.Sleep(replicaRemovalRetryDelay)
 			}
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), replicaRemovalTimeout)
 			err := b.Remove(ctx, path)
 			cancel()
 			if err == nil || os.IsNotExist(err) || errors.Is(err, os.ErrNotExist) {

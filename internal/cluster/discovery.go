@@ -25,6 +25,7 @@ const (
 	peersDir          = ".replistore/peers"
 
 	backendOpTimeout = 5 * time.Second
+	readBufSize      = 4096
 )
 
 // Peer represents an active RepliStore node discovered via the backends.
@@ -326,7 +327,7 @@ func (d *Discovery) readEntry(ctx context.Context, b backend.Backend, p string) 
 	}
 	defer f.Close()
 
-	buf := make([]byte, 4096)
+	buf := make([]byte, readBufSize)
 	n, err := f.ReadAt(ctx, buf, 0)
 	if err != nil && (!errors.Is(err, io.EOF) || n <= 0) {
 		return entry, err

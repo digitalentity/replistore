@@ -518,7 +518,8 @@ func dropZombies(cands []Metadata, tombGen int64) []Metadata {
 // dir-wins rule resolves on presence), and same-size file replicas merge as
 // one version without sidecar reads — the overwhelmingly common case.
 func isFileConflict(cands []Metadata) bool {
-	if len(cands) < 2 {
+	const minConflictCandidates = 2
+	if len(cands) < minConflictCandidates {
 		return false
 	}
 	conflict := false

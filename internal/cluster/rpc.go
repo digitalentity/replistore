@@ -12,8 +12,9 @@ import (
 type LockStatus string
 
 const (
-	LockOK     LockStatus = "OK"
-	LockReject LockStatus = "REJECT"
+	LockOK          LockStatus = "OK"
+	LockReject      LockStatus = "REJECT"
+	defaultLeaseTTL            = 5 * time.Second
 )
 
 type LockRequest struct {
@@ -94,7 +95,7 @@ func NewLockManager(nodeID string) *LockManager {
 	return &LockManager{
 		NodeID:   nodeID,
 		Clock:    &LamportClock{},
-		LeaseTTL: 5 * time.Second,
+		LeaseTTL: defaultLeaseTTL,
 		log:      logrus.WithField("component", "lock-manager").WithField("node_id", nodeID),
 		stopCh:   make(chan struct{}),
 	}

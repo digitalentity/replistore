@@ -21,6 +21,12 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
+const (
+	defaultMonitorInterval      = 10 * time.Second
+	defaultCacheRefreshInterval = 5 * time.Minute
+	periodicCacheSaveInterval   = 30 * time.Second
+)
+
 func main() {
 	configPath := flag.String("config", "config.yaml", "path to config file")
 	flag.Parse()
@@ -87,13 +93,13 @@ func main() {
 
 	// Initialize Health Monitor
 	monitor := backend.NewHealthMonitor(backends)
-	monitor.Start(ctx, 10*time.Second)
+	monitor.Start(ctx, defaultMonitorInterval)
 
 	// Start background sync config
 	refreshInterval, err := time.ParseDuration(cfg.CacheRefreshInterval)
 	if err != nil {
 		logrus.Warnf("Invalid cache_refresh_interval '%s', defaulting to 5m: %v", cfg.CacheRefreshInterval, err)
-		refreshInterval = 5 * time.Minute
+		refreshInterval = defaultCacheRefreshInterval
 	}
 
 	// Warmup/Load Cache (Background & Disk-backed)
@@ -120,7 +126,7 @@ func main() {
 
 	// Periodic cache save to disk (every 30 seconds)
 	go func() {
-		ticker := time.NewTicker(30 * time.Second)
+		ticker := time.NewTicker(periodicCacheSaveInterval)
 		defer ticker.Stop()
 		for {
 			select {

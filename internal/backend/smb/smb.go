@@ -17,6 +17,8 @@ import (
 	"github.com/hirochachacha/go-smb2"
 )
 
+const defaultDialTimeout = 5 * time.Second
+
 type SMBBackend struct {
 	Name     string
 	Address  string
@@ -133,7 +135,7 @@ func (b *SMBBackend) Connect() error {
 func (b *SMBBackend) connectLocked() error {
 	b.closeLocked()
 
-	dialer := &net.Dialer{Timeout: 5 * time.Second}
+	dialer := &net.Dialer{Timeout: defaultDialTimeout}
 	conn, err := dialer.DialContext(context.Background(), "tcp", b.Address)
 	if err != nil {
 		return fmt.Errorf("dial failed: %w", err)

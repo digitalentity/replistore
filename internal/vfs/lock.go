@@ -47,7 +47,7 @@ func NewDistributedLock(path string, mgr *cluster.LockManager, disco *cluster.Di
 
 // randomHex returns 16 random bytes, hex-encoded.
 func randomHex() string {
-	b := make([]byte, 16)
+	b := make([]byte, randomBytesLen)
 	if _, err := cryptorand.Read(b); err != nil {
 		// crypto/rand never fails on supported platforms; fall back to a
 		// time-derived value rather than panicking.
@@ -89,6 +89,12 @@ const (
 	// renewalCadenceDivisor sets the renewal interval to LeaseTTL/3, giving
 	// roughly three renewal attempts per lease before the deadline passes.
 	renewalCadenceDivisor = 3
+
+	randomBytesLen  = 16
+	acquireTimeout  = 3 * time.Second
+	rollbackTimeout = 2 * time.Second
+	quorumDivisor   = 2
+	quorumOffset    = 1
 )
 
 // Acquire attempts to get a quorum of peers to grant the lock. On quorum
@@ -135,7 +141,7 @@ func (l *DistributedLock) Acquire(ctx context.Context) error {
 // per-attempt timeout.
 func (l *DistributedLock) tryAcquire(ctx context.Context) error {
 	peers := l.Discovery.GetPeers()
-	quorum := (l.Manager.ExpectedClusterSize / 2) + 1
+	quorum := (l.Manager.ExpectedClusterSize / quorumDivisor) + quorumOffset
 
 	l.log.Debugf("Attempting to acquire lock with %d peers (quorum: %d)", len(peers), quorum)
 
@@ -155,7 +161,7 @@ func (l *DistributedLock) tryAcquire(ctx context.Context) error {
 
 	g, gCtx := errgroup.WithContext(ctx)
 	// Add timeout to the whole acquisition process
-	gCtx, cancel := context.WithTimeout(gCtx, 3*time.Second)
+	gCtx, cancel := context.WithTimeout(gCtx, acquireTimeout)
 	defer cancel()
 
 	// 1. Local Request
@@ -268,7 +274,7 @@ func (l *DistributedLock) startRenewal(peers []string) {
 
 //nolint:contextcheck // runs asynchronously in the background
 func (l *DistributedLock) renew(peers []string) bool {
-	quorum := (l.Manager.ExpectedClusterSize / 2) + 1
+	quorum := (l.Manager.ExpectedClusterSize / quorumDivisor) + quorumOffset
 
 	var mu sync.Mutex
 	successes := 0
@@ -333,7 +339,7 @@ func (l *DistributedLock) rollback(peers []string, token string) {
 	}
 
 	g, gCtx := errgroup.WithContext(context.Background())
-	gCtx, cancel := context.WithTimeout(gCtx, 2*time.Second)
+	gCtx, cancel := context.WithTimeout(gCtx, rollbackTimeout)
 	defer cancel()
 
 	for _, pID := range peers {

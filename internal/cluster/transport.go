@@ -23,6 +23,9 @@ const (
 	TypReleaseLock = "release_lock"
 
 	respSuffix = "_resp"
+
+	ridSize  = 8
+	jwsParts = 3
 )
 
 // pinnedHeader is the base64url-encoded form of the one and only JOSE header
@@ -64,7 +67,7 @@ var (
 // cannot observe the request must guess the RID to forge a response the
 // client will accept. Never use math/rand here.
 func newRID() string {
-	b := make([]byte, 8)
+	b := make([]byte, ridSize)
 	if _, err := cryptorand.Read(b); err != nil {
 		// crypto/rand never fails on supported platforms.
 		panic(fmt.Sprintf("crypto/rand failed: %v", err))
@@ -100,7 +103,7 @@ func verifyMessage(secret []byte, datagram []byte) (*wireClaims, error) {
 		return nil, errMalformed
 	}
 	parts := strings.Split(string(datagram), ".")
-	if len(parts) != 3 {
+	if len(parts) != jwsParts {
 		return nil, errMalformed
 	}
 

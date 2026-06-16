@@ -55,6 +55,7 @@ type Sidecar struct {
 // sidecarFormatVersion is the only sidecar format version this build
 // understands.
 const sidecarFormatVersion = 1
+const sidecarBufSize = 8192
 
 // metaDir is the subtree of the reserved directory that holds all metadata
 // documents (sidecars and tombstones alike).
@@ -97,7 +98,7 @@ func readMetaDoc(ctx context.Context, b backend.Backend, scPath string) (Sidecar
 	}
 	defer f.Close()
 
-	buf := make([]byte, 8192)
+	buf := make([]byte, sidecarBufSize)
 	n, err := f.ReadAt(ctx, buf, 0)
 	if err != nil && (!errors.Is(err, io.EOF) || n <= 0) {
 		return sc, err

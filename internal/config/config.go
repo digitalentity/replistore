@@ -11,6 +11,11 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+const (
+	minClusterSize         = 2
+	minClusterSecretLength = 16
+)
+
 type BackendConfig struct {
 	Name     string         `yaml:"name"`
 	Type     string         `yaml:"type"` // e.g. "smb", "local"
@@ -142,7 +147,7 @@ func LoadConfig(path string) (*Config, error) {
 // is set: distributed locking needs a known quorum size, a reachable advertise
 // address, and a shared HMAC secret.
 func validateClusterConfig(cfg *Config) error {
-	if cfg.ExpectedClusterSize < 2 {
+	if cfg.ExpectedClusterSize < minClusterSize {
 		return errors.New("expected_cluster_size must be >= 2 when listen_addr is set: distributed locking requires a known cluster size for quorum")
 	}
 	if cfg.AdvertiseAddr == "" {
@@ -155,7 +160,7 @@ func validateClusterConfig(cfg *Config) error {
 	if cfg.ClusterSecret == "" {
 		return errors.New("cluster_secret must be set when listen_addr is set: lock datagrams between nodes are authenticated with HMAC-SHA256 using this shared secret")
 	}
-	if len(cfg.ClusterSecret) < 16 {
+	if len(cfg.ClusterSecret) < minClusterSecretLength {
 		return fmt.Errorf("cluster_secret must be at least 16 characters long (got %d)", len(cfg.ClusterSecret))
 	}
 

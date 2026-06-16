@@ -9,6 +9,8 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
+const pingTimeout = 2 * time.Second
+
 type HealthMonitor struct {
 	backends map[string]Backend
 	status   map[string]bool
@@ -51,7 +53,7 @@ func (m *HealthMonitor) checkAll(ctx context.Context) {
 	for name, b := range m.backends {
 		g.Go(func() error {
 			// Each ping gets its own sub-timeout
-			pingCtx, cancel := context.WithTimeout(gCtx, 2*time.Second)
+			pingCtx, cancel := context.WithTimeout(gCtx, pingTimeout)
 			defer cancel()
 
 			err := b.Ping(pingCtx)

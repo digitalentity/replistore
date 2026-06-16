@@ -41,7 +41,7 @@ linters:
     - ireturn
     - loggercheck
     - misspell
-    # - mnd
+    - mnd
     - modernize
     - nestif
     - nilerr
@@ -65,6 +65,12 @@ linters:
     - usestdlibvars
     - usetesting
   settings:
+    mnd:
+      ignored-numbers:
+        - '0600'
+        - '0644'
+        - '0750'
+        - '0755'
     goconst:
       ignore-tests: true
     godox:
