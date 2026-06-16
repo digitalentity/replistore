@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	gopath "path"
 	"testing"
 	"time"
 
@@ -171,53 +172,49 @@ func mockWalk(b *bmock.MockBackend, entries map[string]backend.FileInfo) {
 	}).Return(nil)
 }
 
-// mockSidecarRead makes b serve a valid sidecar with the given generation for
-// path.
-func mockSidecarRead(b *bmock.MockBackend, path string, gen int64) {
-	payload := fmt.Appendf(nil, `{"v":1,"gen":%d,"writer":"w","deleted":false}`, gen)
+// mockMetaRead makes b serve a metadata document for path at its hashed key,
+// with the given generation and deletion marker.
+func mockMetaRead(b *bmock.MockBackend, path string, gen int64, deleted bool) {
+	payload := fmt.Appendf(nil, `{"v":1,"path":%q,"gen":%d,"writer":"w","deleted":%t}`, path, gen, deleted)
 	f := &bmock.MockFile{}
 	f.On("ReadAt", mock.Anything, mock.Anything, int64(0)).Run(func(args mock.Arguments) {
 		copy(args.Get(1).([]byte), payload)
 	}).Return(len(payload), io.EOF)
 	f.On("Close").Return(nil)
-	b.On("OpenFile", mock.Anything, SidecarPath(path), os.O_RDONLY, os.FileMode(0)).Return(f, nil)
+	b.On("OpenFile", mock.Anything, MetaPath(path), os.O_RDONLY, os.FileMode(0)).Return(f, nil)
 }
 
-// mockNoTombstoneTree makes b report a missing tombstone tree (no recorded
-// deletions).
+// mockSidecarRead makes b serve a live (non-deleted) metadata document with the
+// given generation for path.
+func mockSidecarRead(b *bmock.MockBackend, path string, gen int64) {
+	mockMetaRead(b, path, gen, false)
+}
+
+// mockMissingMeta makes b report no metadata document for path.
+func mockMissingMeta(b *bmock.MockBackend, path string) {
+	b.On("OpenFile", mock.Anything, MetaPath(path), os.O_RDONLY, os.FileMode(0)).Return(nil, os.ErrNotExist)
+}
+
+// mockNoTombstoneTree makes b report a missing metadata tree (no recorded
+// deletions to enumerate).
 func mockNoTombstoneTree(b *bmock.MockBackend) {
-	b.On("Walk", mock.Anything, tombstonesDir, mock.Anything).Return(os.ErrNotExist)
+	b.On("Walk", mock.Anything, metaDir, mock.Anything).Return(os.ErrNotExist)
 }
 
-// mockTombstoneTree makes b's tombstone tree enumerate (and serve) a tombstone
-// at the given generation for each path.
+// mockTombstoneTree makes b's metadata tree enumerate (and serve) a tombstone
+// document at the given generation for each path. Sidecars and tombstones share
+// one tree, so enumeration walks metaDir and filters on the deletion marker.
 func mockTombstoneTree(b *bmock.MockBackend, tombs map[string]int64) {
-	b.On("Walk", mock.Anything, tombstonesDir, mock.Anything).Run(func(args mock.Arguments) {
+	b.On("Walk", mock.Anything, metaDir, mock.Anything).Run(func(args mock.Arguments) {
 		fn := args.Get(2).(func(string, backend.FileInfo) error)
 		for path := range tombs {
-			_ = fn(TombstonePath(path), backend.FileInfo{Name: path + ".json"})
+			key := MetaPath(path)
+			_ = fn(key, backend.FileInfo{Name: gopath.Base(key)})
 		}
 	}).Return(nil)
 	for path, gen := range tombs {
-		mockTombstoneRead(b, path, gen)
+		mockMetaRead(b, path, gen, true)
 	}
-}
-
-// mockTombstoneRead makes b serve a tombstone with the given generation for
-// path.
-func mockTombstoneRead(b *bmock.MockBackend, path string, gen int64) {
-	payload := fmt.Appendf(nil, `{"v":1,"gen":%d,"writer":"w","deleted":true}`, gen)
-	f := &bmock.MockFile{}
-	f.On("ReadAt", mock.Anything, mock.Anything, int64(0)).Run(func(args mock.Arguments) {
-		copy(args.Get(1).([]byte), payload)
-	}).Return(len(payload), io.EOF)
-	f.On("Close").Return(nil)
-	b.On("OpenFile", mock.Anything, TombstonePath(path), os.O_RDONLY, os.FileMode(0)).Return(f, nil)
-}
-
-// mockNoTombstone makes b report no tombstone for path.
-func mockNoTombstone(b *bmock.MockBackend, path string) {
-	b.On("OpenFile", mock.Anything, TombstonePath(path), os.O_RDONLY, os.FileMode(0)).Return(nil, os.ErrNotExist)
 }
 
 func TestSyncAll_SizeConflictResolvedByGenerations(t *testing.T) {
@@ -325,8 +322,6 @@ func TestFetchEntry_PopulatesGenFromSidecar(t *testing.T) {
 	b2.On("Stat", mock.Anything, path).Return(backend.FileInfo{Name: "f.txt", Size: 200, ModTime: now.Add(time.Hour)}, nil)
 	mockSidecarRead(b1, path, 7) // higher gen on the smaller/older replica
 	mockSidecarRead(b2, path, 4)
-	mockNoTombstone(b1, path)
-	mockNoTombstone(b2, path)
 
 	node, err := c.FetchEntry(ctx, path, []backend.Backend{b1, b2})
 	assert.NoError(t, err)
@@ -344,8 +339,7 @@ func TestFetchEntry_MissingSidecarMeansGenZero(t *testing.T) {
 	path := "f.txt"
 
 	b1.On("Stat", mock.Anything, path).Return(backend.FileInfo{Name: "f.txt", Size: 100, ModTime: now}, nil)
-	b1.On("OpenFile", mock.Anything, SidecarPath(path), os.O_RDONLY, os.FileMode(0)).Return(nil, os.ErrNotExist)
-	mockNoTombstone(b1, path)
+	mockMissingMeta(b1, path)
 
 	node, err := c.FetchEntry(ctx, path, []backend.Backend{b1})
 	assert.NoError(t, err)
@@ -365,15 +359,16 @@ func TestSyncAll_TombstoneDropsZombieAndEvicts(t *testing.T) {
 	// was recorded): the dead path must be explicitly evicted.
 	c.Upsert("f.txt", Metadata{Name: "f.txt", Path: "f.txt", Size: 100, ModTime: now}, "b1")
 
-	// b1 still holds a replica at gen 2; the tombstone records deletion at gen
-	// 3, so the replica is a zombie and the path is dead.
+	// b1 still holds a replica at gen 2 with a stale live document; b2 processed
+	// the delete (no data, document marked deleted at gen 3). The tombstone
+	// dooms the zombie and the path is dead.
 	mockWalk(b1, map[string]backend.FileInfo{
 		"f.txt": {Name: "f.txt", Size: 100, ModTime: now},
 	})
 	mockWalk(b2, map[string]backend.FileInfo{})
 	mockSidecarRead(b1, "f.txt", 2)
-	mockTombstoneTree(b1, map[string]int64{"f.txt": 3})
-	mockNoTombstoneTree(b2)
+	mockNoTombstoneTree(b1)
+	mockTombstoneTree(b2, map[string]int64{"f.txt": 3})
 
 	c.syncAll(ctx, []backend.Backend{b1, b2})
 
@@ -389,22 +384,26 @@ func TestSyncAll_TombstoneSurvivorAdmitted(t *testing.T) {
 	now := time.Now().Round(time.Second)
 
 	b1 := &bmock.MockBackend{NameVal: "b1"}
+	b2 := &bmock.MockBackend{NameVal: "b2"}
 
-	// The replica's gen 4 is strictly above the tombstone's gen 3: a genuinely
-	// newer write that must resolve normally.
+	// b1's replica is gen 4, strictly above b2's lingering tombstone at gen 3: a
+	// genuinely newer write that must resolve normally and survive.
 	mockWalk(b1, map[string]backend.FileInfo{
 		"f.txt": {Name: "f.txt", Size: 50, ModTime: now},
 	})
+	mockWalk(b2, map[string]backend.FileInfo{})
 	mockSidecarRead(b1, "f.txt", 4)
-	mockTombstoneTree(b1, map[string]int64{"f.txt": 3})
+	mockNoTombstoneTree(b1)
+	mockTombstoneTree(b2, map[string]int64{"f.txt": 3})
 
-	c.syncAll(ctx, []backend.Backend{b1})
+	c.syncAll(ctx, []backend.Backend{b1, b2})
 
 	node, ok := c.Get("f.txt")
 	assert.True(t, ok)
 	assert.Equal(t, int64(4), node.Meta.Gen)
 	assert.Equal(t, []string{"b1"}, node.Meta.Backends)
 	b1.AssertExpectations(t)
+	b2.AssertExpectations(t)
 }
 
 func TestFetchEntry_TombstonedReturnsNotExist(t *testing.T) {
@@ -415,9 +414,10 @@ func TestFetchEntry_TombstonedReturnsNotExist(t *testing.T) {
 	b1 := &bmock.MockBackend{NameVal: "b1"}
 	path := "f.txt"
 
+	// The data is still present but its metadata document is marked deleted at
+	// gen 3: a zombie (replica gen <= deletion gen) that must not be admitted.
 	b1.On("Stat", mock.Anything, path).Return(backend.FileInfo{Name: "f.txt", Size: 100, ModTime: now}, nil)
-	mockSidecarRead(b1, path, 2)
-	mockTombstoneRead(b1, path, 3) // deletion gen >= replica gen: zombie
+	mockMetaRead(b1, path, 3, true)
 
 	node, err := c.FetchEntry(ctx, path, []backend.Backend{b1})
 	assert.ErrorIs(t, err, os.ErrNotExist)
@@ -435,9 +435,10 @@ func TestFetchEntry_NewerReplicaBeatsTombstone(t *testing.T) {
 	b1 := &bmock.MockBackend{NameVal: "b1"}
 	path := "f.txt"
 
+	// A write landed after the deletion: the live document at gen 4 supersedes
+	// the prior tombstone (Deleted cleared), so the replica is admitted.
 	b1.On("Stat", mock.Anything, path).Return(backend.FileInfo{Name: "f.txt", Size: 100, ModTime: now}, nil)
-	mockSidecarRead(b1, path, 4)
-	mockTombstoneRead(b1, path, 3) // replica gen strictly above: newer write
+	mockMetaRead(b1, path, 4, false)
 
 	node, err := c.FetchEntry(ctx, path, []backend.Backend{b1})
 	assert.NoError(t, err)

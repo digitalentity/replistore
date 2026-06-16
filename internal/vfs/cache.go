@@ -332,30 +332,31 @@ func (c *Cache) evict(path string) {
 	parent.Mu.Unlock()
 }
 
-// listTombstones walks backend b's tombstone tree and reads every tombstone,
-// returning data path → tombstone generation. A missing tombstone tree means
-// no recorded deletions (empty map); other walk errors only log, keeping
-// partial results. The cost is proportional to the number of live tombstones,
-// not to the size of the data tree.
+// listTombstones walks backend b's metadata tree and returns data path →
+// tombstone generation for every document that carries a deletion marker. The
+// data path is read from the document itself (the hash key is one-way). A
+// missing metadata tree means no recorded deletions (empty map); other walk
+// errors only log, keeping partial results. Because sidecars and tombstones
+// share one tree, the cost is proportional to the total number of metadata
+// documents, not just to live tombstones.
 func listTombstones(ctx context.Context, b backend.Backend) map[string]int64 {
 	res := make(map[string]int64)
-	err := b.Walk(ctx, tombstonesDir, func(p string, info backend.FileInfo) error {
+	err := b.Walk(ctx, metaDir, func(p string, info backend.FileInfo) error {
 		if info.IsDir || !strings.HasSuffix(p, ".json") {
 			return nil
 		}
-		dataPath := strings.TrimSuffix(strings.TrimPrefix(p, tombstonesDir+"/"), ".json")
-		sc, err := ReadTombstone(ctx, b, dataPath)
+		sc, err := readMetaDoc(ctx, b, p)
 		if err != nil {
-			logrus.WithField("component", "vfs").WithField("path", dataPath).Debugf("Tombstone read on %s failed: %v", b.GetName(), err)
+			logrus.WithField("component", "vfs").WithField("doc", p).Debugf("Metadata read on %s failed: %v", b.GetName(), err)
 			return nil
 		}
 		if sc.Deleted {
-			res[dataPath] = sc.Gen
+			res[sc.Path] = sc.Gen
 		}
 		return nil
 	})
 	if err != nil && !os.IsNotExist(err) && !errors.Is(err, os.ErrNotExist) {
-		logrus.WithField("component", "vfs").Debugf("Tombstone walk on %s failed: %v", b.GetName(), err)
+		logrus.WithField("component", "vfs").Debugf("Metadata walk on %s failed: %v", b.GetName(), err)
 	}
 	return res
 }
@@ -778,22 +779,24 @@ func (c *Cache) FetchEntry(ctx context.Context, path string, backends []backend.
 				IsDir:   info.IsDir,
 				Path:    path,
 			}
-			// One extra read for a single path is cheap and gives
-			// mergeMeta real version knowledge (missing sidecar → Gen 0).
-			meta.Gen = sidecarGen(gCtx, b, path)
-			// Read the tombstone alongside the sidecar: a replica at or
-			// below the recorded deletion generation is a zombie and must
-			// not be admitted (REVIEW.md C6).
-			switch tsc, terr := ReadTombstone(gCtx, b, path); {
-			case terr == nil && tsc.Deleted:
-				stateMu.Lock()
-				if !tombFound || tsc.Gen > maxTombGen {
-					tombFound = true
-					maxTombGen = tsc.Gen
+			// One extra read for a single path is cheap and gives mergeMeta
+			// real version knowledge (missing document → Gen 0). The same
+			// document carries the deletion marker: a replica at or below the
+			// recorded deletion generation is a zombie and must not be
+			// admitted (REVIEW.md C6).
+			switch sc, scErr := ReadMeta(gCtx, b, path); {
+			case scErr == nil:
+				meta.Gen = sc.Gen
+				if sc.Deleted {
+					stateMu.Lock()
+					if !tombFound || sc.Gen > maxTombGen {
+						tombFound = true
+						maxTombGen = sc.Gen
+					}
+					stateMu.Unlock()
 				}
-				stateMu.Unlock()
-			case terr != nil && !os.IsNotExist(terr) && !errors.Is(terr, os.ErrNotExist):
-				c.logger().WithField("path", path).Debugf("Tombstone read on %s failed: %v", b.GetName(), terr)
+			case !os.IsNotExist(scErr) && !errors.Is(scErr, os.ErrNotExist):
+				c.logger().WithField("path", path).Debugf("Metadata read on %s failed: %v", b.GetName(), scErr)
 			}
 
 			stateMu.Lock()

@@ -78,6 +78,7 @@ The test suite is mock-based throughout; a real-cluster smoke test of the sideca
 
 Major items delivered during the 2026-06 remediation, newest first:
 
+- Metadata rearchitecture: sidecars and deletion tombstones unified into one document per path (a tombstone is a document with `Deleted` set), keyed by the SHA-256 of the path, sharded two levels (`.replistore/meta/<h0>/<h1>/<hash>.json`), with the data path stored inside the document. Replaces the path-mirrored `meta/<path>.json` + separate `tombstones/<path>.json` trees. Directory-metadata rehashing on rename and directory tombstones remain deferred (C6-dirs).
 - (Remediation) — 7.3: replica pruning for over-replicated files implemented in RepairManager.
 - Refactored local backend package: isolated local backend into its own package (`internal/backend/local`).
 - (Remediation) — M12: emptiness verification for directory removes checks child existence in unified view, returning ENOTEMPTY.

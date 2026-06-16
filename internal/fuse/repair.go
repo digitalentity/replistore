@@ -215,10 +215,21 @@ func (m *RepairManager) enforceTombstone(ctx context.Context, path string, tombG
 	}
 }
 
-// removeTombstones deletes path's tombstone from every backend, best-effort.
+// removeTombstones retires path's tombstone on every backend, best-effort.
+// Because a sidecar and a tombstone share one metadata document per path, this
+// removes the document only where it still carries the deletion marker: a
+// backend whose document has been overwritten by a newer live write must keep
+// it. The read-then-remove is racy against a concurrent write; the cost of
+// losing that race is a sidecar dropping to generation 0 (legacy), which repair
+// re-stamps — never data loss.
 func (m *RepairManager) removeTombstones(ctx context.Context, path string) {
 	for name, b := range m.fs.Backends {
-		if err := vfs.RemoveTombstone(ctx, b, path); err != nil {
+		sc, err := vfs.ReadMeta(ctx, b, path)
+		if err != nil || !sc.Deleted {
+			// Absent, unreadable, or a live sidecar: nothing to retire here.
+			continue
+		}
+		if err := vfs.RemoveMeta(ctx, b, path); err != nil {
 			m.logger().WithField("path", path).Warnf("Failed to remove tombstone from %s: %v", name, err)
 		}
 	}

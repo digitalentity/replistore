@@ -51,42 +51,43 @@ func expectReservedWrite(b *bmock.MockBackend, reservedPath string) *sidecarCapt
 	return c
 }
 
-// expectSidecarWrite registers permissive (.Maybe()) expectations for sidecar
+// expectSidecarWrite registers permissive (.Maybe()) expectations for metadata
 // writes of dataPath on b — MkdirAll + OpenFile + WriteAt + Close — and
-// captures what was written. Permissive so tests that aren't about sidecars
-// stay minimal.
+// captures what was written. Permissive so tests that aren't about metadata
+// stay minimal. Sidecars and tombstones share one document, so this also covers
+// tombstone writes.
 func expectSidecarWrite(b *bmock.MockBackend, dataPath string) *sidecarCapture {
-	return expectReservedWrite(b, vfs.SidecarPath(dataPath))
+	return expectReservedWrite(b, vfs.MetaPath(dataPath))
 }
 
-// expectTombstoneWrite registers permissive (.Maybe()) expectations for
-// tombstone writes of dataPath on b and captures what was written.
+// expectTombstoneWrite is an alias of expectSidecarWrite: a tombstone is the
+// same document as the sidecar, with Deleted set.
 func expectTombstoneWrite(b *bmock.MockBackend, dataPath string) *sidecarCapture {
-	return expectReservedWrite(b, vfs.TombstonePath(dataPath))
+	return expectSidecarWrite(b, dataPath)
 }
 
-// expectSidecarRemove registers a permissive expectation for sidecar deletion
-// of dataPath on b.
+// expectSidecarRemove registers a permissive expectation for metadata-document
+// deletion of dataPath on b.
 func expectSidecarRemove(b *bmock.MockBackend, dataPath string) {
-	b.On("Remove", mock.Anything, vfs.SidecarPath(dataPath)).Return(nil).Maybe()
+	b.On("Remove", mock.Anything, vfs.MetaPath(dataPath)).Return(nil).Maybe()
 }
 
-// expectNoTombstone makes b report no tombstone for dataPath (used by
+// expectNoTombstone makes b report no metadata document for dataPath (used by
 // FetchEntry and the Create/Rename tombstone-generation reads).
 func expectNoTombstone(b *bmock.MockBackend, dataPath string) {
-	b.On("OpenFile", mock.Anything, vfs.TombstonePath(dataPath), os.O_RDONLY, os.FileMode(0)).Return(nil, os.ErrNotExist)
+	b.On("OpenFile", mock.Anything, vfs.MetaPath(dataPath), os.O_RDONLY, os.FileMode(0)).Return(nil, os.ErrNotExist)
 }
 
-// expectTombstoneGen makes b serve a tombstone at the given generation for
-// dataPath (used by the Create/Rename tombstone-generation reads).
+// expectTombstoneGen makes b serve a tombstone document at the given generation
+// for dataPath (used by the Create/Rename tombstone-generation reads).
 func expectTombstoneGen(b *bmock.MockBackend, dataPath string, gen int64) {
-	payload := fmt.Appendf(nil, `{"v":1,"gen":%d,"writer":"w","deleted":true}`, gen)
+	payload := fmt.Appendf(nil, `{"v":1,"path":%q,"gen":%d,"writer":"w","deleted":true}`, dataPath, gen)
 	f := &bmock.MockFile{}
 	f.On("ReadAt", mock.Anything, mock.Anything, int64(0)).Run(func(args mock.Arguments) {
 		copy(args.Get(1).([]byte), payload)
 	}).Return(len(payload), io.EOF)
 	f.On("Close").Return(nil)
-	b.On("OpenFile", mock.Anything, vfs.TombstonePath(dataPath), os.O_RDONLY, os.FileMode(0)).Return(f, nil)
+	b.On("OpenFile", mock.Anything, vfs.MetaPath(dataPath), os.O_RDONLY, os.FileMode(0)).Return(f, nil)
 }
 
 func TestFS_Lookup(t *testing.T) {
@@ -532,7 +533,7 @@ func TestLookup_LazyTrigger(t *testing.T) {
 	}, nil)
 	// FetchEntry reads the sidecar and tombstone after a successful file Stat;
 	// neither exists for a legacy gen-0 replica.
-	b1.On("OpenFile", mock.Anything, vfs.SidecarPath("lazy/file.txt"), os.O_RDONLY, os.FileMode(0)).Return(nil, os.ErrNotExist)
+	b1.On("OpenFile", mock.Anything, vfs.MetaPath("lazy/file.txt"), os.O_RDONLY, os.FileMode(0)).Return(nil, os.ErrNotExist)
 	expectNoTombstone(b1, "lazy/file.txt")
 
 	node, err := (lazyDir.(*Dir)).Lookup(context.Background(), "file.txt")
@@ -980,8 +981,8 @@ func TestDir_Create_AlreadyExistsOnBackends(t *testing.T) {
 	b2.On("Stat", mock.Anything, "exists.txt").Return(info, nil)
 	// FetchEntry reads sidecars and tombstones after successful file Stats;
 	// none exist here.
-	b1.On("OpenFile", mock.Anything, vfs.SidecarPath("exists.txt"), os.O_RDONLY, os.FileMode(0)).Return(nil, os.ErrNotExist)
-	b2.On("OpenFile", mock.Anything, vfs.SidecarPath("exists.txt"), os.O_RDONLY, os.FileMode(0)).Return(nil, os.ErrNotExist)
+	b1.On("OpenFile", mock.Anything, vfs.MetaPath("exists.txt"), os.O_RDONLY, os.FileMode(0)).Return(nil, os.ErrNotExist)
+	b2.On("OpenFile", mock.Anything, vfs.MetaPath("exists.txt"), os.O_RDONLY, os.FileMode(0)).Return(nil, os.ErrNotExist)
 	expectNoTombstone(b1, "exists.txt")
 	expectNoTombstone(b2, "exists.txt")
 
@@ -1591,7 +1592,7 @@ func TestRemove_TombstoneQuorumFailureKeepsData(t *testing.T) {
 
 	// b1's tombstone write succeeds, b2's fails at the mkdir: 1/2 < quorum.
 	expectTombstoneWrite(b1, "safe.txt")
-	b2.On("MkdirAll", mock.Anything, gopath.Dir(vfs.TombstonePath("safe.txt")), os.FileMode(0755)).Return(errors.New("backend down"))
+	b2.On("MkdirAll", mock.Anything, gopath.Dir(vfs.MetaPath("safe.txt")), os.FileMode(0755)).Return(errors.New("backend down"))
 
 	err := dir.Remove(context.Background(), &fuse.RemoveRequest{Name: "safe.txt"})
 	assert.Error(t, err)
@@ -1668,7 +1669,7 @@ func TestRename_TombstonesOldPathAndWritesFreshSidecar(t *testing.T) {
 	assert.Equal(t, "node-test", ws.Writer)
 
 	// The data sidecar must NOT be moved by rename anymore.
-	b1.AssertNotCalled(t, "Rename", mock.Anything, vfs.SidecarPath("old.txt"), vfs.SidecarPath("new.txt"))
+	b1.AssertNotCalled(t, "Rename", mock.Anything, vfs.MetaPath("old.txt"), vfs.MetaPath("new.txt"))
 
 	// The cache reflects the new path and the bumped generation.
 	_, ok := cache.Get("old.txt")

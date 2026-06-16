@@ -189,11 +189,15 @@ func (f *RepliFS) maxTombstoneGen(ctx context.Context, path string) int64 {
 		wg.Add(1)
 		go func(bName string, b backend.Backend) {
 			defer wg.Done()
-			sc, err := vfs.ReadTombstone(ctx, b, path)
+			sc, err := vfs.ReadMeta(ctx, b, path)
 			if err != nil {
 				if !errors.Is(err, os.ErrNotExist) && !os.IsNotExist(err) {
-					f.pathLogger(path).Debugf("Tombstone read on %s failed: %v", bName, err)
+					f.pathLogger(path).Debugf("Metadata read on %s failed: %v", bName, err)
 				}
+				return
+			}
+			if !sc.Deleted {
+				// A live document is not a tombstone; it dooms nothing.
 				return
 			}
 			mu.Lock()
@@ -757,17 +761,10 @@ func (d *Dir) Remove(ctx context.Context, req *fuse.RemoveRequest) error {
 		return fmt.Errorf("could not reach write quorum for remove: %d/%d", successes, d.fs.WriteQuorum)
 	}
 
-	// Best-effort sidecar cleanup on the backends that held the file or directory.
-	// Durability is carried by the tombstones written above, not by this cleanup.
-	for _, bName := range backends {
-		b, okB := d.fs.Backends[bName]
-		if !okB {
-			continue
-		}
-		if err := vfs.RemoveSidecar(ctx, b, path); err != nil {
-			d.fs.pathLogger(path).Warnf("Failed to remove sidecar on backend %s: %v", bName, err)
-		}
-	}
+	// No sidecar cleanup here: sidecars and tombstones share one metadata
+	// document per path, and the tombstone written above now occupies that
+	// document. Removing it would erase the deletion record and let the path
+	// resurrect on the next sync.
 
 	d.node.Mu.Lock()
 	delete(d.node.Children, req.Name)
@@ -845,12 +842,8 @@ func (d *Dir) clearRenameTarget(ctx context.Context, targetDir *Dir, name, newPa
 		return fmt.Errorf("could not reach remove quorum to replace rename target %s: %d/%d", newPath, successes, d.fs.WriteQuorum)
 	}
 
-	// Best-effort sidecar cleanup; durability is carried by the tombstone.
-	for _, bName := range all {
-		if err := vfs.RemoveSidecar(ctx, d.fs.Backends[bName], newPath); err != nil {
-			d.fs.pathLogger(newPath).Warnf("Failed to remove target sidecar on %s: %v", bName, err)
-		}
-	}
+	// No sidecar cleanup: the tombstone written above shares the target's one
+	// metadata document, so removing it would erase the deletion record.
 
 	// Drop the target from the cache tree (the FUSE node is the cache node, so
 	// deleting it from the parent's children removes it from the namespace).
@@ -1025,32 +1018,17 @@ func (d *Dir) Rename(ctx context.Context, req *fuse.RenameRequest, newDir fs.Nod
 	// zombie-in-waiting.
 	newGen := max(gen, d.fs.maxTombstoneGen(ctx, newPath)) + 1
 
-	// Fresh sidecar at the new path with the bumped generation on every
-	// backend the rename succeeded on (best-effort, like all sidecar
-	// writes), plus best-effort cleanup of the now-orphaned old sidecar.
+	// Fresh sidecar at the new path with the bumped generation on every backend
+	// the rename succeeded on (best-effort, like all sidecar writes). The old
+	// path's document is NOT removed: the tombstone written above now occupies
+	// it, and removing it would erase the deletion record (see Dir.Remove).
 	d.fs.writeSidecars(ctx, newPath, vfs.Sidecar{Gen: newGen, Writer: d.fs.NodeID}, successful)
-	for _, bName := range successful {
-		if err := vfs.RemoveSidecar(ctx, d.fs.Backends[bName], oldPath); err != nil {
-			d.fs.pathLogger(oldPath).Debugf("Failed to remove old sidecar on %s: %v", bName, err)
-		}
-	}
 
-	// For directory renames, rename the sidecar subfolders under meta/ and tombstones/ (REVIEW C6-dirs)
-	if isDir {
-		for _, bName := range successful {
-			b := d.fs.Backends[bName]
-			oldMetaDir := vfs.ReservedDir + "/meta/" + oldPath
-			newMetaDir := vfs.ReservedDir + "/meta/" + newPath
-			if err := b.Rename(ctx, oldMetaDir, newMetaDir); err != nil && !os.IsNotExist(err) && !errors.Is(err, os.ErrNotExist) {
-				d.fs.pathLogger(oldPath).Debugf("Failed to rename sidecar directory %s to %s on %s: %v", oldMetaDir, newMetaDir, bName, err)
-			}
-			oldTombDir := vfs.ReservedDir + "/tombstones/" + oldPath
-			newTombDir := vfs.ReservedDir + "/tombstones/" + newPath
-			if err := b.Rename(ctx, oldTombDir, newTombDir); err != nil && !os.IsNotExist(err) && !errors.Is(err, os.ErrNotExist) {
-				d.fs.pathLogger(oldPath).Debugf("Failed to rename tombstone directory %s to %s on %s: %v", oldTombDir, newTombDir, bName, err)
-			}
-		}
-	}
+	// TODO(C6-dirs): metadata documents are keyed by the hash of the full path,
+	// so a directory rename changes every descendant's key. Re-keying the
+	// subtree's documents (and tombstoning the old keys) is deferred along with
+	// directory tombstones; descendant documents at the new paths are absent
+	// until repair re-stamps them as fresh generations.
 
 	// Update Cache
 	if !d.fs.Cache.Rename(oldPath, newPath) {

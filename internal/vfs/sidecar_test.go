@@ -6,6 +6,8 @@ import (
 	"errors"
 	"io"
 	"os"
+	gopath "path"
+	"strings"
 	"testing"
 
 	bmock "github.com/digitalentity/replistore/internal/backend/mock"
@@ -13,18 +15,37 @@ import (
 	"github.com/stretchr/testify/mock"
 )
 
-func TestSidecarPath(t *testing.T) {
-	assert.Equal(t, ".replistore/meta/file.txt.json", SidecarPath("file.txt"))
-	assert.Equal(t, ".replistore/meta/a/b/c.dat.json", SidecarPath("a/b/c.dat"))
+func TestMetaPath(t *testing.T) {
+	// The key is the SHA-256 of the data path, hex-encoded, sharded two levels
+	// deep under meta/. It is deterministic and lives under the reserved tree.
+	p := MetaPath("dir/f.txt")
+	assert.Equal(t, p, MetaPath("dir/f.txt"), "must be deterministic")
+	assert.True(t, strings.HasPrefix(p, metaDir+"/"))
+	assert.True(t, strings.HasSuffix(p, ".json"))
+
+	// Layout: meta/<h0>/<h1>/<64hex>.json — two 2-char shard levels.
+	rel := strings.TrimSuffix(strings.TrimPrefix(p, metaDir+"/"), ".json")
+	parts := strings.Split(rel, "/")
+	assert.Len(t, parts, 3)
+	assert.Len(t, parts[0], 2)
+	assert.Len(t, parts[1], 2)
+	assert.Len(t, parts[2], 64)
+	assert.Equal(t, parts[2][0:2], parts[0])
+	assert.Equal(t, parts[2][2:4], parts[1])
+
+	// Distinct paths map to distinct keys.
+	assert.NotEqual(t, MetaPath("a"), MetaPath("b"))
 }
 
 func TestSidecar_WriteReadRoundTrip(t *testing.T) {
 	b := &bmock.MockBackend{NameVal: "b1"}
 	wf := &bmock.MockFile{}
 
+	key := MetaPath("dir/f.txt")
+
 	var written []byte
-	b.On("MkdirAll", mock.Anything, ".replistore/meta/dir", os.FileMode(0755)).Return(nil)
-	b.On("OpenFile", mock.Anything, ".replistore/meta/dir/f.txt.json", os.O_CREATE|os.O_TRUNC|os.O_RDWR, os.FileMode(0644)).Return(wf, nil)
+	b.On("MkdirAll", mock.Anything, gopath.Dir(key), os.FileMode(0755)).Return(nil)
+	b.On("OpenFile", mock.Anything, key, os.O_CREATE|os.O_TRUNC|os.O_RDWR, os.FileMode(0644)).Return(wf, nil)
 	wf.On("WriteAt", mock.Anything, mock.Anything, int64(0)).Run(func(args mock.Arguments) {
 		written = append([]byte(nil), args.Get(1).([]byte)...)
 	}).Return(0, nil)
@@ -34,22 +55,25 @@ func TestSidecar_WriteReadRoundTrip(t *testing.T) {
 	assert.NoError(t, err)
 	assert.NotEmpty(t, written)
 
-	// The format version must be set internally.
+	// The format version and data path must be stamped in internally.
 	var raw map[string]any
 	assert.NoError(t, json.Unmarshal(written, &raw))
 	assert.EqualValues(t, 1, raw["v"])
+	assert.Equal(t, "dir/f.txt", raw["path"])
+	assert.Equal(t, false, raw["deleted"])
 
 	rf := &bmock.MockFile{}
-	b.On("OpenFile", mock.Anything, ".replistore/meta/dir/f.txt.json", os.O_RDONLY, os.FileMode(0)).Return(rf, nil)
+	b.On("OpenFile", mock.Anything, key, os.O_RDONLY, os.FileMode(0)).Return(rf, nil)
 	rf.On("ReadAt", mock.Anything, mock.Anything, int64(0)).Run(func(args mock.Arguments) {
 		copy(args.Get(1).([]byte), written)
 	}).Return(len(written), io.EOF) // EOF with n>0 must be treated as success
 	rf.On("Close").Return(nil)
 
-	sc, err := ReadSidecar(context.Background(), b, "dir/f.txt")
+	sc, err := ReadMeta(context.Background(), b, "dir/f.txt")
 	assert.NoError(t, err)
 	assert.Equal(t, int64(42), sc.Gen)
 	assert.Equal(t, "node-a", sc.Writer)
+	assert.Equal(t, "dir/f.txt", sc.Path)
 	assert.Equal(t, 1, sc.V)
 	assert.False(t, sc.Deleted)
 
@@ -58,29 +82,29 @@ func TestSidecar_WriteReadRoundTrip(t *testing.T) {
 	rf.AssertExpectations(t)
 }
 
-func TestReadSidecar_MissingSurfacesNotExist(t *testing.T) {
+func TestReadMeta_MissingSurfacesNotExist(t *testing.T) {
 	b := &bmock.MockBackend{NameVal: "b1"}
-	b.On("OpenFile", mock.Anything, ".replistore/meta/missing.txt.json", os.O_RDONLY, os.FileMode(0)).Return(nil, os.ErrNotExist)
+	b.On("OpenFile", mock.Anything, MetaPath("missing.txt"), os.O_RDONLY, os.FileMode(0)).Return(nil, os.ErrNotExist)
 
-	_, err := ReadSidecar(context.Background(), b, "missing.txt")
+	_, err := ReadMeta(context.Background(), b, "missing.txt")
 	assert.True(t, errors.Is(err, os.ErrNotExist))
 	assert.True(t, os.IsNotExist(err))
 
 	b.AssertExpectations(t)
 }
 
-func TestReadSidecar_BadVersionRejected(t *testing.T) {
+func TestReadMeta_BadVersionRejected(t *testing.T) {
 	b := &bmock.MockBackend{NameVal: "b1"}
 	rf := &bmock.MockFile{}
 
 	payload := []byte(`{"v":2,"gen":5,"writer":"x","deleted":false}`)
-	b.On("OpenFile", mock.Anything, ".replistore/meta/f.txt.json", os.O_RDONLY, os.FileMode(0)).Return(rf, nil)
+	b.On("OpenFile", mock.Anything, MetaPath("f.txt"), os.O_RDONLY, os.FileMode(0)).Return(rf, nil)
 	rf.On("ReadAt", mock.Anything, mock.Anything, int64(0)).Run(func(args mock.Arguments) {
 		copy(args.Get(1).([]byte), payload)
 	}).Return(len(payload), io.EOF)
 	rf.On("Close").Return(nil)
 
-	_, err := ReadSidecar(context.Background(), b, "f.txt")
+	_, err := ReadMeta(context.Background(), b, "f.txt")
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "unsupported format version")
 
@@ -88,35 +112,35 @@ func TestReadSidecar_BadVersionRejected(t *testing.T) {
 	rf.AssertExpectations(t)
 }
 
-func TestRemoveSidecar_NotExistIsSuccess(t *testing.T) {
+func TestRemoveMeta_NotExistIsSuccess(t *testing.T) {
 	b := &bmock.MockBackend{NameVal: "b1"}
-	b.On("Remove", mock.Anything, ".replistore/meta/gone.txt.json").Return(os.ErrNotExist)
+	b.On("Remove", mock.Anything, MetaPath("gone.txt")).Return(os.ErrNotExist)
 
-	assert.NoError(t, RemoveSidecar(context.Background(), b, "gone.txt"))
+	assert.NoError(t, RemoveMeta(context.Background(), b, "gone.txt"))
 	b.AssertExpectations(t)
 }
 
-func TestRemoveSidecar_PropagatesOtherErrors(t *testing.T) {
+func TestRemoveMeta_PropagatesOtherErrors(t *testing.T) {
 	b := &bmock.MockBackend{NameVal: "b1"}
 	bErr := errors.New("backend down")
-	b.On("Remove", mock.Anything, ".replistore/meta/f.txt.json").Return(bErr)
+	b.On("Remove", mock.Anything, MetaPath("f.txt")).Return(bErr)
 
-	assert.ErrorIs(t, RemoveSidecar(context.Background(), b, "f.txt"), bErr)
+	assert.ErrorIs(t, RemoveMeta(context.Background(), b, "f.txt"), bErr)
 	b.AssertExpectations(t)
 }
 
-func TestTombstonePath(t *testing.T) {
-	assert.Equal(t, ".replistore/tombstones/file.txt.json", TombstonePath("file.txt"))
-	assert.Equal(t, ".replistore/tombstones/a/b/c.dat.json", TombstonePath("a/b/c.dat"))
-}
-
-func TestTombstone_WriteReadRoundTrip(t *testing.T) {
+// TestTombstone_SharesKeyWithSidecar verifies a tombstone is the same document
+// as the sidecar (same key) with Deleted forced true.
+func TestTombstone_SharesKeyWithSidecar(t *testing.T) {
 	b := &bmock.MockBackend{NameVal: "b1"}
 	wf := &bmock.MockFile{}
 
+	key := MetaPath("dir/f.txt")
+	assert.Equal(t, key, MetaPath("dir/f.txt"), "sidecar and tombstone share one key")
+
 	var written []byte
-	b.On("MkdirAll", mock.Anything, ".replistore/tombstones/dir", os.FileMode(0755)).Return(nil)
-	b.On("OpenFile", mock.Anything, ".replistore/tombstones/dir/f.txt.json", os.O_CREATE|os.O_TRUNC|os.O_RDWR, os.FileMode(0644)).Return(wf, nil)
+	b.On("MkdirAll", mock.Anything, gopath.Dir(key), os.FileMode(0755)).Return(nil)
+	b.On("OpenFile", mock.Anything, key, os.O_CREATE|os.O_TRUNC|os.O_RDWR, os.FileMode(0644)).Return(wf, nil)
 	wf.On("WriteAt", mock.Anything, mock.Anything, int64(0)).Run(func(args mock.Arguments) {
 		written = append([]byte(nil), args.Get(1).([]byte)...)
 	}).Return(0, nil)
@@ -125,53 +149,36 @@ func TestTombstone_WriteReadRoundTrip(t *testing.T) {
 	// Deleted is deliberately left false: WriteTombstone must force it true.
 	err := WriteTombstone(context.Background(), b, "dir/f.txt", Sidecar{Gen: 7, Writer: "node-a"})
 	assert.NoError(t, err)
-	assert.NotEmpty(t, written)
 
 	var raw map[string]any
 	assert.NoError(t, json.Unmarshal(written, &raw))
 	assert.EqualValues(t, 1, raw["v"])
 	assert.Equal(t, true, raw["deleted"])
-
-	rf := &bmock.MockFile{}
-	b.On("OpenFile", mock.Anything, ".replistore/tombstones/dir/f.txt.json", os.O_RDONLY, os.FileMode(0)).Return(rf, nil)
-	rf.On("ReadAt", mock.Anything, mock.Anything, int64(0)).Run(func(args mock.Arguments) {
-		copy(args.Get(1).([]byte), written)
-	}).Return(len(written), io.EOF)
-	rf.On("Close").Return(nil)
-
-	sc, err := ReadTombstone(context.Background(), b, "dir/f.txt")
-	assert.NoError(t, err)
-	assert.Equal(t, int64(7), sc.Gen)
-	assert.Equal(t, "node-a", sc.Writer)
-	assert.True(t, sc.Deleted)
+	assert.Equal(t, "dir/f.txt", raw["path"])
 
 	b.AssertExpectations(t)
 	wf.AssertExpectations(t)
-	rf.AssertExpectations(t)
 }
 
-func TestReadTombstone_MissingSurfacesNotExist(t *testing.T) {
+// TestWriteSidecar_ClearsDeleted verifies a live write supersedes a prior
+// tombstone: WriteSidecar must force Deleted false even if the caller passes it
+// true.
+func TestWriteSidecar_ClearsDeleted(t *testing.T) {
 	b := &bmock.MockBackend{NameVal: "b1"}
-	b.On("OpenFile", mock.Anything, ".replistore/tombstones/missing.txt.json", os.O_RDONLY, os.FileMode(0)).Return(nil, os.ErrNotExist)
+	wf := &bmock.MockFile{}
 
-	_, err := ReadTombstone(context.Background(), b, "missing.txt")
-	assert.True(t, errors.Is(err, os.ErrNotExist))
-	b.AssertExpectations(t)
-}
+	var written []byte
+	b.On("MkdirAll", mock.Anything, mock.Anything, os.FileMode(0755)).Return(nil)
+	b.On("OpenFile", mock.Anything, MetaPath("f.txt"), os.O_CREATE|os.O_TRUNC|os.O_RDWR, os.FileMode(0644)).Return(wf, nil)
+	wf.On("WriteAt", mock.Anything, mock.Anything, int64(0)).Run(func(args mock.Arguments) {
+		written = append([]byte(nil), args.Get(1).([]byte)...)
+	}).Return(0, nil)
+	wf.On("Close").Return(nil)
 
-func TestRemoveTombstone_NotExistIsSuccess(t *testing.T) {
-	b := &bmock.MockBackend{NameVal: "b1"}
-	b.On("Remove", mock.Anything, ".replistore/tombstones/gone.txt.json").Return(os.ErrNotExist)
+	err := WriteSidecar(context.Background(), b, "f.txt", Sidecar{Gen: 9, Deleted: true})
+	assert.NoError(t, err)
 
-	assert.NoError(t, RemoveTombstone(context.Background(), b, "gone.txt"))
-	b.AssertExpectations(t)
-}
-
-func TestRemoveTombstone_PropagatesOtherErrors(t *testing.T) {
-	b := &bmock.MockBackend{NameVal: "b1"}
-	bErr := errors.New("backend down")
-	b.On("Remove", mock.Anything, ".replistore/tombstones/f.txt.json").Return(bErr)
-
-	assert.ErrorIs(t, RemoveTombstone(context.Background(), b, "f.txt"), bErr)
-	b.AssertExpectations(t)
+	var raw map[string]any
+	assert.NoError(t, json.Unmarshal(written, &raw))
+	assert.Equal(t, false, raw["deleted"])
 }

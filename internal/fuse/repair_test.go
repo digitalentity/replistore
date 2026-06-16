@@ -61,7 +61,7 @@ func TestRepairManager_RepairNode(t *testing.T) {
 	// The source's sidecar (gen 7) must be replicated to the target.
 	srcSidecar := &bmock.MockFile{}
 	scPayload := []byte(`{"v":1,"gen":7,"writer":"node-x","deleted":false}`)
-	b1.On("OpenFile", mock.Anything, vfs.SidecarPath("repair.txt"), os.O_RDONLY, os.FileMode(0)).Return(srcSidecar, nil)
+	b1.On("OpenFile", mock.Anything, vfs.MetaPath("repair.txt"), os.O_RDONLY, os.FileMode(0)).Return(srcSidecar, nil)
 	srcSidecar.On("ReadAt", mock.Anything, mock.Anything, int64(0)).Run(func(args mock.Arguments) {
 		copy(args.Get(1).([]byte), scPayload)
 	}).Return(len(scPayload), io.EOF)
@@ -138,7 +138,7 @@ func TestRepairManager_RepairNode_ChtimesErrorStillSucceeds(t *testing.T) {
 	b2.On("Chtimes", mock.Anything, "repair.txt", mock.Anything, mock.Anything).Return(io.ErrUnexpectedEOF)
 
 	// Legacy file: the source has no sidecar, so none is written to the target.
-	b1.On("OpenFile", mock.Anything, vfs.SidecarPath("repair.txt"), os.O_RDONLY, os.FileMode(0)).Return(nil, os.ErrNotExist)
+	b1.On("OpenFile", mock.Anything, vfs.MetaPath("repair.txt"), os.O_RDONLY, os.FileMode(0)).Return(nil, os.ErrNotExist)
 
 	err := mgr.repairNode(context.Background(), node)
 	assert.NoError(t, err)
@@ -150,8 +150,8 @@ func TestRepairManager_RepairNode_ChtimesErrorStillSucceeds(t *testing.T) {
 
 	// No sidecar write may reach the target for a legacy file, and no content
 	// sum is recorded on the source either (there is no sidecar to put it in).
-	b2.AssertNotCalled(t, "OpenFile", mock.Anything, vfs.SidecarPath("repair.txt"), os.O_CREATE|os.O_TRUNC|os.O_RDWR, os.FileMode(0644))
-	b1.AssertNotCalled(t, "OpenFile", mock.Anything, vfs.SidecarPath("repair.txt"), os.O_CREATE|os.O_TRUNC|os.O_RDWR, os.FileMode(0644))
+	b2.AssertNotCalled(t, "OpenFile", mock.Anything, vfs.MetaPath("repair.txt"), os.O_CREATE|os.O_TRUNC|os.O_RDWR, os.FileMode(0644))
+	b1.AssertNotCalled(t, "OpenFile", mock.Anything, vfs.MetaPath("repair.txt"), os.O_CREATE|os.O_TRUNC|os.O_RDWR, os.FileMode(0644))
 
 	b1.AssertExpectations(t)
 	b2.AssertExpectations(t)
@@ -193,7 +193,7 @@ func TestRepairManager_RepairNode_DetectsDivergentReplicas(t *testing.T) {
 	// Source sidecar: gen 7 with the (matching) content sum.
 	srcSidecar := &bmock.MockFile{}
 	srcPayload := fmt.Appendf(nil, `{"v":1,"gen":7,"writer":"node-x","deleted":false,"sum":"%s"}`, srcSum)
-	b1.On("OpenFile", mock.Anything, vfs.SidecarPath("repair.txt"), os.O_RDONLY, os.FileMode(0)).Return(srcSidecar, nil)
+	b1.On("OpenFile", mock.Anything, vfs.MetaPath("repair.txt"), os.O_RDONLY, os.FileMode(0)).Return(srcSidecar, nil)
 	srcSidecar.On("ReadAt", mock.Anything, mock.Anything, int64(0)).Run(func(args mock.Arguments) {
 		copy(args.Get(1).([]byte), srcPayload)
 	}).Return(len(srcPayload), io.EOF)
@@ -204,7 +204,7 @@ func TestRepairManager_RepairNode_DetectsDivergentReplicas(t *testing.T) {
 	b2.On("Stat", mock.Anything, "repair.txt").Return(backend.FileInfo{Name: "repair.txt", Size: 17}, nil)
 	tgtSidecar := &bmock.MockFile{}
 	tgtPayload := fmt.Appendf(nil, `{"v":1,"gen":7,"writer":"node-y","deleted":false,"sum":"%s"}`, divergentSum)
-	b2.On("OpenFile", mock.Anything, vfs.SidecarPath("repair.txt"), os.O_RDONLY, os.FileMode(0)).Return(tgtSidecar, nil)
+	b2.On("OpenFile", mock.Anything, vfs.MetaPath("repair.txt"), os.O_RDONLY, os.FileMode(0)).Return(tgtSidecar, nil)
 	tgtSidecar.On("ReadAt", mock.Anything, mock.Anything, int64(0)).Run(func(args mock.Arguments) {
 		copy(args.Get(1).([]byte), tgtPayload)
 	}).Return(len(tgtPayload), io.EOF)
@@ -238,7 +238,7 @@ func TestRepairManager_RepairNode_DetectsDivergentReplicas(t *testing.T) {
 	assert.Equal(t, srcSum, written.Sum)
 
 	// The source's sum already matched what was read, so it is not rewritten.
-	b1.AssertNotCalled(t, "OpenFile", mock.Anything, vfs.SidecarPath("repair.txt"), os.O_CREATE|os.O_TRUNC|os.O_RDWR, os.FileMode(0644))
+	b1.AssertNotCalled(t, "OpenFile", mock.Anything, vfs.MetaPath("repair.txt"), os.O_CREATE|os.O_TRUNC|os.O_RDWR, os.FileMode(0644))
 
 	b1.AssertExpectations(t)
 	b2.AssertExpectations(t)
@@ -292,27 +292,29 @@ func TestOffsetWriter_Write(t *testing.T) {
 	assert.Equal(t, 6, n)
 }
 
-// mockTombstoneTree makes b's tombstone tree enumerate (and serve) a tombstone
-// at the given generation for each path; an empty map means no tombstone tree.
+// mockTombstoneTree makes b's metadata tree enumerate (and serve) a tombstone
+// document at the given generation for each path; an empty map means no
+// metadata tree. Sidecars and tombstones share one tree, so enumeration walks
+// metaDir and the data path is recovered from the document's path field.
 func mockTombstoneTree(b *bmock.MockBackend, tombs map[string]int64) {
 	if len(tombs) == 0 {
-		b.On("Walk", mock.Anything, ".replistore/tombstones", mock.Anything).Return(os.ErrNotExist)
+		b.On("Walk", mock.Anything, ".replistore/meta", mock.Anything).Return(os.ErrNotExist)
 		return
 	}
-	b.On("Walk", mock.Anything, ".replistore/tombstones", mock.Anything).Run(func(args mock.Arguments) {
+	b.On("Walk", mock.Anything, ".replistore/meta", mock.Anything).Run(func(args mock.Arguments) {
 		fn := args.Get(2).(func(string, backend.FileInfo) error)
 		for path := range tombs {
-			_ = fn(vfs.TombstonePath(path), backend.FileInfo{Name: path + ".json"})
+			_ = fn(vfs.MetaPath(path), backend.FileInfo{Name: path + ".json"})
 		}
 	}).Return(nil)
 	for path, gen := range tombs {
-		payload := fmt.Appendf(nil, `{"v":1,"gen":%d,"writer":"w","deleted":true}`, gen)
+		payload := fmt.Appendf(nil, `{"v":1,"path":%q,"gen":%d,"writer":"w","deleted":true}`, path, gen)
 		f := &bmock.MockFile{}
 		f.On("ReadAt", mock.Anything, mock.Anything, int64(0)).Run(func(args mock.Arguments) {
 			copy(args.Get(1).([]byte), payload)
 		}).Return(len(payload), io.EOF)
 		f.On("Close").Return(nil)
-		b.On("OpenFile", mock.Anything, vfs.TombstonePath(path), os.O_RDONLY, os.FileMode(0)).Return(f, nil)
+		b.On("OpenFile", mock.Anything, vfs.MetaPath(path), os.O_RDONLY, os.FileMode(0)).Return(f, nil)
 	}
 }
 
@@ -324,7 +326,7 @@ func mockSidecarGen(b *bmock.MockBackend, path string, gen int64) {
 		copy(args.Get(1).([]byte), payload)
 	}).Return(len(payload), io.EOF)
 	f.On("Close").Return(nil)
-	b.On("OpenFile", mock.Anything, vfs.SidecarPath(path), os.O_RDONLY, os.FileMode(0)).Return(f, nil)
+	b.On("OpenFile", mock.Anything, vfs.MetaPath(path), os.O_RDONLY, os.FileMode(0)).Return(f, nil)
 }
 
 func newTombstoneTestManager(b1, b2 *bmock.MockBackend) *RepairManager {
@@ -343,19 +345,21 @@ func TestEnforceTombstones_DeletesZombie(t *testing.T) {
 	b2 := &bmock.MockBackend{NameVal: "b2"}
 	mgr := newTombstoneTestManager(b1, b2)
 
-	// b1 still holds the deleted file at gen 2; the tombstone records gen 3.
-	mockTombstoneTree(b1, map[string]int64{"z.txt": 3})
-	mockTombstoneTree(b2, nil)
+	// b1 missed the delete: it still holds the zombie data with a stale live
+	// document at gen 2. b2 recorded the deletion at gen 3 (no data). The zombie
+	// (gen 2 <= 3) must be removed from b1; with every backend responding the
+	// now-converged tombstone is garbage-collected.
+	mockTombstoneTree(b1, nil)
+	mockTombstoneTree(b2, map[string]int64{"z.txt": 3})
 	b1.On("Stat", mock.Anything, "z.txt").Return(backend.FileInfo{Name: "z.txt", Size: 5}, nil)
 	mockSidecarGen(b1, "z.txt", 2)
 	b2.On("Stat", mock.Anything, "z.txt").Return(backend.FileInfo{}, os.ErrNotExist)
 
-	// Zombie data and meta sidecar must be removed from b1; with every backend
-	// responding the now-converged tombstone is garbage-collected everywhere.
+	// Zombie data and its stale document are removed from b1; the tombstone
+	// document is garbage-collected from b2.
 	b1.On("Remove", mock.Anything, "z.txt").Return(nil)
-	b1.On("Remove", mock.Anything, vfs.SidecarPath("z.txt")).Return(nil)
-	b1.On("Remove", mock.Anything, vfs.TombstonePath("z.txt")).Return(nil)
-	b2.On("Remove", mock.Anything, vfs.TombstonePath("z.txt")).Return(os.ErrNotExist)
+	b1.On("Remove", mock.Anything, vfs.MetaPath("z.txt")).Return(nil)
+	b2.On("Remove", mock.Anything, vfs.MetaPath("z.txt")).Return(nil)
 
 	mgr.enforceTombstones(context.Background())
 
@@ -373,8 +377,8 @@ func TestEnforceTombstones_GCsWhenAbsentEverywhere(t *testing.T) {
 	b1.On("Stat", mock.Anything, "gone.txt").Return(backend.FileInfo{}, os.ErrNotExist)
 	b2.On("Stat", mock.Anything, "gone.txt").Return(backend.FileInfo{}, os.ErrNotExist)
 
-	b1.On("Remove", mock.Anything, vfs.TombstonePath("gone.txt")).Return(nil)
-	b2.On("Remove", mock.Anything, vfs.TombstonePath("gone.txt")).Return(nil)
+	b1.On("Remove", mock.Anything, vfs.MetaPath("gone.txt")).Return(nil)
+	b2.On("Remove", mock.Anything, vfs.MetaPath("gone.txt")).Return(nil)
 
 	mgr.enforceTombstones(context.Background())
 
@@ -400,8 +404,8 @@ func TestEnforceTombstones_KeepsTombstoneOnBackendError(t *testing.T) {
 
 	mgr.enforceTombstones(context.Background())
 
-	b1.AssertNotCalled(t, "Remove", mock.Anything, vfs.TombstonePath("limbo.txt"))
-	b2.AssertNotCalled(t, "Remove", mock.Anything, vfs.TombstonePath("limbo.txt"))
+	b1.AssertNotCalled(t, "Remove", mock.Anything, vfs.MetaPath("limbo.txt"))
+	b2.AssertNotCalled(t, "Remove", mock.Anything, vfs.MetaPath("limbo.txt"))
 
 	b1.AssertExpectations(t)
 	b2.AssertExpectations(t)
@@ -412,22 +416,22 @@ func TestEnforceTombstones_RemovesObsoleteTombstone(t *testing.T) {
 	b2 := &bmock.MockBackend{NameVal: "b2"}
 	mgr := newTombstoneTestManager(b1, b2)
 
-	// b1's replica is at gen 5, newer than the recorded deletion at gen 3:
-	// the tombstone is obsolete and must be retired everywhere, the data kept.
-	mockTombstoneTree(b1, map[string]int64{"reborn.txt": 3})
-	mockTombstoneTree(b2, nil)
+	// b1's replica is at gen 5 with a live document, newer than b2's lingering
+	// deletion at gen 3: the tombstone is obsolete and must be retired from b2,
+	// while b1's data and live document are kept.
+	mockTombstoneTree(b1, nil)
+	mockTombstoneTree(b2, map[string]int64{"reborn.txt": 3})
 	b1.On("Stat", mock.Anything, "reborn.txt").Return(backend.FileInfo{Name: "reborn.txt", Size: 9}, nil)
 	mockSidecarGen(b1, "reborn.txt", 5)
 	b2.On("Stat", mock.Anything, "reborn.txt").Return(backend.FileInfo{}, os.ErrNotExist)
 
-	b1.On("Remove", mock.Anything, vfs.TombstonePath("reborn.txt")).Return(nil)
-	b2.On("Remove", mock.Anything, vfs.TombstonePath("reborn.txt")).Return(os.ErrNotExist)
+	b2.On("Remove", mock.Anything, vfs.MetaPath("reborn.txt")).Return(nil)
 
 	mgr.enforceTombstones(context.Background())
 
-	// The newer-generation data must not be touched.
+	// The newer-generation data and its live document must not be touched.
 	b1.AssertNotCalled(t, "Remove", mock.Anything, "reborn.txt")
-	b1.AssertNotCalled(t, "Remove", mock.Anything, vfs.SidecarPath("reborn.txt"))
+	b1.AssertNotCalled(t, "Remove", mock.Anything, vfs.MetaPath("reborn.txt"))
 
 	b1.AssertExpectations(t)
 	b2.AssertExpectations(t)
@@ -457,7 +461,7 @@ func TestRepairManager_PruneNode(t *testing.T) {
 	node, _ := cache.Get("prune.txt")
 
 	b3.On("Remove", mock.Anything, "prune.txt").Return(nil)
-	b3.On("Remove", mock.Anything, vfs.SidecarPath("prune.txt")).Return(nil)
+	b3.On("Remove", mock.Anything, vfs.MetaPath("prune.txt")).Return(nil)
 
 	err := mgr.pruneNode(context.Background(), node)
 	assert.NoError(t, err)

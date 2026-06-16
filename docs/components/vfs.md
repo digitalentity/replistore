@@ -30,17 +30,17 @@ If a cached metadata entry is accessed and its age exceeds `CacheTTL` (configure
 - **If backend is offline (ErrUnavailable/transient error):** The entry is **not** evicted; the filesystem falls back to serving the stale cached data instead of failing with I/O errors.
 
 ### Replica Reconciliation (Generation-Aware)
-RepliStore does not trust raw backend mtimes as version vectors — each SMB server stamps mtime with its own clock. Instead, every write session bumps a per-file **generation counter** stored in a sidecar at `.replistore/meta/<path>.json` on each backend holding a replica (a replica with no sidecar reports generation 0, i.e. a legacy file). Merge rules:
+RepliStore does not trust raw backend mtimes as version vectors — each SMB server stamps mtime with its own clock. Instead, every write session bumps a per-file **generation counter** stored in a metadata document on each backend holding a replica (a replica with no document reports generation 0, i.e. a legacy file). The document is keyed by the SHA-256 of the data path, sharded two levels deep — `.replistore/meta/<h0>/<h1>/<sha256hex>.json` — and records the data path inside itself. Merge rules:
 1. **Higher generation wins outright:** its metadata and backend set replace the existing ones, regardless of mtime or size.
 2. **Equal generation, equal size:** the same version observed on different backends — backend lists are *unioned*. This is what kills post-write repair churn: replicated writes leave equal-generation, equal-size replicas with divergent server-stamped mtimes, which must merge, not split.
 3. **Equal generation, different size:** fall back to `(mtime, size)` last-writer-wins (a known residual; see REVIEW.md C4).
 
 Directories are always treated as union types: backend lists merge and mtime/size are ignored for conflict resolution.
 
-Sidecars are read lazily, only for genuine conflicts (different sizes) or tombstoned paths, so the steady-state sync pass costs zero sidecar reads.
+During a lazy single-path fetch, the document is read for each backend holding the replica. The sync pass enumerates deletions by walking the whole `meta/` tree (see Tombstones), so it reads every metadata document; conflict resolution reads no extra documents beyond that.
 
 ### Tombstones (Durable Deletes)
-Deletes and renames record a tombstone at `.replistore/tombstones/<path>.json` carrying the deletion generation. Reconciliation suppresses any replica at or below the tombstone's generation, so a backend that missed the delete cannot resurrect the file. The repair manager enforces tombstones at scrub start (deleting zombie replicas) and garbage-collects a tombstone once the path is verified absent on every responding backend. Directory tombstones are not yet implemented (REVIEW.md C6-dirs).
+A sidecar and a tombstone are the **same document**: a tombstone is a metadata document with its `Deleted` flag set, carrying the deletion generation. Deletes and renames write it to the path's key (`.replistore/meta/<h0>/<h1>/<sha256hex>.json`), overwriting any prior live sidecar; a subsequent live write clears the flag. Reconciliation suppresses any replica at or below the tombstone's generation, so a backend that missed the delete cannot resurrect the file. Because deletions share the one metadata tree, sync enumerates them by walking `meta/` and filtering on the `Deleted` flag (recovering the data path from inside each document). The repair manager enforces tombstones at scrub start (deleting zombie replicas) and garbage-collects a tombstone — without disturbing a live sidecar that shares the key — once the path is verified absent on every responding backend. Directory tombstones are not yet implemented (REVIEW.md C6-dirs).
 
 ### Consistency
 - **External Changes:** RepliStore performs periodic background synchronization (controlled by `cache_refresh_interval`). During each sync, it re-scans the backends to discover new files, modifications, and deletions, reconciling replicas with the generation-aware rules above. This ensures the in-memory cache eventually reconciles with the state of the SMB shares.

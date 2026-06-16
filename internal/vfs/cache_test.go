@@ -47,11 +47,10 @@ func TestCache_FetchEntry(t *testing.T) {
 		ModTime: now,
 	}, nil)
 
-	// No sidecars and no tombstones anywhere: all replicas report Gen 0
-	// (legacy) and no deletion is recorded.
+	// No metadata documents anywhere: all replicas report Gen 0 (legacy) and no
+	// deletion is recorded.
 	for _, b := range []*bmock.MockBackend{b1, b2, b3} {
-		b.On("OpenFile", mock.Anything, vfs.SidecarPath(path), os.O_RDONLY, os.FileMode(0)).Return(nil, os.ErrNotExist)
-		b.On("OpenFile", mock.Anything, vfs.TombstonePath(path), os.O_RDONLY, os.FileMode(0)).Return(nil, os.ErrNotExist)
+		b.On("OpenFile", mock.Anything, vfs.MetaPath(path), os.O_RDONLY, os.FileMode(0)).Return(nil, os.ErrNotExist)
 	}
 
 	backends := []backend.Backend{b1, b2, b3}
@@ -439,10 +438,8 @@ func TestCache_FetchEntryDirUnionsBackends(t *testing.T) {
 		ModTime: now.Add(-time.Hour),
 	}, nil)
 
-	b1.On("OpenFile", mock.Anything, vfs.SidecarPath(path), os.O_RDONLY, os.FileMode(0)).Return(nil, os.ErrNotExist).Maybe()
-	b1.On("OpenFile", mock.Anything, vfs.TombstonePath(path), os.O_RDONLY, os.FileMode(0)).Return(nil, os.ErrNotExist).Maybe()
-	b2.On("OpenFile", mock.Anything, vfs.SidecarPath(path), os.O_RDONLY, os.FileMode(0)).Return(nil, os.ErrNotExist).Maybe()
-	b2.On("OpenFile", mock.Anything, vfs.TombstonePath(path), os.O_RDONLY, os.FileMode(0)).Return(nil, os.ErrNotExist).Maybe()
+	b1.On("OpenFile", mock.Anything, vfs.MetaPath(path), os.O_RDONLY, os.FileMode(0)).Return(nil, os.ErrNotExist).Maybe()
+	b2.On("OpenFile", mock.Anything, vfs.MetaPath(path), os.O_RDONLY, os.FileMode(0)).Return(nil, os.ErrNotExist).Maybe()
 
 	node, err := cache.FetchEntry(ctx, path, []backend.Backend{b1, b2})
 	assert.NoError(t, err)

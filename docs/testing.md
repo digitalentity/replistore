@@ -37,7 +37,7 @@ Tests the background repair manager, including identifying degraded files, selec
 Tests the metadata cache: upserting, retrieving, and generation-aware reconciliation — higher generation wins, equal generation + equal size unions backend lists, conflict-driven sidecar reads, and tombstone suppression (a tombstoned path is evicted from the cache and reported absent by lazy fetch).
 
 ### `internal/vfs/sidecar_test.go`
-Tests the version-metadata sidecars and deletion tombstones: path mapping, read/write round-trips, missing-sidecar (generation 0) handling, and the forced `Deleted` flag on tombstones.
+Tests the version-metadata documents (sidecars and deletion tombstones share one document): the hashed, two-level-sharded key derivation, read/write round-trips with the data path stored in the document, missing-document (generation 0) handling, that a tombstone shares the sidecar's key with `Deleted` forced true, and that a live write forces `Deleted` false.
 
 ### `internal/vfs/lock_test.go`
 Tests the distributed lock client: quorum acquisition and rollback, same-node mutual exclusion via per-acquisition `LockID`, lease renewal, expiry, and acquire retries with backoff under contention.
