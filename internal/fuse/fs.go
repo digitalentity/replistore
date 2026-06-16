@@ -996,34 +996,8 @@ func (d *Dir) Rename(ctx context.Context, req *fuse.RenameRequest, newDir fs.Nod
 	}
 
 	oldDescendantGens := make(map[string]int64)
-	if isDir && len(descendants) > 0 {
-		var wg sync.WaitGroup
-		var muLock sync.Mutex
-		for _, rel := range descendants {
-			wg.Add(1)
-			go func(rel string) {
-				defer wg.Done()
-				oldDescendantPath := oldPath + "/" + rel
-				oldGen := int64(0)
-				if node, ok := d.fs.Cache.Get(oldDescendantPath); ok {
-					oldGen = node.Meta.Gen
-				}
-				if oldGen == 0 {
-					for _, bName := range backends {
-						if b, ok := d.fs.Backends[bName]; ok {
-							if sc, err := vfs.ReadSidecar(ctx, b, oldDescendantPath); err == nil {
-								oldGen = sc.Gen
-								break
-							}
-						}
-					}
-				}
-				muLock.Lock()
-				oldDescendantGens[rel] = oldGen
-				muLock.Unlock()
-			}(rel)
-		}
-		wg.Wait()
+	if isDir {
+		oldDescendantGens = d.collectDescendantGenerations(ctx, oldPath, descendants, backends)
 	}
 
 	var mu sync.Mutex
@@ -1186,6 +1160,45 @@ func (d *Dir) Rename(ctx context.Context, req *fuse.RenameRequest, newDir fs.Nod
 	}
 
 	return nil
+}
+
+// collectDescendantGenerations retrieves the current metadata generation for all descendant paths of a directory.
+func (d *Dir) collectDescendantGenerations(ctx context.Context, oldPath string, descendants []string, backends []string) map[string]int64 {
+	oldDescendantGens := make(map[string]int64)
+	if len(descendants) == 0 {
+		return oldDescendantGens
+	}
+
+	var wg sync.WaitGroup
+	var muLock sync.Mutex
+	for _, rel := range descendants {
+		wg.Add(1)
+		go func(rel string) {
+			defer wg.Done()
+			oldDescendantPath := oldPath + "/" + rel
+			oldGen := d.getDescendantGen(ctx, oldDescendantPath, backends)
+			muLock.Lock()
+			oldDescendantGens[rel] = oldGen
+			muLock.Unlock()
+		}(rel)
+	}
+	wg.Wait()
+	return oldDescendantGens
+}
+
+// getDescendantGen retrieves the generation of a descendant path from cache or backends.
+func (d *Dir) getDescendantGen(ctx context.Context, path string, backends []string) int64 {
+	if node, ok := d.fs.Cache.Get(path); ok {
+		return node.Meta.Gen
+	}
+	for _, bName := range backends {
+		if b, ok := d.fs.Backends[bName]; ok {
+			if sc, err := vfs.ReadSidecar(ctx, b, path); err == nil {
+				return sc.Gen
+			}
+		}
+	}
+	return 0
 }
 
 type File struct {

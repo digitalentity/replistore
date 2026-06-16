@@ -13,6 +13,7 @@ import (
 	bmock "github.com/digitalentity/replistore/internal/backend/mock"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
 )
 
 func TestMetaPath(t *testing.T) {
@@ -52,12 +53,12 @@ func TestSidecar_WriteReadRoundTrip(t *testing.T) {
 	wf.On("Close").Return(nil)
 
 	err := WriteSidecar(context.Background(), b, "dir/f.txt", Sidecar{Gen: 42, Writer: "node-a"})
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.NotEmpty(t, written)
 
 	// The format version and data path must be stamped in internally.
 	var raw map[string]any
-	assert.NoError(t, json.Unmarshal(written, &raw))
+	require.NoError(t, json.Unmarshal(written, &raw))
 	assert.EqualValues(t, 1, raw["v"])
 	assert.Equal(t, "dir/f.txt", raw["path"])
 	assert.Equal(t, false, raw["deleted"])
@@ -70,7 +71,7 @@ func TestSidecar_WriteReadRoundTrip(t *testing.T) {
 	rf.On("Close").Return(nil)
 
 	sc, err := ReadMeta(context.Background(), b, "dir/f.txt")
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.Equal(t, int64(42), sc.Gen)
 	assert.Equal(t, "node-a", sc.Writer)
 	assert.Equal(t, "dir/f.txt", sc.Path)
@@ -87,7 +88,7 @@ func TestReadMeta_MissingSurfacesNotExist(t *testing.T) {
 	b.On("OpenFile", mock.Anything, MetaPath("missing.txt"), os.O_RDONLY, os.FileMode(0)).Return(nil, os.ErrNotExist)
 
 	_, err := ReadMeta(context.Background(), b, "missing.txt")
-	assert.True(t, errors.Is(err, os.ErrNotExist))
+	require.ErrorIs(t, err, os.ErrNotExist)
 	assert.True(t, os.IsNotExist(err))
 
 	b.AssertExpectations(t)
@@ -105,7 +106,7 @@ func TestReadMeta_BadVersionRejected(t *testing.T) {
 	rf.On("Close").Return(nil)
 
 	_, err := ReadMeta(context.Background(), b, "f.txt")
-	assert.Error(t, err)
+	require.Error(t, err)
 	assert.Contains(t, err.Error(), "unsupported format version")
 
 	b.AssertExpectations(t)
@@ -116,7 +117,7 @@ func TestRemoveMeta_NotExistIsSuccess(t *testing.T) {
 	b := &bmock.MockBackend{NameVal: "b1"}
 	b.On("Remove", mock.Anything, MetaPath("gone.txt")).Return(os.ErrNotExist)
 
-	assert.NoError(t, RemoveMeta(context.Background(), b, "gone.txt"))
+	require.NoError(t, RemoveMeta(context.Background(), b, "gone.txt"))
 	b.AssertExpectations(t)
 }
 
@@ -125,7 +126,7 @@ func TestRemoveMeta_PropagatesOtherErrors(t *testing.T) {
 	bErr := errors.New("backend down")
 	b.On("Remove", mock.Anything, MetaPath("f.txt")).Return(bErr)
 
-	assert.ErrorIs(t, RemoveMeta(context.Background(), b, "f.txt"), bErr)
+	require.ErrorIs(t, RemoveMeta(context.Background(), b, "f.txt"), bErr)
 	b.AssertExpectations(t)
 }
 

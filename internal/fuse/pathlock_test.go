@@ -3,6 +3,9 @@ package fuse
 import (
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // TestPathLocksSamePathBlocks verifies that a second lock on the same path
@@ -21,7 +24,7 @@ func TestPathLocksSamePathBlocks(t *testing.T) {
 
 	select {
 	case <-acquired:
-		t.Fatal("second lock acquired while first was still held")
+		require.FailNow(t, "second lock acquired while first was still held")
 	case <-time.After(50 * time.Millisecond):
 		// Expected: second goroutine is blocked.
 	}
@@ -32,7 +35,7 @@ func TestPathLocksSamePathBlocks(t *testing.T) {
 	case <-acquired:
 		// Expected: second goroutine acquired after the first unlocked.
 	case <-time.After(2 * time.Second):
-		t.Fatal("second lock was not acquired after first unlock")
+		require.FailNow(t, "second lock was not acquired after first unlock")
 	}
 }
 
@@ -55,7 +58,7 @@ func TestPathLocksDifferentPathsIndependent(t *testing.T) {
 	case <-acquired:
 		// Expected: "b" is independent of "a".
 	case <-time.After(2 * time.Second):
-		t.Fatal("lock on a different path blocked")
+		require.FailNow(t, "lock on a different path blocked")
 	}
 }
 
@@ -85,7 +88,7 @@ func TestPathLocksEntryRemovedAfterLastUnlock(t *testing.T) {
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("second waiter never registered, refs=%d", refs)
+			require.FailNow(t, "second waiter never registered", "refs=%d", refs)
 		}
 		time.Sleep(time.Millisecond)
 	}
@@ -97,9 +100,7 @@ func TestPathLocksEntryRemovedAfterLastUnlock(t *testing.T) {
 	p.mu.Lock()
 	_, present := p.locks["x"]
 	p.mu.Unlock()
-	if !present {
-		t.Fatal("entry removed while still held by second locker")
-	}
+	require.True(t, present, "entry removed while still held by second locker")
 
 	unlock2()
 
@@ -107,10 +108,6 @@ func TestPathLocksEntryRemovedAfterLastUnlock(t *testing.T) {
 	_, present = p.locks["x"]
 	n := len(p.locks)
 	p.mu.Unlock()
-	if present {
-		t.Fatal("entry not removed after last unlock")
-	}
-	if n != 0 {
-		t.Fatalf("lock table not empty after all unlocks: %d entries", n)
-	}
+	assert.False(t, present, "entry not removed after last unlock")
+	assert.Equal(t, 0, n, "lock table not empty after all unlocks")
 }

@@ -13,6 +13,7 @@ import (
 	"github.com/digitalentity/replistore/internal/vfs"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
 )
 
 func TestDir_Rename_Simple(t *testing.T) {
@@ -43,7 +44,7 @@ func TestDir_Rename_Simple(t *testing.T) {
 	req := &fuse.RenameRequest{OldName: "old.txt", NewName: "new.txt"}
 	err := root.Rename(context.Background(), req, root)
 
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	// Check cache
 	_, ok := cache.Get("old.txt")
@@ -87,7 +88,7 @@ func TestDir_Rename_OverExistingTarget(t *testing.T) {
 
 	req := &fuse.RenameRequest{OldName: "old.txt", NewName: "new.txt"}
 	err := root.Rename(context.Background(), req, root)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	_, ok := cache.Get("old.txt")
 	assert.False(t, ok)
@@ -122,7 +123,7 @@ func TestDir_Rename_OverDirectoryTargetRejected(t *testing.T) {
 	// no backend data.
 	req := &fuse.RenameRequest{OldName: "file.txt", NewName: "dir"}
 	err := root.Rename(context.Background(), req, root)
-	assert.ErrorIs(t, err, syscall.EISDIR)
+	require.ErrorIs(t, err, syscall.EISDIR)
 
 	_, ok := cache.Get("file.txt")
 	assert.True(t, ok, "source must be untouched after a rejected rename")
@@ -162,7 +163,7 @@ func TestDir_Rename_CrossDir(t *testing.T) {
 	req := &fuse.RenameRequest{OldName: "old.txt", NewName: "new.txt"}
 	err := d1.Rename(context.Background(), req, d2)
 
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	// Check cache
 	_, ok := cache.Get("dir1/old.txt")
@@ -213,7 +214,7 @@ func TestDir_Rename_DirFansOutToAllBackends(t *testing.T) {
 
 	req := &fuse.RenameRequest{OldName: "olddir", NewName: "newdir"}
 	err := root.Rename(context.Background(), req, root)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	_, ok := cache.Get("olddir")
 	assert.False(t, ok)
@@ -260,7 +261,7 @@ func TestDir_Rename_DirNotExistIsSkipped(t *testing.T) {
 
 	req := &fuse.RenameRequest{OldName: "olddir", NewName: "newdir"}
 	err := root.Rename(context.Background(), req, root)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	newNode, ok := cache.Get("newdir")
 	assert.True(t, ok)
@@ -313,7 +314,7 @@ func TestDir_Rename_Quorum(t *testing.T) {
 	err := root.Rename(context.Background(), req, root)
 
 	// Should succeed because quorum (1) was reached
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	// Backend list for new file should only contain b1
 	node, _ := cache.Get("new.txt")
@@ -364,7 +365,7 @@ func TestDir_Rename_DescendantReKeying(t *testing.T) {
 
 	req := &fuse.RenameRequest{OldName: "olddir", NewName: "newdir"}
 	err := root.Rename(context.Background(), req, root)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	// Verify old path tombstoned
 	wDirOld, nDirOld := tcDirOld.get()

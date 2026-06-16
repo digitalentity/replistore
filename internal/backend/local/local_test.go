@@ -2,7 +2,6 @@ package local
 
 import (
 	"context"
-	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -10,6 +9,8 @@ import (
 	"time"
 
 	"github.com/digitalentity/replistore/internal/backend"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestLocalBackend_Lifecycle(t *testing.T) {
@@ -21,80 +22,50 @@ func TestLocalBackend_Lifecycle(t *testing.T) {
 		"path": tmpDir,
 	}
 	b, err := backend.Create("local", "test-local", opts)
-	if err != nil {
-		t.Fatalf("failed to create local backend: %v", err)
-	}
-
-	if b.GetName() != "test-local" {
-		t.Errorf("expected backend name 'test-local', got %q", b.GetName())
-	}
+	require.NoError(t, err, "failed to create local backend")
+	assert.Equal(t, "test-local", b.GetName())
 
 	// 2. Connect
-	if err := b.Connect(); err != nil {
-		t.Fatalf("connect failed: %v", err)
-	}
+	err = b.Connect()
+	require.NoError(t, err, "connect failed")
 
 	// 3. Ping
 	ctx := context.Background()
-	if err := b.Ping(ctx); err != nil {
-		t.Errorf("ping failed: %v", err)
-	}
+	err = b.Ping(ctx)
+	require.NoError(t, err, "ping failed")
 
 	// 4. Mkdir & OpenFile (Write/Read)
 	dirPath := "testdir"
-	if err := b.Mkdir(ctx, dirPath, 0755); err != nil {
-		t.Fatalf("mkdir failed: %v", err)
-	}
+	err = b.Mkdir(ctx, dirPath, 0755)
+	require.NoError(t, err, "mkdir failed")
 
 	filePath := filepath.Join(dirPath, "hello.txt")
 	f, err := b.OpenFile(ctx, filePath, os.O_CREATE|os.O_RDWR, 0644)
-	if err != nil {
-		t.Fatalf("openfile failed: %v", err)
-	}
+	require.NoError(t, err, "openfile failed")
 
 	content := []byte("hello replistore local backend")
 	n, err := f.WriteAt(ctx, content, 0)
-	if err != nil {
-		t.Fatalf("write failed: %v", err)
-	}
-	if n != len(content) {
-		t.Errorf("expected to write %d bytes, wrote %d", len(content), n)
-	}
+	require.NoError(t, err, "write failed")
+	assert.Equal(t, len(content), n, "expected to write %d bytes, wrote %d", len(content), n)
 
-	if err := f.Sync(ctx); err != nil {
-		t.Errorf("sync failed: %v", err)
-	}
+	err = f.Sync(ctx)
+	require.NoError(t, err, "sync failed")
 
-	if err := f.Close(); err != nil {
-		t.Errorf("close failed: %v", err)
-	}
+	err = f.Close()
+	require.NoError(t, err, "close failed")
 
 	// 5. Stat
 	fi, err := b.Stat(ctx, filePath)
-	if err != nil {
-		t.Fatalf("stat failed: %v", err)
-	}
-	if fi.Name != "hello.txt" {
-		t.Errorf("expected file name 'hello.txt', got %q", fi.Name)
-	}
-	if fi.Size != int64(len(content)) {
-		t.Errorf("expected size %d, got %d", len(content), fi.Size)
-	}
-	if fi.IsDir {
-		t.Error("expected file, got directory")
-	}
+	require.NoError(t, err, "stat failed")
+	assert.Equal(t, "hello.txt", fi.Name)
+	assert.Equal(t, int64(len(content)), fi.Size)
+	assert.False(t, fi.IsDir, "expected file, got directory")
 
 	// 6. ReadDir
 	entries, err := b.ReadDir(ctx, dirPath)
-	if err != nil {
-		t.Fatalf("readdir failed: %v", err)
-	}
-	if len(entries) != 1 {
-		t.Fatalf("expected 1 entry in directory, got %d", len(entries))
-	}
-	if entries[0].Name != "hello.txt" {
-		t.Errorf("expected entry name 'hello.txt', got %q", entries[0].Name)
-	}
+	require.NoError(t, err, "readdir failed")
+	require.Len(t, entries, 1, "expected 1 entry in directory, got %d", len(entries))
+	assert.Equal(t, "hello.txt", entries[0].Name)
 
 	// 7. Walk
 	walked := map[string]bool{}
@@ -102,9 +73,7 @@ func TestLocalBackend_Lifecycle(t *testing.T) {
 		walked[path] = info.IsDir
 		return nil
 	})
-	if err != nil {
-		t.Fatalf("walk failed: %v", err)
-	}
+	require.NoError(t, err, "walk failed")
 
 	expectedWalk := map[string]bool{
 		"testdir":           true,
@@ -113,86 +82,59 @@ func TestLocalBackend_Lifecycle(t *testing.T) {
 
 	for k, v := range expectedWalk {
 		gotIsDir, exists := walked[k]
-		if !exists {
-			t.Errorf("expected path %q in walk, but it was not walked", k)
-		} else if gotIsDir != v {
-			t.Errorf("expected path %q isDir to be %v, got %v", k, v, gotIsDir)
+		if assert.Truef(t, exists, "expected path %q in walk, but it was not walked", k) {
+			assert.Equalf(t, v, gotIsDir, "expected path %q isDir to be %v, got %v", k, v, gotIsDir)
 		}
 	}
 
 	// 8. Chtimes & Truncate
 	newTime := time.Now().Add(-1 * time.Hour).Truncate(time.Second)
-	if err := b.Chtimes(ctx, filePath, newTime, newTime); err != nil {
-		t.Errorf("chtimes failed: %v", err)
-	}
+	err = b.Chtimes(ctx, filePath, newTime, newTime)
+	require.NoError(t, err, "chtimes failed")
 
 	statFi, err := b.Stat(ctx, filePath)
-	if err != nil {
-		t.Fatalf("stat failed: %v", err)
-	}
-	// Check ModTime difference within a reasonable margin due to filesystem resolution
-	if diff := statFi.ModTime.Sub(newTime); diff > time.Second || diff < -time.Second {
-		t.Errorf("expected mod time close to %v, got %v (diff %v)", newTime, statFi.ModTime, diff)
-	}
+	require.NoError(t, err, "stat failed")
+	assert.WithinDuration(t, newTime, statFi.ModTime, time.Second)
 
-	if err := b.Truncate(ctx, filePath, 5); err != nil {
-		t.Fatalf("truncate failed: %v", err)
-	}
+	err = b.Truncate(ctx, filePath, 5)
+	require.NoError(t, err, "truncate failed")
 
 	statFi, err = b.Stat(ctx, filePath)
-	if err != nil {
-		t.Fatalf("stat failed: %v", err)
-	}
-	if statFi.Size != 5 {
-		t.Errorf("expected size 5 after truncate, got %d", statFi.Size)
-	}
+	require.NoError(t, err, "stat failed")
+	assert.Equal(t, int64(5), statFi.Size)
 
 	// Read truncated file to verify
 	rf, err := b.OpenFile(ctx, filePath, os.O_RDONLY, 0)
-	if err != nil {
-		t.Fatalf("open truncated file failed: %v", err)
-	}
+	require.NoError(t, err, "open truncated file failed")
 	defer rf.Close()
 
 	readBuf := make([]byte, 10)
 	rn, rerr := rf.ReadAt(ctx, readBuf, 0)
-	if rerr != nil && !errors.Is(rerr, io.EOF) {
-		t.Fatalf("read truncated file failed: %v", rerr)
+	if rerr != nil {
+		require.ErrorIs(t, rerr, io.EOF)
 	}
-	if rn != 5 {
-		t.Errorf("expected to read 5 bytes, got %d", rn)
-	}
-	if string(readBuf[:rn]) != "hello" {
-		t.Errorf("expected content 'hello', got %q", string(readBuf[:rn]))
-	}
+	assert.Equal(t, 5, rn)
+	assert.Equal(t, "hello", string(readBuf[:rn]))
 
 	// 9. Rename & Remove
 	newFilePath := filepath.Join(dirPath, "hello_renamed.txt")
-	if err := b.Rename(ctx, filePath, newFilePath); err != nil {
-		t.Fatalf("rename failed: %v", err)
-	}
+	err = b.Rename(ctx, filePath, newFilePath)
+	require.NoError(t, err, "rename failed")
 
 	// Old file should not exist
 	_, err = b.Stat(ctx, filePath)
-	if !os.IsNotExist(err) {
-		t.Errorf("expected old file to not exist, got err: %v", err)
-	}
+	assert.True(t, os.IsNotExist(err), "expected old file to not exist, got err: %v", err)
 
 	// New file should exist
 	_, err = b.Stat(ctx, newFilePath)
-	if err != nil {
-		t.Errorf("renamed file access error: %v", err)
-	}
+	require.NoError(t, err, "renamed file access error")
 
 	// Remove renamed file
-	if err := b.Remove(ctx, newFilePath); err != nil {
-		t.Fatalf("remove failed: %v", err)
-	}
+	err = b.Remove(ctx, newFilePath)
+	require.NoError(t, err, "remove failed")
 
 	_, err = b.Stat(ctx, newFilePath)
-	if !os.IsNotExist(err) {
-		t.Errorf("expected removed file to not exist, got err: %v", err)
-	}
+	assert.True(t, os.IsNotExist(err), "expected removed file to not exist, got err: %v", err)
 }
 
 func TestLocalBackend_DirectoryTraversalPrevention(t *testing.T) {
@@ -202,17 +144,11 @@ func TestLocalBackend_DirectoryTraversalPrevention(t *testing.T) {
 	// Try to resolve paths that attempt directory traversal escape
 	resolved := b.resolve("../../../etc/passwd")
 	expected := filepath.Join(tmpDir, "etc/passwd")
-	if resolved != expected {
-		t.Errorf("expected traversal prevention to resolve to %q, got %q", expected, resolved)
-	}
+	assert.Equal(t, expected, resolved)
 
 	resolvedDot := b.resolve(".")
-	if resolvedDot != tmpDir {
-		t.Errorf("expected resolving '.' to be %q, got %q", tmpDir, resolvedDot)
-	}
+	assert.Equal(t, tmpDir, resolvedDot)
 
 	resolvedSlash := b.resolve("/")
-	if resolvedSlash != tmpDir {
-		t.Errorf("expected resolving '/' to be %q, got %q", tmpDir, resolvedSlash)
-	}
+	assert.Equal(t, tmpDir, resolvedSlash)
 }

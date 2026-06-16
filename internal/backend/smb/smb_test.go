@@ -10,14 +10,15 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestSMBBackend_AutoReconnect(t *testing.T) {
 	var lc net.ListenConfig
 	l, err := lc.Listen(context.Background(), "tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("failed to listen: %v", err)
-	}
+	require.NoError(t, err, "failed to listen")
 	defer l.Close()
 
 	addr := l.Addr().String()
@@ -47,20 +48,16 @@ func TestSMBBackend_AutoReconnect(t *testing.T) {
 	_ = b.Ping(ctx)
 
 	mu.Lock()
-	if len(conns) != 1 {
-		mu.Unlock()
-		t.Fatalf("expected 1 connection attempt, got %d", len(conns))
-	}
+	connsLen := len(conns)
 	mu.Unlock()
+	require.Equal(t, 1, connsLen, "expected 1 connection attempt")
 
 	_ = b.Ping(ctx)
 
 	mu.Lock()
-	if len(conns) != 2 {
-		mu.Unlock()
-		t.Fatalf("expected 2 connection attempts (reconnect), got %d", len(conns))
-	}
+	connsLen = len(conns)
 	mu.Unlock()
+	require.Equal(t, 2, connsLen, "expected 2 connection attempts (reconnect)")
 }
 
 func TestIsConnectionError(t *testing.T) {
@@ -79,8 +76,6 @@ func TestIsConnectionError(t *testing.T) {
 
 	for _, tc := range tests {
 		got := isConnectionError(tc.err)
-		if got != tc.expected {
-			t.Errorf("isConnectionError(%v) = %v, expected %v", tc.err, got, tc.expected)
-		}
+		assert.Equal(t, tc.expected, got, "isConnectionError(%v)", tc.err)
 	}
 }

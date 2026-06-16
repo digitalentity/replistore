@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 var testSecret = []byte("test-secret-at-least-16-chars")
@@ -19,22 +20,22 @@ var testSecret = []byte("test-secret-at-least-16-chars")
 func TestSignVerify_RoundTrip(t *testing.T) {
 	req := LockRequest{Path: "a/b", NodeID: "node1", LockID: "lock-1", LamportTime: 42}
 	datagram, err := signMessage(testSecret, TypRequestLock, "00112233aabbccdd", req)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	claims, err := verifyMessage(testSecret, datagram)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.Equal(t, 1, claims.V)
 	assert.Equal(t, TypRequestLock, claims.Typ)
 	assert.Equal(t, "00112233aabbccdd", claims.RID)
 
 	var got LockRequest
-	assert.NoError(t, json.Unmarshal(claims.Body, &got))
+	require.NoError(t, json.Unmarshal(claims.Body, &got))
 	assert.Equal(t, req, got)
 }
 
 func TestVerify_TamperedSignature(t *testing.T) {
 	datagram, err := signMessage(testSecret, TypRequestLock, newRID(), LockRequest{Path: "p"})
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	// Flip the first byte of the signature segment. The final base64 character
 	// carries padding bits the decoder ignores, so tampering the last byte
@@ -53,13 +54,13 @@ func TestVerify_TamperedSignature(t *testing.T) {
 
 func TestVerify_TamperedClaims(t *testing.T) {
 	datagram, err := signMessage(testSecret, TypRequestLock, newRID(), LockRequest{Path: "p"})
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	parts := bytes.Split(datagram, []byte("."))
 	assert.Len(t, parts, 3)
 
 	otherClaims, err := json.Marshal(wireClaims{V: 1, Typ: TypReleaseLock, RID: newRID(), Body: json.RawMessage(`{}`)})
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	parts[1] = []byte(base64.RawURLEncoding.EncodeToString(otherClaims))
 	tampered := bytes.Join(parts, []byte("."))
 
@@ -73,7 +74,7 @@ func TestVerify_WrongHeaderRejected(t *testing.T) {
 	// the pinned constant and never parses the algorithm from the wire.
 	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"none","typ":"JWT"}`))
 	claimsJSON, err := json.Marshal(wireClaims{V: 1, Typ: TypRequestLock, RID: newRID(), Body: json.RawMessage(`{}`)})
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	signingInput := header + "." + base64.RawURLEncoding.EncodeToString(claimsJSON)
 
 	mac := hmac.New(sha256.New, testSecret)
@@ -86,7 +87,7 @@ func TestVerify_WrongHeaderRejected(t *testing.T) {
 
 func TestVerify_WrongVersionRejected(t *testing.T) {
 	claimsJSON, err := json.Marshal(wireClaims{V: 2, Typ: TypRequestLock, RID: newRID(), Body: json.RawMessage(`{}`)})
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	signingInput := pinnedHeader + "." + base64.RawURLEncoding.EncodeToString(claimsJSON)
 
 	mac := hmac.New(sha256.New, testSecret)
@@ -99,7 +100,7 @@ func TestVerify_WrongVersionRejected(t *testing.T) {
 
 func TestVerify_Malformed(t *testing.T) {
 	_, err := verifyMessage(testSecret, []byte("not-a-jws"))
-	assert.ErrorIs(t, err, errMalformed)
+	require.ErrorIs(t, err, errMalformed)
 
 	_, err = verifyMessage(testSecret, []byte("a.b.c.d"))
 	assert.ErrorIs(t, err, errMalformed)
@@ -123,7 +124,7 @@ func TestCallUDP_Integration(t *testing.T) {
 	m := NewLockManager("server-node")
 	m.Secret = testSecret
 	addr, err := m.Start("127.0.0.1:0")
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	defer m.Stop()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -132,7 +133,7 @@ func TestCallUDP_Integration(t *testing.T) {
 	req := LockRequest{Path: "integration/path", NodeID: "client-node", LockID: "lock-1", LamportTime: 7, FencingToken: "fence-1"}
 	var resp LockResponse
 	err = CallUDP(ctx, testSecret, addr, TypRequestLock, req, &resp)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.Equal(t, LockOK, resp.Status)
 	assert.NotEmpty(t, resp.FencingToken)
 }
@@ -141,7 +142,7 @@ func TestCallUDP_WrongSecretTimesOut(t *testing.T) {
 	m := NewLockManager("server-node")
 	m.Secret = testSecret
 	addr, err := m.Start("127.0.0.1:0")
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	defer m.Stop()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
@@ -158,7 +159,7 @@ func TestCallUDP_ForeignRIDIgnored(t *testing.T) {
 	// validly-signed response carrying the WRONG request ID, then goes
 	// silent. The client must ignore it and eventually time out.
 	serverConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	defer serverConn.Close()
 
 	go func() {
@@ -184,6 +185,6 @@ func TestCallUDP_ForeignRIDIgnored(t *testing.T) {
 
 	var resp LockResponse
 	err = CallUDP(ctx, testSecret, serverConn.LocalAddr().String(), TypRequestLock, LockRequest{Path: "p"}, &resp)
-	assert.ErrorIs(t, err, context.DeadlineExceeded)
+	require.ErrorIs(t, err, context.DeadlineExceeded)
 	assert.Empty(t, resp.FencingToken)
 }

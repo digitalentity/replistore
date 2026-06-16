@@ -12,6 +12,7 @@ import (
 	bmock "github.com/digitalentity/replistore/internal/backend/mock"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
 )
 
 // newEntryFile returns a MockFile that serves the JSON encoding of the given
@@ -19,7 +20,7 @@ import (
 func newEntryFile(t *testing.T, id, addr string, seq int64) *bmock.MockFile {
 	t.Helper()
 	data, err := json.Marshal(peerEntry{ID: id, Address: addr, Seq: seq})
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	f := &bmock.MockFile{}
 	f.On("ReadAt", mock.Anything, mock.Anything, int64(0)).Run(func(args mock.Arguments) {
@@ -64,7 +65,7 @@ func TestDiscovery_StartWritesEntryToAllBackends(t *testing.T) {
 
 	d := NewDiscovery("node1", "10.0.0.1:5050", backends)
 	err := d.Start(ctx)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	for i := range mocks {
 		mocks[i].AssertExpectations(t)

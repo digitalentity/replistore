@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestLockManager_RPC(t *testing.T) {
@@ -14,7 +15,7 @@ func TestLockManager_RPC(t *testing.T) {
 	m := NewLockManager("node1")
 	m.Secret = secret
 	addr, err := m.Start("127.0.0.1:0")
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	defer m.Stop()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -32,7 +33,7 @@ func TestLockManager_RPC(t *testing.T) {
 	}
 	var resp LockResponse
 	err = CallUDP(ctx, secret, addr, TypRequestLock, req, &resp)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.Equal(t, LockOK, resp.Status)
 	assert.NotEmpty(t, resp.FencingToken)
 
@@ -46,7 +47,7 @@ func TestLockManager_RPC(t *testing.T) {
 	}
 	var resp2 LockResponse
 	err = CallUDP(ctx, secret, addr, TypRequestLock, req2, &resp2)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.Equal(t, LockReject, resp2.Status)
 
 	// 3. Renew Lock
@@ -58,7 +59,7 @@ func TestLockManager_RPC(t *testing.T) {
 	}
 	var status LockStatus
 	err = CallUDP(ctx, secret, addr, TypRenewLock, renewReq, &status)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.Equal(t, LockOK, status)
 
 	// 4. Release Lock
@@ -69,12 +70,12 @@ func TestLockManager_RPC(t *testing.T) {
 		FencingToken: resp.FencingToken,
 	}
 	err = CallUDP(ctx, secret, addr, TypReleaseLock, releaseReq, &status)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.Equal(t, LockOK, status)
 
 	// 5. Request again (should succeed)
 	err = CallUDP(ctx, secret, addr, TypRequestLock, req2, &resp2)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.Equal(t, LockOK, resp2.Status)
 }
 
@@ -164,7 +165,7 @@ func TestCallUDP_DeadlineExceeded(t *testing.T) {
 	err := CallUDP(ctx, []byte("test-secret-at-least-16-chars"), "127.0.0.1:1", TypRequestLock, LockRequest{Path: "p"}, &resp)
 	elapsed := time.Since(start)
 
-	assert.ErrorIs(t, err, context.DeadlineExceeded)
+	require.ErrorIs(t, err, context.DeadlineExceeded)
 	assert.Less(t, elapsed, 1*time.Second, "CallUDP should return promptly after ctx expiry")
 }
 

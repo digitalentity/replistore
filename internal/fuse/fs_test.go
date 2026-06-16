@@ -19,6 +19,7 @@ import (
 	"github.com/digitalentity/replistore/internal/vfs"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
 )
 
 // sidecarCapture records sidecar writes registered via expectSidecarWrite.
@@ -66,7 +67,6 @@ func expectTombstoneWrite(b *bmock.MockBackend, dataPath string) *sidecarCapture
 	return expectSidecarWrite(b, dataPath)
 }
 
-
 // expectNoTombstone makes b report no metadata document for dataPath (used by
 // FetchEntry and the Create/Rename tombstone-generation reads).
 func expectNoTombstone(b *bmock.MockBackend, dataPath string) {
@@ -95,11 +95,11 @@ func TestFS_Lookup(t *testing.T) {
 		Selector: vfs.NewRandomSelector(nil),
 	}
 	root, err := fs.Root()
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	dir := root.(*Dir)
 	node, err := dir.Lookup(context.Background(), "test.txt")
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.NotNil(t, node)
 }
 
@@ -117,7 +117,7 @@ func TestFS_ReadDirAll(t *testing.T) {
 	dir := root.(*Dir)
 
 	dirents, err := dir.ReadDirAll(context.Background())
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.Len(t, dirents, 2)
 }
 
@@ -146,7 +146,7 @@ func TestDir_Create(t *testing.T) {
 	resp := &fuse.CreateResponse{}
 	node, handle, err := dir.Create(context.Background(), req, resp)
 
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.NotNil(t, node)
 	assert.NotNil(t, handle)
 
@@ -199,7 +199,7 @@ func TestDir_Create_AboveTombstoneGen(t *testing.T) {
 	resp := &fuse.CreateResponse{}
 	node, handle, err := dir.Create(context.Background(), req, resp)
 
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.NotNil(t, node)
 	assert.NotNil(t, handle)
 
@@ -245,7 +245,7 @@ func TestFile_Write(t *testing.T) {
 	expectSidecarWrite(b1, "test.txt")
 
 	h, err := file.Open(context.Background(), &fuse.OpenRequest{Flags: fuse.OpenReadWrite}, &fuse.OpenResponse{})
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	fileHandle := h.(*FileHandle)
 
@@ -255,7 +255,7 @@ func TestFile_Write(t *testing.T) {
 	writeReq := &fuse.WriteRequest{Data: data, Offset: 0}
 	writeResp := &fuse.WriteResponse{}
 	err = fileHandle.Write(context.Background(), writeReq, writeResp)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.Equal(t, 5, writeResp.Size)
 }
 
@@ -283,7 +283,7 @@ func TestFile_Read_Failover(t *testing.T) {
 	b1.On("OpenFile", mock.Anything, "failover.txt", os.O_RDONLY, mock.Anything).Return(mockFile1, nil)
 
 	h, err := file.Open(context.Background(), &fuse.OpenRequest{Flags: fuse.OpenReadOnly}, &fuse.OpenResponse{})
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	fileHandle := h.(*FileHandle)
 
@@ -296,7 +296,7 @@ func TestFile_Read_Failover(t *testing.T) {
 	readReq := &fuse.ReadRequest{Size: 5, Offset: 0}
 	readResp := &fuse.ReadResponse{}
 	err = fileHandle.Read(context.Background(), readReq, readResp)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.Len(t, readResp.Data, 5)
 
 	b1.AssertExpectations(t)
@@ -331,7 +331,7 @@ func TestFile_Open_ReadOnly_Failover(t *testing.T) {
 	b2.On("OpenFile", mock.Anything, "ro_failover.txt", os.O_RDONLY, mock.Anything).Return(mockFile2, nil)
 
 	h, err := file.Open(context.Background(), &fuse.OpenRequest{Flags: fuse.OpenReadOnly}, &fuse.OpenResponse{})
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	fileHandle := h.(*FileHandle)
 	assert.Len(t, fileHandle.backends, 1)
@@ -400,7 +400,7 @@ func TestFile_Write_Quorum(t *testing.T) {
 	expectSidecarWrite(b2, "quorum.txt")
 
 	h, err := file.Open(context.Background(), &fuse.OpenRequest{Flags: fuse.OpenReadWrite}, &fuse.OpenResponse{})
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	fileHandle := h.(*FileHandle)
 
@@ -420,7 +420,7 @@ func TestFile_Write_Quorum(t *testing.T) {
 	writeResp := &fuse.WriteResponse{}
 	err = fileHandle.Write(context.Background(), writeReq, writeResp)
 
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.Equal(t, 5, writeResp.Size)
 
 	file.node.Mu.RLock()
@@ -482,7 +482,7 @@ func TestFile_Fsync_WithWriteHandle(t *testing.T) {
 	})
 
 	err := file.Fsync(context.Background(), &fuse.FsyncRequest{})
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	// 2 OpenFile calls per backend: the data file (once, at Open) and the
 	// sidecar write that stamps the new generation. Fsync itself must not
 	// open anything.
@@ -532,7 +532,7 @@ func TestLookup_LazyTrigger(t *testing.T) {
 	expectNoTombstone(b1, "lazy/file.txt")
 
 	node, err := (lazyDir.(*Dir)).Lookup(context.Background(), "file.txt")
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.NotNil(t, node)
 
 	b1.AssertExpectations(t)
@@ -585,7 +585,7 @@ func TestReadDir_LazyTrigger(t *testing.T) {
 	}, nil)
 
 	dirents, err := (dir.(*Dir)).ReadDirAll(context.Background())
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.Len(t, dirents, 2) // dummy + file1.txt
 
 	b1.AssertExpectations(t)
@@ -617,7 +617,7 @@ func TestMkdir_Quorum(t *testing.T) {
 	// Currently this might pass if the code doesn't check quorum for Mkdir
 	// according to PROPOSAL.md.
 	// If it fails, then it's already fixed or I'm testing the fix.
-	assert.Error(t, err)
+	require.Error(t, err)
 
 	b1.AssertExpectations(t)
 	b2.AssertExpectations(t)
@@ -652,7 +652,7 @@ func TestMkdir_AlreadyExistsCountsTowardQuorum(t *testing.T) {
 	req := &fuse.MkdirRequest{Name: "existing-dir", Mode: 0755}
 	node, err := dir.Mkdir(context.Background(), req)
 
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.NotNil(t, node)
 
 	child := node.(*Dir)
@@ -687,7 +687,7 @@ func TestMkdir_ExistsAsFileNotCounted(t *testing.T) {
 	req := &fuse.MkdirRequest{Name: "blocked-dir", Mode: 0755}
 	_, err := dir.Mkdir(context.Background(), req)
 
-	assert.Error(t, err)
+	require.Error(t, err)
 
 	// Rollback must not touch b2's pre-existing file.
 	b2.AssertNotCalled(t, "Remove", mock.Anything, "blocked-dir")
@@ -763,7 +763,7 @@ func TestRemove_DirFansOutToAllBackends(t *testing.T) {
 
 	req := &fuse.RemoveRequest{Name: "subdir", Dir: true}
 	err := dir.Remove(context.Background(), req)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	_, ok := cache.Get("subdir")
 	assert.False(t, ok)
@@ -836,7 +836,7 @@ func TestRemove_FileNotExistCountsAsSuccess(t *testing.T) {
 
 	req := &fuse.RemoveRequest{Name: "gone.txt"}
 	err := dir.Remove(context.Background(), req)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	_, ok := cache.Get("gone.txt")
 	assert.False(t, ok)
@@ -874,7 +874,7 @@ func TestFile_Write_QuorumFailure(t *testing.T) {
 	expectSidecarWrite(b2, "quorum_fail.txt")
 
 	h, err := file.Open(context.Background(), &fuse.OpenRequest{Flags: fuse.OpenReadWrite}, &fuse.OpenResponse{})
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	fileHandle := h.(*FileHandle)
 
@@ -892,7 +892,7 @@ func TestFile_Write_QuorumFailure(t *testing.T) {
 	writeResp := &fuse.WriteResponse{}
 	err = fileHandle.Write(context.Background(), writeReq, writeResp)
 
-	assert.Error(t, err)
+	require.Error(t, err)
 
 	file.node.Mu.RLock()
 	assert.Equal(t, []string{"b1"}, file.node.Meta.Backends)
@@ -937,7 +937,7 @@ func TestDir_Create_QuorumFailure(t *testing.T) {
 	resp := &fuse.CreateResponse{}
 	node, handle, err := dir.Create(context.Background(), req, resp)
 
-	assert.Error(t, err)
+	require.Error(t, err)
 	assert.Nil(t, node)
 	assert.Nil(t, handle)
 
@@ -981,7 +981,7 @@ func TestDir_Create_AlreadyExistsOnBackends(t *testing.T) {
 	resp := &fuse.CreateResponse{}
 	node, handle, err := dir.Create(context.Background(), req, resp)
 
-	assert.ErrorIs(t, err, syscall.EEXIST)
+	require.ErrorIs(t, err, syscall.EEXIST)
 	assert.Nil(t, node)
 	assert.Nil(t, handle)
 
@@ -1059,7 +1059,7 @@ func TestFile_Open_HealDegraded(t *testing.T) {
 	sc2 := expectSidecarWrite(b2, "degraded.txt")
 
 	h, err := file.Open(context.Background(), &fuse.OpenRequest{Flags: fuse.OpenReadWrite}, &fuse.OpenResponse{})
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.NotNil(t, h)
 
 	// Verify that the file's VFS cache node now lists ["b1", "b2"] as backends
@@ -1110,7 +1110,7 @@ func TestDir_Create_MkdirAllParent(t *testing.T) {
 	resp := &fuse.CreateResponse{}
 	node, handle, err := dir.Create(context.Background(), req, resp)
 
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.NotNil(t, node)
 	assert.NotNil(t, handle)
 
@@ -1144,7 +1144,7 @@ func TestDir_Mkdir_MkdirAllParent(t *testing.T) {
 	req := &fuse.MkdirRequest{Name: "new-sub-dir", Mode: 0755}
 	node, err := dir.Mkdir(context.Background(), req)
 
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.NotNil(t, node)
 
 	b1.AssertExpectations(t)
@@ -1185,7 +1185,7 @@ func TestFile_Fsync_FallbackNoHandles(t *testing.T) {
 	mockFile2.On("Close").Return(nil)
 
 	err := file.Fsync(context.Background(), &fuse.FsyncRequest{})
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	b1.AssertExpectations(t)
 	b2.AssertExpectations(t)
@@ -1223,7 +1223,7 @@ func TestFile_Setattr_Truncate(t *testing.T) {
 	resp := &fuse.SetattrResponse{}
 	err := file.Setattr(context.Background(), req, resp)
 
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.Equal(t, uint64(10), resp.Attr.Size)
 
 	file.node.Mu.RLock()
@@ -1272,7 +1272,7 @@ func TestFile_Setattr_Truncate_QuorumFailure(t *testing.T) {
 	resp := &fuse.SetattrResponse{}
 	err := file.Setattr(context.Background(), req, resp)
 
-	assert.Error(t, err)
+	require.Error(t, err)
 
 	// Size must be unchanged on quorum failure.
 	file.node.Mu.RLock()
@@ -1320,7 +1320,7 @@ func TestFile_Setattr_Truncate_PartialFailureEvictsBackend(t *testing.T) {
 	resp := &fuse.SetattrResponse{}
 	err := file.Setattr(context.Background(), req, resp)
 
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.Equal(t, uint64(5), resp.Attr.Size)
 
 	file.node.Mu.RLock()
@@ -1361,7 +1361,7 @@ func TestFile_Setattr_NonSizeIsNoop(t *testing.T) {
 	resp := &fuse.SetattrResponse{}
 	err := file.Setattr(context.Background(), req, resp)
 
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.Equal(t, uint64(42), resp.Attr.Size)
 	assert.Equal(t, os.FileMode(0644), resp.Attr.Mode)
 
@@ -1390,7 +1390,7 @@ func TestFile_Open_AppendNotSupported(t *testing.T) {
 	file := node.(*File)
 
 	h, err := file.Open(context.Background(), &fuse.OpenRequest{Flags: fuse.OpenWriteOnly | fuse.OpenAppend}, &fuse.OpenResponse{})
-	assert.ErrorIs(t, err, syscall.ENOTSUP)
+	require.ErrorIs(t, err, syscall.ENOTSUP)
 	assert.Nil(t, h)
 
 	b1.AssertNotCalled(t, "OpenFile", mock.Anything, mock.Anything, mock.Anything, mock.Anything)
@@ -1410,7 +1410,7 @@ func TestReservedPath_LookupReturnsENOENT(t *testing.T) {
 	dir := root.(*Dir)
 
 	node, err := dir.Lookup(context.Background(), ".replistore")
-	assert.ErrorIs(t, err, syscall.ENOENT)
+	require.ErrorIs(t, err, syscall.ENOENT)
 	assert.Nil(t, node)
 
 	b1.AssertNotCalled(t, "Stat", mock.Anything, mock.Anything)
@@ -1431,7 +1431,7 @@ func TestReservedPath_MkdirReturnsEACCES(t *testing.T) {
 	dir := root.(*Dir)
 
 	node, err := dir.Mkdir(context.Background(), &fuse.MkdirRequest{Name: ".replistore", Mode: os.ModeDir | 0755})
-	assert.ErrorIs(t, err, syscall.EACCES)
+	require.ErrorIs(t, err, syscall.EACCES)
 	assert.Nil(t, node)
 
 	b1.AssertNotCalled(t, "Mkdir", mock.Anything, mock.Anything, mock.Anything)
@@ -1452,7 +1452,7 @@ func TestReservedPath_CreateReturnsEACCES(t *testing.T) {
 	dir := root.(*Dir)
 
 	node, handle, err := dir.Create(context.Background(), &fuse.CreateRequest{Name: ".replistore", Mode: 0644}, &fuse.CreateResponse{})
-	assert.ErrorIs(t, err, syscall.EACCES)
+	require.ErrorIs(t, err, syscall.EACCES)
 	assert.Nil(t, node)
 	assert.Nil(t, handle)
 
@@ -1494,7 +1494,7 @@ func TestFile_Open_WriteBumpsGeneration(t *testing.T) {
 	sc2 := expectSidecarWrite(b2, "gen.txt")
 
 	h, err := file.Open(context.Background(), &fuse.OpenRequest{Flags: fuse.OpenReadWrite}, &fuse.OpenResponse{})
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.NotNil(t, h)
 
 	// One bump per write session: gen 3 -> 4, written to every handle backend.
@@ -1541,7 +1541,7 @@ func TestRemove_WritesTombstonesToAllBackends(t *testing.T) {
 	b1.On("Remove", mock.Anything, "kill.txt").Return(nil)
 
 	err := dir.Remove(context.Background(), &fuse.RemoveRequest{Name: "kill.txt"})
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	// Tombstones carry the deletion generation (node gen + 1) on EVERY backend.
 	w1, n1 := tc1.get()
@@ -1585,7 +1585,7 @@ func TestRemove_TombstoneQuorumFailureKeepsData(t *testing.T) {
 	b2.On("MkdirAll", mock.Anything, gopath.Dir(vfs.MetaPath("safe.txt")), os.FileMode(0755)).Return(errors.New("backend down"))
 
 	err := dir.Remove(context.Background(), &fuse.RemoveRequest{Name: "safe.txt"})
-	assert.Error(t, err)
+	require.Error(t, err)
 	assert.Contains(t, err.Error(), "tombstone")
 
 	// Without a durable deletion record, NO data may be destroyed.
@@ -1637,7 +1637,7 @@ func TestRename_TombstonesOldPathAndWritesFreshSidecar(t *testing.T) {
 	expectNoTombstone(b2, "new.txt")
 
 	err := dir.Rename(context.Background(), &fuse.RenameRequest{OldName: "old.txt", NewName: "new.txt"}, root)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	// Tombstones at the deletion generation (gen + 1) everywhere.
 	w1, n1 := tc1.get()
@@ -1711,7 +1711,7 @@ func TestRename_OntoTombstonedTargetStartsAboveTombstone(t *testing.T) {
 	expectTombstoneGen(b2, "new.txt", 5)
 
 	err := dir.Rename(context.Background(), &fuse.RenameRequest{OldName: "old.txt", NewName: "new.txt"}, root)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	// Old-path tombstone stays in the source lineage: source gen + 1 = 3.
 	w1, n1 := tc1.get()
@@ -1767,13 +1767,13 @@ func TestFile_OpenHandles(t *testing.T) {
 	resp := &fuse.CreateResponse{}
 	node, handle, err := dir.Create(context.Background(), req, resp)
 
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	file := node.(*File)
 	assert.Equal(t, int32(1), file.node.OpenHandles)
 
 	// 2. Release handle: OpenHandles should become 0
 	err = handle.(*FileHandle).Release(context.Background(), nil)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.Equal(t, int32(0), file.node.OpenHandles)
 
 	// 3. Open existing file for read-only: OpenHandles should become 1
@@ -1781,12 +1781,12 @@ func TestFile_OpenHandles(t *testing.T) {
 	openReq := &fuse.OpenRequest{Flags: fuse.OpenReadOnly}
 	openResp := &fuse.OpenResponse{}
 	h2, err := file.Open(context.Background(), openReq, openResp)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.Equal(t, int32(1), file.node.OpenHandles)
 
 	// Release second handle: OpenHandles should become 0
 	err = h2.(*FileHandle).Release(context.Background(), nil)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.Equal(t, int32(0), file.node.OpenHandles)
 
 	b1.AssertExpectations(t)

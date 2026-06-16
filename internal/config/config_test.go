@@ -6,6 +6,7 @@ import (
 
 	"github.com/digitalentity/replistore/internal/config"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestLoadConfig(t *testing.T) {
@@ -17,15 +18,15 @@ backends:
     address: "1.2.3.4"
 `
 	tmpFile, err := os.CreateTemp(t.TempDir(), "config.yaml")
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	defer os.Remove(tmpFile.Name())
 
 	_, err = tmpFile.WriteString(content)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	tmpFile.Close()
 
 	cfg, err := config.LoadConfig(tmpFile.Name())
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.Equal(t, "/tmp/test", cfg.MountPoint)
 	assert.Equal(t, 2, cfg.ReplicationFactor)
 	assert.Len(t, cfg.Backends, 1)
@@ -37,15 +38,15 @@ func TestLoadConfig_Defaults(t *testing.T) {
 mount_point: "/tmp/test"
 `
 	tmpFile, err := os.CreateTemp(t.TempDir(), "config.yaml")
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	defer os.Remove(tmpFile.Name())
 
 	_, err = tmpFile.WriteString(content)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	tmpFile.Close()
 
 	cfg, err := config.LoadConfig(tmpFile.Name())
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.Equal(t, 1, cfg.ReplicationFactor) // Default
 }
 
@@ -53,11 +54,11 @@ func TestLoadConfig_ExpectedClusterSize(t *testing.T) {
 	writeConfig := func(t *testing.T, content string) string {
 		t.Helper()
 		tmpFile, err := os.CreateTemp(t.TempDir(), "config.yaml")
-		assert.NoError(t, err)
+		require.NoError(t, err)
 		t.Cleanup(func() { os.Remove(tmpFile.Name()) })
 
 		_, err = tmpFile.WriteString(content)
-		assert.NoError(t, err)
+		require.NoError(t, err)
 		tmpFile.Close()
 		return tmpFile.Name()
 	}
@@ -68,7 +69,7 @@ mount_point: "/tmp/test"
 listen_addr: "0.0.0.0:7000"
 `)
 		_, err := config.LoadConfig(path)
-		assert.Error(t, err)
+		require.Error(t, err)
 		assert.Contains(t, err.Error(), "expected_cluster_size must be >= 2")
 	})
 
@@ -81,7 +82,7 @@ cluster_secret: "a-valid-shared-secret"
 expected_cluster_size: 2
 `)
 		cfg, err := config.LoadConfig(path)
-		assert.NoError(t, err)
+		require.NoError(t, err)
 		assert.Equal(t, 2, cfg.ExpectedClusterSize)
 	})
 
@@ -90,7 +91,7 @@ expected_cluster_size: 2
 mount_point: "/tmp/test"
 `)
 		cfg, err := config.LoadConfig(path)
-		assert.NoError(t, err)
+		require.NoError(t, err)
 		assert.Equal(t, 1, cfg.ExpectedClusterSize)
 	})
 }
@@ -99,11 +100,11 @@ func TestLoadConfig_AdvertiseAddr(t *testing.T) {
 	writeConfig := func(t *testing.T, content string) string {
 		t.Helper()
 		tmpFile, err := os.CreateTemp(t.TempDir(), "config.yaml")
-		assert.NoError(t, err)
+		require.NoError(t, err)
 		t.Cleanup(func() { os.Remove(tmpFile.Name()) })
 
 		_, err = tmpFile.WriteString(content)
-		assert.NoError(t, err)
+		require.NoError(t, err)
 		tmpFile.Close()
 		return tmpFile.Name()
 	}
@@ -115,7 +116,7 @@ listen_addr: "0.0.0.0:7000"
 expected_cluster_size: 2
 `)
 		_, err := config.LoadConfig(path)
-		assert.Error(t, err)
+		require.Error(t, err)
 		assert.Contains(t, err.Error(), "advertise_addr must be set")
 	})
 
@@ -127,7 +128,7 @@ advertise_addr: "192.168.1.50"
 expected_cluster_size: 2
 `)
 		_, err := config.LoadConfig(path)
-		assert.Error(t, err)
+		require.Error(t, err)
 		assert.Contains(t, err.Error(), "not a valid host:port")
 	})
 
@@ -139,7 +140,7 @@ advertise_addr: ":7000"
 expected_cluster_size: 2
 `)
 		_, err := config.LoadConfig(path)
-		assert.Error(t, err)
+		require.Error(t, err)
 		assert.Contains(t, err.Error(), "not a valid host:port")
 	})
 
@@ -152,7 +153,7 @@ cluster_secret: "a-valid-shared-secret"
 expected_cluster_size: 2
 `)
 		cfg, err := config.LoadConfig(path)
-		assert.NoError(t, err)
+		require.NoError(t, err)
 		assert.Equal(t, "192.168.1.50:7000", cfg.AdvertiseAddr)
 	})
 
@@ -169,11 +170,11 @@ func TestLoadConfig_ClusterSecret(t *testing.T) {
 	writeConfig := func(t *testing.T, content string) string {
 		t.Helper()
 		tmpFile, err := os.CreateTemp(t.TempDir(), "config.yaml")
-		assert.NoError(t, err)
+		require.NoError(t, err)
 		t.Cleanup(func() { os.Remove(tmpFile.Name()) })
 
 		_, err = tmpFile.WriteString(content)
-		assert.NoError(t, err)
+		require.NoError(t, err)
 		tmpFile.Close()
 		return tmpFile.Name()
 	}
@@ -186,7 +187,7 @@ advertise_addr: "192.168.1.50:7000"
 expected_cluster_size: 2
 `)
 		_, err := config.LoadConfig(path)
-		assert.Error(t, err)
+		require.Error(t, err)
 		assert.Contains(t, err.Error(), "cluster_secret must be set")
 	})
 
@@ -199,7 +200,7 @@ cluster_secret: "too-short"
 expected_cluster_size: 2
 `)
 		_, err := config.LoadConfig(path)
-		assert.Error(t, err)
+		require.Error(t, err)
 		assert.Contains(t, err.Error(), "at least 16 characters")
 	})
 
@@ -212,7 +213,7 @@ cluster_secret: "a-valid-shared-secret"
 expected_cluster_size: 2
 `)
 		cfg, err := config.LoadConfig(path)
-		assert.NoError(t, err)
+		require.NoError(t, err)
 		assert.Equal(t, "a-valid-shared-secret", cfg.ClusterSecret)
 	})
 

@@ -36,8 +36,8 @@ func TestSpaceAwareSelector_SelectForRead(t *testing.T) {
 		selectedCount[b]++
 	}
 
-	assert.True(t, selectedCount["b1"] > 0, "should select b1 sometimes")
-	assert.True(t, selectedCount["b3"] > 0, "should select b3 sometimes")
+	assert.Positive(t, selectedCount["b1"], "should select b1 sometimes")
+	assert.Positive(t, selectedCount["b3"], "should select b3 sometimes")
 	assert.Equal(t, 0, selectedCount["b2"], "should never select b2 because it is slower")
 
 	// Mock Ping behavior to test health check integration

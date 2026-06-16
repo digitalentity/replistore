@@ -12,6 +12,7 @@ import (
 	"github.com/digitalentity/replistore/internal/vfs"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
 )
 
 func TestCache_FetchEntry(t *testing.T) {
@@ -56,7 +57,7 @@ func TestCache_FetchEntry(t *testing.T) {
 	backends := []backend.Backend{b1, b2, b3}
 
 	node, err := cache.FetchEntry(ctx, path, backends)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.NotNil(t, node)
 	assert.Equal(t, int64(200), node.Meta.Size)
 	assert.ElementsMatch(t, []string{"b2", "b3"}, node.Meta.Backends)
@@ -77,7 +78,7 @@ func TestCache_FetchEntry_NotFound(t *testing.T) {
 	b1.On("Stat", mock.Anything, path).Return(backend.FileInfo{}, os.ErrNotExist)
 
 	node, err := cache.FetchEntry(ctx, path, []backend.Backend{b1})
-	assert.Error(t, err)
+	require.Error(t, err)
 	assert.Nil(t, node)
 }
 
@@ -92,8 +93,8 @@ func TestCache_FetchEntry_AllBackendsUnavailable(t *testing.T) {
 	b2.On("Stat", mock.Anything, path).Return(backend.FileInfo{}, errors.New("conn reset"))
 
 	node, err := cache.FetchEntry(ctx, path, []backend.Backend{b1, b2})
-	assert.ErrorIs(t, err, vfs.ErrUnavailable)
-	assert.NotErrorIs(t, err, os.ErrNotExist)
+	require.ErrorIs(t, err, vfs.ErrUnavailable)
+	require.NotErrorIs(t, err, os.ErrNotExist)
 	assert.Nil(t, node)
 }
 
@@ -109,7 +110,7 @@ func TestCache_FetchEntry_DefinitiveNotFoundWins(t *testing.T) {
 	b2.On("Stat", mock.Anything, path).Return(backend.FileInfo{}, errors.New("conn reset"))
 
 	node, err := cache.FetchEntry(ctx, path, []backend.Backend{b1, b2})
-	assert.ErrorIs(t, err, os.ErrNotExist)
+	require.ErrorIs(t, err, os.ErrNotExist)
 	assert.Nil(t, node)
 }
 
@@ -129,7 +130,7 @@ func TestCache_FetchDir_Partial(t *testing.T) {
 	}, nil)
 
 	err := cache.FetchDir(ctx, "lazy-dir", []backend.Backend{b1})
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	// Verify directory is now fully indexed
 	assert.True(t, dirNode.FullyIndexed)
@@ -155,7 +156,7 @@ func TestCache_FetchDir_AllBackendsUnavailable(t *testing.T) {
 	b2.On("ReadDir", mock.Anything, "lazy-dir").Return([]backend.FileInfo(nil), errors.New("conn reset"))
 
 	err := cache.FetchDir(ctx, "lazy-dir", []backend.Backend{b1, b2})
-	assert.ErrorIs(t, err, vfs.ErrUnavailable)
+	require.ErrorIs(t, err, vfs.ErrUnavailable)
 
 	// Directory must NOT be marked fully indexed
 	assert.False(t, dirNode.FullyIndexed)
@@ -177,7 +178,7 @@ func TestCache_FetchDir_PartialBackendFailure(t *testing.T) {
 	b2.On("ReadDir", mock.Anything, "lazy-dir").Return([]backend.FileInfo(nil), errors.New("conn reset"))
 
 	err := cache.FetchDir(ctx, "lazy-dir", []backend.Backend{b1, b2})
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	// One backend answered, so the directory counts as fully indexed
 	assert.True(t, dirNode.FullyIndexed)
@@ -442,7 +443,7 @@ func TestCache_FetchEntryDirUnionsBackends(t *testing.T) {
 	b2.On("OpenFile", mock.Anything, vfs.MetaPath(path), os.O_RDONLY, os.FileMode(0)).Return(nil, os.ErrNotExist).Maybe()
 
 	node, err := cache.FetchEntry(ctx, path, []backend.Backend{b1, b2})
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.NotNil(t, node)
 	assert.True(t, node.Meta.IsDir)
 	assert.ElementsMatch(t, []string{"b1", "b2"}, node.Meta.Backends)
@@ -535,11 +536,11 @@ func TestCache_FetchEntry_ReservedPath(t *testing.T) {
 	b1 := &bmock.MockBackend{NameVal: "b1"}
 
 	node, err := cache.FetchEntry(ctx, ".replistore/peers/x.json", []backend.Backend{b1})
-	assert.ErrorIs(t, err, os.ErrNotExist)
+	require.ErrorIs(t, err, os.ErrNotExist)
 	assert.Nil(t, node)
 
 	node, err = cache.FetchEntry(ctx, ".replistore", []backend.Backend{b1})
-	assert.ErrorIs(t, err, os.ErrNotExist)
+	require.ErrorIs(t, err, os.ErrNotExist)
 	assert.Nil(t, node)
 
 	b1.AssertNotCalled(t, "Stat", mock.Anything, mock.Anything)
@@ -569,11 +570,11 @@ func TestCache_SaveAndLoad(t *testing.T) {
 	cachePath := tempDir + "/cache.json"
 
 	err := cache.SaveToFile(cachePath)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	loadedCache := vfs.NewCache()
 	err = loadedCache.LoadFromFile(cachePath)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	origNode, origOk := cache.Get("dir1/file1.txt")
 	assert.True(t, origOk)

@@ -14,6 +14,7 @@ import (
 	"github.com/digitalentity/replistore/internal/vfs"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
 )
 
 func TestRepairManager_RepairNode(t *testing.T) {
@@ -72,7 +73,7 @@ func TestRepairManager_RepairNode(t *testing.T) {
 	scSource := expectSidecarWrite(b1, "repair.txt")
 
 	err := mgr.repairNode(context.Background(), node)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	// Metadata should now include both b1 and b2
 	node.Mu.RLock()
@@ -141,7 +142,7 @@ func TestRepairManager_RepairNode_ChtimesErrorStillSucceeds(t *testing.T) {
 	b1.On("OpenFile", mock.Anything, vfs.MetaPath("repair.txt"), os.O_RDONLY, os.FileMode(0)).Return(nil, os.ErrNotExist)
 
 	err := mgr.repairNode(context.Background(), node)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	// Repair must still count as successful: b2 is added to the backend list.
 	node.Mu.RLock()
@@ -222,7 +223,7 @@ func TestRepairManager_RepairNode_DetectsDivergentReplicas(t *testing.T) {
 	scTarget := expectSidecarWrite(b2, "repair.txt")
 
 	err := mgr.repairNode(context.Background(), node)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	// The divergence was counted exactly once.
 	assert.Equal(t, int64(1), mgr.divergenceCount.Load())
@@ -264,13 +265,13 @@ func TestOffsetReader_Read(t *testing.T) {
 
 	p1 := make([]byte, 5)
 	n, err := reader.Read(p1)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.Equal(t, 5, n)
 	assert.Equal(t, []byte("hello"), p1)
 
 	p2 := make([]byte, 6)
 	n, err = reader.Read(p2)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.Equal(t, 6, n)
 	assert.Equal(t, []byte(" world"), p2)
 }
@@ -284,11 +285,11 @@ func TestOffsetWriter_Write(t *testing.T) {
 	writer := &offsetWriter{ctx: context.Background(), f: mockFile}
 
 	n, err := writer.Write([]byte("hello"))
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.Equal(t, 5, n)
 
 	n, err = writer.Write([]byte(" world"))
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.Equal(t, 6, n)
 }
 
@@ -464,7 +465,7 @@ func TestRepairManager_PruneNode(t *testing.T) {
 	b3.On("Remove", mock.Anything, vfs.MetaPath("prune.txt")).Return(nil)
 
 	err := mgr.pruneNode(context.Background(), node)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	b1.AssertNotCalled(t, "Remove", mock.Anything, mock.Anything)
 	b2.AssertNotCalled(t, "Remove", mock.Anything, mock.Anything)
@@ -504,7 +505,7 @@ func TestRepairManager_PruneNode_FailureKeepsMetadata(t *testing.T) {
 	b3.On("Remove", mock.Anything, "prune.txt").Return(io.ErrUnexpectedEOF)
 
 	err := mgr.pruneNode(context.Background(), node)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	node.Mu.RLock()
 	assert.ElementsMatch(t, []string{"b1", "b2", "b3"}, node.Meta.Backends)

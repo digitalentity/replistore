@@ -8,6 +8,7 @@ import (
 	"github.com/digitalentity/replistore/internal/cluster"
 	"github.com/digitalentity/replistore/internal/vfs"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // testClusterSecret is shared by every LockManager in these tests so signed
@@ -45,7 +46,7 @@ func TestDistributedLock_AcquireQuorum(t *testing.T) {
 	defer cancel()
 
 	err := lock.Acquire(ctx)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.True(t, lock.IsValid())
 	assert.NotEmpty(t, lock.FencingToken)
 
@@ -76,7 +77,7 @@ func TestDistributedLock_AcquireQuorumFailure(t *testing.T) {
 	defer cancel()
 
 	err := lock.Acquire(ctx)
-	assert.Error(t, err)
+	require.Error(t, err)
 	assert.False(t, lock.IsValid())
 }
 
@@ -94,7 +95,7 @@ func TestDistributedLock_Renewal(t *testing.T) {
 	lock := vfs.NewDistributedLock("renew/path", n1, disco1)
 
 	err := lock.Acquire(context.Background())
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.True(t, lock.IsValid())
 
 	// Wait more than LeaseTTL, renewal should keep it valid
@@ -127,7 +128,7 @@ func TestDistributedLock_RenewalGracePeriod(t *testing.T) {
 	lock := vfs.NewDistributedLock("grace/path", n1, disco1)
 
 	err := lock.Acquire(context.Background())
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.True(t, lock.IsValid())
 
 	// Kill the peer: every subsequent renewal round can reach only the local
@@ -164,13 +165,13 @@ func TestDistributedLock_SameNodeMutualExclusion(t *testing.T) {
 
 	// First acquisition succeeds.
 	err := lock1.Acquire(ctx)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.True(t, lock1.IsValid())
 
 	// Second acquisition for the same path from the same node must fail
 	// while the first lock is held.
 	err = lock2.Acquire(ctx)
-	assert.Error(t, err)
+	require.Error(t, err)
 	assert.False(t, lock2.IsValid())
 
 	// The first lock is unaffected.
@@ -204,7 +205,7 @@ func TestDistributedLock_ExpectedClusterSizeQuorum(t *testing.T) {
 	// Quorum for ExpectedClusterSize=5 is 3. We only have node1 and node2 (2 nodes).
 	// So acquisition should fail.
 	err := lock.Acquire(ctx)
-	assert.Error(t, err)
+	require.Error(t, err)
 	assert.False(t, lock.IsValid())
 }
 
@@ -228,7 +229,7 @@ func TestDistributedLock_AcquireRetriesAfterContention(t *testing.T) {
 		LamportTime:  1,
 		FencingToken: "other-fence",
 	}, &resp)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.Equal(t, cluster.LockOK, resp.Status)
 
 	// Let most of the conflicting lease elapse so the first Acquire attempt
@@ -241,7 +242,7 @@ func TestDistributedLock_AcquireRetriesAfterContention(t *testing.T) {
 	defer cancel()
 
 	err = lock.Acquire(ctx)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.True(t, lock.IsValid())
 	assert.NotEmpty(t, lock.FencingToken)
 
@@ -262,7 +263,7 @@ func TestDistributedLock_IsValidWithBuffer(t *testing.T) {
 	lock := vfs.NewDistributedLock("buffer/path", n1, disco1)
 
 	err := lock.Acquire(context.Background())
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.True(t, lock.IsValid())
 
 	// If we check with a buffer of 100ms, it should be valid since lease is 500ms

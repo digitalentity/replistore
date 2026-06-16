@@ -16,6 +16,7 @@ import (
 	bmock "github.com/digitalentity/replistore/internal/backend/mock"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
 )
 
 func TestMergeMeta_FileGenRules(t *testing.T) {
@@ -324,7 +325,7 @@ func TestFetchEntry_PopulatesGenFromSidecar(t *testing.T) {
 	mockSidecarRead(b2, path, 4)
 
 	node, err := c.FetchEntry(ctx, path, []backend.Backend{b1, b2})
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.Equal(t, int64(7), node.Meta.Gen)
 	assert.Equal(t, int64(100), node.Meta.Size)
 	assert.Equal(t, []string{"b1"}, node.Meta.Backends)
@@ -342,7 +343,7 @@ func TestFetchEntry_MissingSidecarMeansGenZero(t *testing.T) {
 	mockMissingMeta(b1, path)
 
 	node, err := c.FetchEntry(ctx, path, []backend.Backend{b1})
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.Equal(t, int64(0), node.Meta.Gen)
 	assert.Equal(t, []string{"b1"}, node.Meta.Backends)
 }
@@ -420,7 +421,7 @@ func TestFetchEntry_TombstonedReturnsNotExist(t *testing.T) {
 	mockMetaRead(b1, path, 3, true)
 
 	node, err := c.FetchEntry(ctx, path, []backend.Backend{b1})
-	assert.ErrorIs(t, err, os.ErrNotExist)
+	require.ErrorIs(t, err, os.ErrNotExist)
 	assert.Nil(t, node)
 
 	_, ok := c.Get(path)
@@ -441,7 +442,7 @@ func TestFetchEntry_NewerReplicaBeatsTombstone(t *testing.T) {
 	mockMetaRead(b1, path, 4, false)
 
 	node, err := c.FetchEntry(ctx, path, []backend.Backend{b1})
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.Equal(t, int64(4), node.Meta.Gen)
 	assert.Equal(t, []string{"b1"}, node.Meta.Backends)
 }
