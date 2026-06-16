@@ -66,11 +66,6 @@ func expectTombstoneWrite(b *bmock.MockBackend, dataPath string) *sidecarCapture
 	return expectSidecarWrite(b, dataPath)
 }
 
-// expectSidecarRemove registers a permissive expectation for metadata-document
-// deletion of dataPath on b.
-func expectSidecarRemove(b *bmock.MockBackend, dataPath string) {
-	b.On("Remove", mock.Anything, vfs.MetaPath(dataPath)).Return(nil).Maybe()
-}
 
 // expectNoTombstone makes b report no metadata document for dataPath (used by
 // FetchEntry and the Create/Rename tombstone-generation reads).
@@ -765,8 +760,6 @@ func TestRemove_DirFansOutToAllBackends(t *testing.T) {
 
 	expectTombstoneWrite(b1, "subdir")
 	expectTombstoneWrite(b2, "subdir")
-	expectSidecarRemove(b1, "subdir")
-	expectSidecarRemove(b2, "subdir")
 
 	req := &fuse.RemoveRequest{Name: "subdir", Dir: true}
 	err := dir.Remove(context.Background(), req)
@@ -840,8 +833,6 @@ func TestRemove_FileNotExistCountsAsSuccess(t *testing.T) {
 	b1.On("Remove", mock.Anything, "gone.txt").Return(nil)
 	// Idempotent delete: already-absent file counts towards quorum.
 	b2.On("Remove", mock.Anything, "gone.txt").Return(os.ErrNotExist)
-	expectSidecarRemove(b1, "gone.txt")
-	expectSidecarRemove(b2, "gone.txt")
 
 	req := &fuse.RemoveRequest{Name: "gone.txt"}
 	err := dir.Remove(context.Background(), req)
@@ -1548,7 +1539,6 @@ func TestRemove_WritesTombstonesToAllBackends(t *testing.T) {
 	tc1 := expectTombstoneWrite(b1, "kill.txt")
 	tc2 := expectTombstoneWrite(b2, "kill.txt")
 	b1.On("Remove", mock.Anything, "kill.txt").Return(nil)
-	expectSidecarRemove(b1, "kill.txt")
 
 	err := dir.Remove(context.Background(), &fuse.RemoveRequest{Name: "kill.txt"})
 	assert.NoError(t, err)
@@ -1637,13 +1627,11 @@ func TestRename_TombstonesOldPathAndWritesFreshSidecar(t *testing.T) {
 	b1.On("MkdirAll", mock.Anything, "", os.FileMode(0755)).Return(nil)
 	b1.On("Rename", mock.Anything, "old.txt", "new.txt").Return(nil)
 
-	// Old path is tombstoned on ALL backends (best-effort), the new path gets
-	// a fresh sidecar on the successful backends, and the orphaned old sidecar
-	// is cleaned up.
+	// Old path is tombstoned on ALL backends (best-effort), and the new path gets
+	// a fresh sidecar on the successful backends.
 	tc1 := expectTombstoneWrite(b1, "old.txt")
 	tc2 := expectTombstoneWrite(b2, "old.txt")
 	sc1 := expectSidecarWrite(b1, "new.txt")
-	expectSidecarRemove(b1, "old.txt")
 	// The target path carries no tombstone on either backend.
 	expectNoTombstone(b1, "new.txt")
 	expectNoTombstone(b2, "new.txt")
@@ -1717,7 +1705,6 @@ func TestRename_OntoTombstonedTargetStartsAboveTombstone(t *testing.T) {
 	tc1 := expectTombstoneWrite(b1, "old.txt")
 	tc2 := expectTombstoneWrite(b2, "old.txt")
 	sc1 := expectSidecarWrite(b1, "new.txt")
-	expectSidecarRemove(b1, "old.txt")
 
 	// The target path was previously deleted at gen 5 (tombstone on b2 only).
 	expectNoTombstone(b1, "new.txt")

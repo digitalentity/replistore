@@ -1,6 +1,6 @@
 # Makefile for RepliStore
 
-.PHONY: all build test clean deb release lint
+.PHONY: all build test clean deb release lint fmt
 
 BINARY_NAME=replistore
 BUILD_DIR=build
@@ -31,18 +31,12 @@ release: clean test deb
 	@echo "Release packaging complete."
 
 lint:
-	@echo "Running linters..."
-	@if command -v golangci-lint >/dev/null 2>&1; then \
-		golangci-lint run ./...; \
-	else \
-		echo "golangci-lint not found, falling back to go vet and gofmt..."; \
-		go vet ./...; \
-		FMTOUT=$$(gofmt -s -l . 2>&1); \
-		if [ -n "$$FMTOUT" ]; then \
-			echo "gofmt found formatting issues in the following files:"; \
-			echo "$$FMTOUT"; \
-			exit 1; \
-		fi; \
-		echo "All fallback checks passed."; \
-	fi
+	@echo "Running go vet..."
+	go vet ./...
+	@echo "Running golangci-lint..."
+	golangci-lint run ./...
+
+fmt:
+	@echo "Formatting source code..."
+	gofmt -s -w .
 

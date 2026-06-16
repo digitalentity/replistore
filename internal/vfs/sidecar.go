@@ -96,7 +96,7 @@ func readMetaDoc(ctx context.Context, b backend.Backend, scPath string) (Sidecar
 	}
 	defer f.Close()
 
-	buf := make([]byte, 4096)
+	buf := make([]byte, 8192)
 	n, err := f.ReadAt(ctx, buf, 0)
 	if err != nil && (!errors.Is(err, io.EOF) || n <= 0) {
 		return sc, err

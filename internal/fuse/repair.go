@@ -122,8 +122,6 @@ func (m *RepairManager) performScrub(ctx context.Context) {
 // the tombstone generation), retires tombstones that a genuinely newer write
 // has obsoleted, and garbage-collects tombstones whose path is absent on every
 // responding backend. Runs under the global repair lock.
-// TODO(C6-dirs): only file tombstones exist; directory deletions are not
-// enforced here.
 func (m *RepairManager) enforceTombstones(ctx context.Context) {
 	tombstones := vfs.GatherTombstones(ctx, m.fs.getBackendList())
 	for path, tombGen := range tombstones {

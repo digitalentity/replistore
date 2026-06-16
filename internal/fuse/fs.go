@@ -9,6 +9,7 @@ import (
 	"maps"
 	"os"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -854,6 +855,46 @@ func (d *Dir) clearRenameTarget(ctx context.Context, targetDir *Dir, name, newPa
 	return nil
 }
 
+func (d *Dir) collectDescendants(ctx context.Context, oldPath string, backends []string) ([]string, error) {
+	var mu sync.Mutex
+	descants := make(map[string]bool)
+	g, gCtx := errgroup.WithContext(ctx)
+
+	for _, bName := range backends {
+		b, ok := d.fs.Backends[bName]
+		if !ok {
+			continue
+		}
+		g.Go(func() error {
+			err := b.Walk(gCtx, oldPath, func(p string, info backend.FileInfo) error {
+				rel := strings.TrimPrefix(p, oldPath)
+				rel = strings.TrimPrefix(rel, "/")
+				if rel != "" && rel != "." {
+					mu.Lock()
+					descants[rel] = true
+					mu.Unlock()
+				}
+				return nil
+			})
+			if err != nil && !os.IsNotExist(err) && !errors.Is(err, os.ErrNotExist) {
+				return err
+			}
+			return nil
+		})
+	}
+
+	if err := g.Wait(); err != nil {
+		return nil, err
+	}
+
+	res := make([]string, 0, len(descants))
+	for rel := range descants {
+		res = append(res, rel)
+	}
+	slices.Sort(res)
+	return res, nil
+}
+
 func (d *Dir) Rename(ctx context.Context, req *fuse.RenameRequest, newDir fs.Node) error {
 	d.node.Mu.RLock()
 	sourceNode, ok := d.node.Children[req.OldName]
@@ -945,6 +986,46 @@ func (d *Dir) Rename(ctx context.Context, req *fuse.RenameRequest, newDir fs.Nod
 		return err
 	}
 
+	var descendants []string
+	if isDir {
+		var collectErr error
+		descendants, collectErr = d.collectDescendants(ctx, oldPath, backends)
+		if collectErr != nil {
+			d.fs.pathLogger(oldPath).Warnf("Rename: failed to collect descendants for %s: %v", oldPath, collectErr)
+		}
+	}
+
+	oldDescendantGens := make(map[string]int64)
+	if isDir && len(descendants) > 0 {
+		var wg sync.WaitGroup
+		var muLock sync.Mutex
+		for _, rel := range descendants {
+			wg.Add(1)
+			go func(rel string) {
+				defer wg.Done()
+				oldDescendantPath := oldPath + "/" + rel
+				oldGen := int64(0)
+				if node, ok := d.fs.Cache.Get(oldDescendantPath); ok {
+					oldGen = node.Meta.Gen
+				}
+				if oldGen == 0 {
+					for _, bName := range backends {
+						if b, ok := d.fs.Backends[bName]; ok {
+							if sc, err := vfs.ReadSidecar(ctx, b, oldDescendantPath); err == nil {
+								oldGen = sc.Gen
+								break
+							}
+						}
+					}
+				}
+				muLock.Lock()
+				oldDescendantGens[rel] = oldGen
+				muLock.Unlock()
+			}(rel)
+		}
+		wg.Wait()
+	}
+
 	var mu sync.Mutex
 	var successful []string
 	var failures []string
@@ -1024,16 +1105,50 @@ func (d *Dir) Rename(ctx context.Context, req *fuse.RenameRequest, newDir fs.Nod
 	// it, and removing it would erase the deletion record (see Dir.Remove).
 	d.fs.writeSidecars(ctx, newPath, vfs.Sidecar{Gen: newGen, Writer: d.fs.NodeID}, successful)
 
-	// TODO(C6-dirs): metadata documents are keyed by the hash of the full path,
-	// so a directory rename changes every descendant's key. Re-keying the
-	// subtree's documents (and tombstoning the old keys) is deferred along with
-	// directory tombstones; descendant documents at the new paths are absent
-	// until repair re-stamps them as fresh generations.
+	// Re-key descendants' metadata documents: write sidecars at the new paths
+	// and tombstones at the old paths (REVIEW.md C6-dirs).
+	newDescendantGens := make(map[string]int64)
+	if isDir && len(descendants) > 0 {
+		var wg sync.WaitGroup
+		var muLock sync.Mutex
+		for _, rel := range descendants {
+			wg.Add(1)
+			go func(rel string) {
+				defer wg.Done()
+				oldDescendantPath := oldPath + "/" + rel
+				newDescendantPath := newPath + "/" + rel
+				oldGen := oldDescendantGens[rel]
+
+				newGen := max(oldGen, d.fs.maxTombstoneGen(ctx, newDescendantPath)) + 1
+				muLock.Lock()
+				newDescendantGens[rel] = newGen
+				muLock.Unlock()
+
+				d.fs.writeSidecars(ctx, newDescendantPath, vfs.Sidecar{Gen: newGen, Writer: d.fs.NodeID}, successful)
+
+				tomb := vfs.Sidecar{Gen: oldGen + 1, Writer: d.fs.NodeID, Deleted: true}
+				if n := d.fs.writeTombstones(ctx, oldDescendantPath, tomb, all); n < len(all) {
+					d.fs.pathLogger(oldDescendantPath).Warnf("Tombstone for renamed descendant path reached only %d/%d backends", n, len(all))
+				}
+			}(rel)
+		}
+		wg.Wait()
+	}
 
 	// Update Cache
 	if !d.fs.Cache.Rename(oldPath, newPath) {
 		// This should not happen if our VFS logic is correct
 		return syscall.EIO
+	}
+
+	// Update generations of descendants in the cache
+	for rel, newGen := range newDescendantGens {
+		newDescendantPath := newPath + "/" + rel
+		if node, ok := d.fs.Cache.Get(newDescendantPath); ok {
+			node.Mu.Lock()
+			node.Meta.Gen = newGen
+			node.Mu.Unlock()
+		}
 	}
 
 	// The new path carries the bumped generation written above.

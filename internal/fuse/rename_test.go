@@ -34,12 +34,11 @@ func TestDir_Rename_Simple(t *testing.T) {
 
 	b1.On("MkdirAll", mock.Anything, "", os.FileMode(0755)).Return(nil)
 	b1.On("Rename", mock.Anything, "old.txt", "new.txt").Return(nil)
-	// The old path is tombstoned, the new path gets a fresh sidecar and the
-	// orphaned old sidecar is cleaned up. The target path carries no tombstone.
+	// The old path is tombstoned and the new path gets a fresh sidecar.
+	// The target path carries no tombstone.
 	expectTombstoneWrite(b1, "old.txt")
 	expectNoTombstone(b1, "new.txt")
 	expectSidecarWrite(b1, "new.txt")
-	expectSidecarRemove(b1, "old.txt")
 
 	req := &fuse.RenameRequest{OldName: "old.txt", NewName: "new.txt"}
 	err := root.Rename(context.Background(), req, root)
@@ -79,14 +78,12 @@ func TestDir_Rename_OverExistingTarget(t *testing.T) {
 	// rename runs, so the target's replica is not leaked.
 	expectTombstoneWrite(b1, "new.txt")
 	b1.On("Remove", mock.Anything, "new.txt").Return(nil)
-	expectSidecarRemove(b1, "new.txt")
 
 	b1.On("MkdirAll", mock.Anything, "", os.FileMode(0755)).Return(nil)
 	b1.On("Rename", mock.Anything, "old.txt", "new.txt").Return(nil)
 	expectTombstoneWrite(b1, "old.txt")
 	expectNoTombstone(b1, "new.txt")
 	expectSidecarWrite(b1, "new.txt")
-	expectSidecarRemove(b1, "old.txt")
 
 	req := &fuse.RenameRequest{OldName: "old.txt", NewName: "new.txt"}
 	err := root.Rename(context.Background(), req, root)
@@ -161,7 +158,6 @@ func TestDir_Rename_CrossDir(t *testing.T) {
 	expectTombstoneWrite(b1, "dir1/old.txt")
 	expectNoTombstone(b1, "dir2/new.txt")
 	expectSidecarWrite(b1, "dir2/new.txt")
-	expectSidecarRemove(b1, "dir1/old.txt")
 
 	req := &fuse.RenameRequest{OldName: "old.txt", NewName: "new.txt"}
 	err := d1.Rename(context.Background(), req, d2)
@@ -203,8 +199,10 @@ func TestDir_Rename_DirFansOutToAllBackends(t *testing.T) {
 
 	b1.On("MkdirAll", mock.Anything, "", os.FileMode(0755)).Return(nil)
 	b1.On("Rename", mock.Anything, "olddir", "newdir").Return(nil)
+	b1.On("Walk", mock.Anything, "olddir", mock.Anything).Return(nil).Maybe()
 	b2.On("MkdirAll", mock.Anything, "", os.FileMode(0755)).Return(nil)
 	b2.On("Rename", mock.Anything, "olddir", "newdir").Return(nil)
+	b2.On("Walk", mock.Anything, "olddir", mock.Anything).Return(nil).Maybe()
 
 	expectNoTombstone(b1, "newdir")
 	expectNoTombstone(b2, "newdir")
@@ -212,13 +210,6 @@ func TestDir_Rename_DirFansOutToAllBackends(t *testing.T) {
 	expectTombstoneWrite(b2, "olddir")
 	expectSidecarWrite(b1, "newdir")
 	expectSidecarWrite(b2, "newdir")
-	expectSidecarRemove(b1, "olddir")
-	expectSidecarRemove(b2, "olddir")
-
-	b1.On("Rename", mock.Anything, ".replistore/meta/olddir", ".replistore/meta/newdir").Return(nil).Maybe()
-	b1.On("Rename", mock.Anything, ".replistore/tombstones/olddir", ".replistore/tombstones/newdir").Return(nil).Maybe()
-	b2.On("Rename", mock.Anything, ".replistore/meta/olddir", ".replistore/meta/newdir").Return(nil).Maybe()
-	b2.On("Rename", mock.Anything, ".replistore/tombstones/olddir", ".replistore/tombstones/newdir").Return(nil).Maybe()
 
 	req := &fuse.RenameRequest{OldName: "olddir", NewName: "newdir"}
 	err := root.Rename(context.Background(), req, root)
@@ -254,20 +245,18 @@ func TestDir_Rename_DirNotExistIsSkipped(t *testing.T) {
 
 	b1.On("MkdirAll", mock.Anything, "", os.FileMode(0755)).Return(nil)
 	b1.On("Rename", mock.Anything, "olddir", "newdir").Return(nil)
+	b1.On("Walk", mock.Anything, "olddir", mock.Anything).Return(nil).Maybe()
 	b2.On("MkdirAll", mock.Anything, "", os.FileMode(0755)).Return(nil)
 	// Source dir simply doesn't exist on b2: neither success nor failure,
 	// and no async orphan removal must be triggered.
 	b2.On("Rename", mock.Anything, "olddir", "newdir").Return(os.ErrNotExist)
+	b2.On("Walk", mock.Anything, "olddir", mock.Anything).Return(os.ErrNotExist).Maybe()
 
 	expectNoTombstone(b1, "newdir")
 	expectNoTombstone(b2, "newdir")
 	expectTombstoneWrite(b1, "olddir")
 	expectTombstoneWrite(b2, "olddir")
 	expectSidecarWrite(b1, "newdir")
-	expectSidecarRemove(b1, "olddir")
-
-	b1.On("Rename", mock.Anything, ".replistore/meta/olddir", ".replistore/meta/newdir").Return(nil).Maybe()
-	b1.On("Rename", mock.Anything, ".replistore/tombstones/olddir", ".replistore/tombstones/newdir").Return(nil).Maybe()
 
 	req := &fuse.RenameRequest{OldName: "olddir", NewName: "newdir"}
 	err := root.Rename(context.Background(), req, root)
@@ -315,7 +304,6 @@ func TestDir_Rename_Quorum(t *testing.T) {
 	expectNoTombstone(b1, "new.txt")
 	expectNoTombstone(b2, "new.txt")
 	expectSidecarWrite(b1, "new.txt")
-	expectSidecarRemove(b1, "old.txt")
 
 	b2.On("MkdirAll", mock.Anything, "", os.FileMode(0755)).Return(nil)
 	b2.On("Rename", mock.Anything, "old.txt", "new.txt").Return(os.ErrPermission)
@@ -336,4 +324,85 @@ func TestDir_Rename_Quorum(t *testing.T) {
 
 	b1.AssertExpectations(t)
 	b2.AssertExpectations(t)
+}
+
+func TestDir_Rename_DescendantReKeying(t *testing.T) {
+	b1 := &bmock.MockBackend{NameVal: "b1"}
+
+	cache := vfs.NewCache()
+	cache.Upsert("olddir", vfs.Metadata{Name: "olddir", Path: "olddir", IsDir: true, Mode: os.ModeDir | 0755, Backends: []string{"b1"}, Gen: 2}, "b1")
+	cache.Upsert("olddir/file.txt", vfs.Metadata{Name: "file.txt", Path: "olddir/file.txt", Backends: []string{"b1"}, Gen: 5}, "b1")
+
+	fs := &RepliFS{
+		Cache:             cache,
+		Backends:          map[string]backend.Backend{"b1": b1},
+		ReplicationFactor: 1,
+		WriteQuorum:       1,
+		Selector:          vfs.NewRandomSelector(nil),
+		NodeID:            "node-test",
+	}
+
+	rootNode, _ := fs.Root()
+	root := rootNode.(*Dir)
+
+	b1.On("MkdirAll", mock.Anything, "", os.FileMode(0755)).Return(nil)
+	b1.On("Rename", mock.Anything, "olddir", "newdir").Return(nil)
+
+	// Walk finds the descendant file
+	b1.On("Walk", mock.Anything, "olddir", mock.Anything).Run(func(args mock.Arguments) {
+		fn := args.Get(2).(func(string, backend.FileInfo) error)
+		_ = fn("olddir/file.txt", backend.FileInfo{Name: "file.txt", Size: 100})
+	}).Return(nil)
+
+	expectNoTombstone(b1, "newdir")
+	expectNoTombstone(b1, "newdir/file.txt")
+
+	tcDirOld := expectTombstoneWrite(b1, "olddir")
+	scDirNew := expectSidecarWrite(b1, "newdir")
+	tcFileOld := expectTombstoneWrite(b1, "olddir/file.txt")
+	scFileNew := expectSidecarWrite(b1, "newdir/file.txt")
+
+	req := &fuse.RenameRequest{OldName: "olddir", NewName: "newdir"}
+	err := root.Rename(context.Background(), req, root)
+	assert.NoError(t, err)
+
+	// Verify old path tombstoned
+	wDirOld, nDirOld := tcDirOld.get()
+	assert.Equal(t, 1, nDirOld)
+	assert.Equal(t, int64(3), wDirOld.Gen)
+	assert.True(t, wDirOld.Deleted)
+
+	// Verify new path sidecar written
+	wDirNew, nDirNew := scDirNew.get()
+	assert.Equal(t, 1, nDirNew)
+	assert.Equal(t, int64(3), wDirNew.Gen)
+	assert.False(t, wDirNew.Deleted)
+
+	// Verify descendant old path tombstoned
+	wFileOld, nFileOld := tcFileOld.get()
+	assert.Equal(t, 1, nFileOld)
+	assert.Equal(t, int64(6), wFileOld.Gen)
+	assert.True(t, wFileOld.Deleted)
+
+	// Verify descendant new path sidecar written
+	wFileNew, nFileNew := scFileNew.get()
+	assert.Equal(t, 1, nFileNew)
+	assert.Equal(t, int64(6), wFileNew.Gen)
+	assert.False(t, wFileNew.Deleted)
+
+	// Verify cache updates
+	_, ok := cache.Get("olddir")
+	assert.False(t, ok)
+	_, ok = cache.Get("olddir/file.txt")
+	assert.False(t, ok)
+
+	dirNode, ok := cache.Get("newdir")
+	assert.True(t, ok)
+	assert.Equal(t, int64(3), dirNode.Meta.Gen)
+
+	fileNode, ok := cache.Get("newdir/file.txt")
+	assert.True(t, ok)
+	assert.Equal(t, int64(6), fileNode.Meta.Gen)
+
+	b1.AssertExpectations(t)
 }

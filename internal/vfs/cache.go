@@ -350,7 +350,7 @@ func listTombstones(ctx context.Context, b backend.Backend) map[string]int64 {
 			logrus.WithField("component", "vfs").WithField("doc", p).Debugf("Metadata read on %s failed: %v", b.GetName(), err)
 			return nil
 		}
-		if sc.Deleted {
+		if sc.Deleted && sc.Path != "" {
 			res[sc.Path] = sc.Gen
 		}
 		return nil

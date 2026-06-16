@@ -56,7 +56,7 @@ linters:
     - revive
     - recvcheck
     - tagalign
-    # - testifylint
+    - testifylint
     # - testpackage
     - thelper
     - unused
