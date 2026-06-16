@@ -69,6 +69,7 @@ func init() {
 		} else if tList, ok := options["tags"].([]string); ok {
 			tags = tList
 		}
+
 		return NewSMBBackend(name, addr, share, user, pass, domain, speed, tags), nil
 	})
 }
@@ -90,6 +91,7 @@ func (b *SMBBackend) GetFreeSpace() (uint64, error) {
 	if err != nil {
 		return 0, err
 	}
+
 	return info.AvailableBlockCount() * info.BlockSize(), nil
 }
 
@@ -101,6 +103,7 @@ func (b *SMBBackend) Close() error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.closeLocked()
+
 	return nil
 }
 
@@ -122,6 +125,7 @@ func (b *SMBBackend) closeLocked() {
 func (b *SMBBackend) Connect() error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+
 	return b.connectLocked()
 }
 
@@ -148,6 +152,7 @@ func (b *SMBBackend) connectLocked() error {
 	if err != nil {
 		_ = conn.Close()
 		b.conn = nil
+
 		return fmt.Errorf("smb dial failed: %w", err)
 	}
 	b.session = s
@@ -158,6 +163,7 @@ func (b *SMBBackend) connectLocked() error {
 		b.session = nil
 		_ = conn.Close()
 		b.conn = nil
+
 		return fmt.Errorf("mount failed: %w", err)
 	}
 	b.share = fs
@@ -171,6 +177,7 @@ func (b *SMBBackend) ensureConnected() error {
 	if b.share == nil {
 		return b.connectLocked()
 	}
+
 	return nil
 }
 
@@ -180,6 +187,7 @@ func (b *SMBBackend) getShare() (*smb2.Share, error) {
 	if b.share == nil {
 		return nil, errors.New("not connected")
 	}
+
 	return b.share, nil
 }
 
@@ -217,6 +225,7 @@ func isConnectionError(err error) bool {
 		strings.Contains(errStr, "closed connection") {
 		return true
 	}
+
 	return false
 }
 
@@ -231,8 +240,10 @@ func (b *SMBBackend) execute(op func() error) error {
 		if reconnectErr := b.ensureConnected(); reconnectErr != nil {
 			return err
 		}
+
 		return op()
 	}
+
 	return err
 }
 
@@ -241,6 +252,7 @@ func toSMBPath(path string) string {
 	if s == "" {
 		return "."
 	}
+
 	return s
 }
 
@@ -254,6 +266,7 @@ func (b *SMBBackend) Ping(ctx context.Context) error {
 			return err
 		}
 		_, err = share.Stat(".")
+
 		return err
 	})
 }
@@ -283,8 +296,10 @@ func (b *SMBBackend) ReadDir(ctx context.Context, path string) ([]backend.FileIn
 				IsDir:   e.IsDir(),
 			})
 		}
+
 		return nil
 	})
+
 	return results, err
 }
 
@@ -310,8 +325,10 @@ func (b *SMBBackend) Stat(ctx context.Context, path string) (backend.FileInfo, e
 			ModTime: res.ModTime(),
 			IsDir:   res.IsDir(),
 		}
+
 		return nil
 	})
+
 	return fi, err
 }
 
@@ -332,8 +349,10 @@ func (b *SMBBackend) OpenFile(ctx context.Context, path string, flag int, perm o
 			return err
 		}
 		file = &smbFile{f}
+
 		return nil
 	})
+
 	return file, err
 }
 
@@ -347,6 +366,7 @@ func (b *SMBBackend) Mkdir(ctx context.Context, path string, perm os.FileMode) e
 			return err
 		}
 		smbPath := toSMBPath(path)
+
 		return share.Mkdir(smbPath, perm)
 	})
 }
@@ -355,6 +375,7 @@ func (b *SMBBackend) MkdirAll(ctx context.Context, path string, perm os.FileMode
 	if path == "" || path == "." {
 		return nil
 	}
+
 	return b.execute(func() error {
 		share, err := b.getShare()
 		if err != nil {
@@ -364,6 +385,7 @@ func (b *SMBBackend) MkdirAll(ctx context.Context, path string, perm os.FileMode
 			return err
 		}
 		smbPath := toSMBPath(path)
+
 		return share.MkdirAll(smbPath, perm)
 	})
 }
@@ -378,6 +400,7 @@ func (b *SMBBackend) Remove(ctx context.Context, path string) error {
 			return err
 		}
 		smbPath := toSMBPath(path)
+
 		return share.Remove(smbPath)
 	})
 }
@@ -393,6 +416,7 @@ func (b *SMBBackend) Rename(ctx context.Context, oldPath, newPath string) error 
 		}
 		oldSMBPath := toSMBPath(oldPath)
 		newSMBPath := toSMBPath(newPath)
+
 		return share.Rename(oldSMBPath, newSMBPath)
 	})
 }
@@ -407,6 +431,7 @@ func (b *SMBBackend) Chtimes(ctx context.Context, path string, atime, mtime time
 			return err
 		}
 		smbPath := toSMBPath(path)
+
 		return share.Chtimes(smbPath, atime, mtime)
 	})
 }
@@ -421,6 +446,7 @@ func (b *SMBBackend) Truncate(ctx context.Context, path string, size int64) erro
 			return err
 		}
 		smbPath := toSMBPath(path)
+
 		return share.Truncate(smbPath, size)
 	})
 }
@@ -431,6 +457,7 @@ func (b *SMBBackend) Walk(ctx context.Context, path string, fn func(path string,
 		if err != nil {
 			return err
 		}
+
 		return b.walk(ctx, share, path, fn)
 	})
 }
@@ -471,6 +498,7 @@ func (b *SMBBackend) walk(ctx context.Context, share *smb2.Share, path string, f
 			}
 		}
 	}
+
 	return nil
 }
 
@@ -482,6 +510,7 @@ func (f *smbFile) ReadAt(ctx context.Context, b []byte, off int64) (int, error) 
 	if err := ctx.Err(); err != nil {
 		return 0, err
 	}
+
 	return f.File.ReadAt(b, off)
 }
 
@@ -489,6 +518,7 @@ func (f *smbFile) WriteAt(ctx context.Context, b []byte, off int64) (int, error)
 	if err := ctx.Err(); err != nil {
 		return 0, err
 	}
+
 	return f.File.WriteAt(b, off)
 }
 
@@ -496,5 +526,6 @@ func (f *smbFile) Sync(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+
 	return f.File.Sync()
 }

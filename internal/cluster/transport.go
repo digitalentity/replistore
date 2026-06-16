@@ -69,6 +69,7 @@ func newRID() string {
 		// crypto/rand never fails on supported platforms.
 		panic(fmt.Sprintf("crypto/rand failed: %v", err))
 	}
+
 	return hex.EncodeToString(b)
 }
 
@@ -130,6 +131,7 @@ func verifyMessage(secret []byte, datagram []byte) (*wireClaims, error) {
 	if claims.V != 1 {
 		return nil, errBadVersion
 	}
+
 	return &claims, nil
 }
 
@@ -198,6 +200,7 @@ func CallUDP(ctx context.Context, secret []byte, peerAddr, typ string, req, resp
 				_, _ = conn.Write(datagram)
 				interval *= 2
 				nextRetransmit = time.Now().Add(interval)
+
 				continue
 			}
 			// Any other read error (e.g. ECONNREFUSED delivered via ICMP on a
@@ -212,12 +215,14 @@ func CallUDP(ctx context.Context, secret []byte, peerAddr, typ string, req, resp
 			// Forged, stale, or mismatched datagram: drop silently, keep reading.
 			continue
 		}
+
 		return json.Unmarshal(claims.Body, resp)
 	}
 }
 
 func isTimeout(err error) bool {
 	var ne net.Error
+
 	return errors.As(err, &ne) && ne.Timeout()
 }
 
@@ -239,6 +244,7 @@ func (m *LockManager) serveLoop() {
 				// Closed socket or fatal error.
 				return
 			}
+
 			continue
 		}
 
@@ -248,6 +254,7 @@ func (m *LockManager) serveLoop() {
 			// response: nothing here is worth telling an unauthenticated
 			// sender).
 			m.log.Debugf("Dropping lock datagram from %s: %v", src, err)
+
 			continue
 		}
 
@@ -257,6 +264,7 @@ func (m *LockManager) serveLoop() {
 			var req LockRequest
 			if err := json.Unmarshal(claims.Body, &req); err != nil {
 				m.log.Debugf("Dropping lock datagram from %s: bad body: %v", src, err)
+
 				continue
 			}
 			var resp LockResponse
@@ -266,6 +274,7 @@ func (m *LockManager) serveLoop() {
 			var req LockRenewal
 			if err := json.Unmarshal(claims.Body, &req); err != nil {
 				m.log.Debugf("Dropping lock datagram from %s: bad body: %v", src, err)
+
 				continue
 			}
 			var status LockStatus
@@ -275,6 +284,7 @@ func (m *LockManager) serveLoop() {
 			var req LockRelease
 			if err := json.Unmarshal(claims.Body, &req); err != nil {
 				m.log.Debugf("Dropping lock datagram from %s: bad body: %v", src, err)
+
 				continue
 			}
 			var status LockStatus
@@ -282,12 +292,14 @@ func (m *LockManager) serveLoop() {
 			respBody = status
 		default:
 			m.log.Debugf("Dropping lock datagram from %s: unknown type %q", src, claims.Typ)
+
 			continue
 		}
 
 		reply, err := signMessage(m.Secret, claims.Typ+respSuffix, claims.RID, respBody)
 		if err != nil {
 			m.log.Debugf("Failed to sign lock response: %v", err)
+
 			continue
 		}
 		if _, err := m.conn.WriteToUDP(reply, src); err != nil {

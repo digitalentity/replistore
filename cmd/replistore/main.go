@@ -42,10 +42,12 @@ func main() {
 		b, err := backend.Create(bc.Type, bc.Name, bc.ToOptions())
 		if err != nil {
 			logrus.Errorf("Failed to create backend %s: %v", bc.Name, err)
+
 			continue
 		}
 		if err := b.Connect(); err != nil {
 			logrus.Errorf("Failed to connect to backend %s: %v", bc.Name, err)
+
 			continue
 		}
 		backends[bc.Name] = b
@@ -243,6 +245,7 @@ func main() {
 func loadCacheFromDisk(stateDir, cacheFile string, cache *vfs.Cache, refreshInterval time.Duration) (bool, bool) {
 	if err := os.MkdirAll(stateDir, 0755); err != nil {
 		logrus.Errorf("Failed to create state directory %s: %v", stateDir, err)
+
 		return false, false
 	}
 
@@ -253,6 +256,7 @@ func loadCacheFromDisk(stateDir, cacheFile string, cache *vfs.Cache, refreshInte
 	logrus.Infof("Loading metadata cache from disk: %s", cacheFile)
 	if err := cache.LoadFromFile(cacheFile); err != nil {
 		logrus.Errorf("Failed to load metadata cache: %v", err)
+
 		return false, false
 	}
 	logrus.Info("Metadata cache loaded successfully from disk")
@@ -262,7 +266,9 @@ func loadCacheFromDisk(stateDir, cacheFile string, cache *vfs.Cache, refreshInte
 	cache.Mu.RUnlock()
 	if !lastRecon.IsZero() && time.Since(lastRecon) < refreshInterval {
 		logrus.Infof("Loaded cache is fresh (last reconciled: %v, threshold: %v). Skipping initial background scan.", lastRecon.Format(time.RFC3339), refreshInterval)
+
 		return true, true
 	}
+
 	return true, false
 }

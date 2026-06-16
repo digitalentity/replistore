@@ -86,6 +86,7 @@ func (d *Discovery) Start(ctx context.Context) error {
 		if err := d.writeEntry(ctx, b); err != nil {
 			d.log.WithError(err).Warnf("Failed to write peer entry to backend %s", b.GetName())
 			lastErr = err
+
 			continue
 		}
 		okCount++
@@ -96,6 +97,7 @@ func (d *Discovery) Start(ctx context.Context) error {
 
 	go d.heartbeatLoop(ctx)
 	go d.pollLoop(ctx)
+
 	return nil
 }
 
@@ -124,6 +126,7 @@ func (d *Discovery) GetPeers() []Peer {
 	for _, p := range d.Peers {
 		res = append(res, p)
 	}
+
 	return res
 }
 
@@ -131,6 +134,7 @@ func (d *Discovery) GetPeer(id string) (Peer, bool) {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 	p, ok := d.Peers[id]
+
 	return p, ok
 }
 
@@ -161,8 +165,10 @@ func (d *Discovery) writeEntry(ctx context.Context, b backend.Backend) error {
 	}
 	if _, err := f.WriteAt(opCtx, data, 0); err != nil {
 		_ = f.Close()
+
 		return err
 	}
+
 	return f.Close()
 }
 
@@ -216,6 +222,7 @@ func (d *Discovery) pollOnce(ctx context.Context) {
 		entries, err := d.readBackendEntries(ctx, b)
 		if err != nil {
 			d.log.WithError(err).Warnf("Failed to list peers on backend %s", b.GetName())
+
 			continue
 		}
 		listedOK++
@@ -245,6 +252,7 @@ func (d *Discovery) pollOnce(ctx context.Context) {
 			// New peer or fresh heartbeat: (re)admit.
 			d.states[id] = &peerState{lastSeq: e.Seq, lastChanged: now}
 			d.Peers[id] = Peer{ID: id, Address: e.Address, LastSeen: now}
+
 			continue
 		}
 		// Seq unchanged: check expiry and purge windows.
@@ -297,6 +305,7 @@ func (d *Discovery) readBackendEntries(ctx context.Context, b backend.Backend) (
 		entry, err := d.readEntry(opCtx, b, path.Join(peersDir, fi.Name))
 		if err != nil {
 			d.log.WithError(err).Debugf("Skipping malformed peer entry %s on backend %s", fi.Name, b.GetName())
+
 			continue
 		}
 		if entry.ID == "" || entry.ID == d.NodeID {
@@ -304,6 +313,7 @@ func (d *Discovery) readBackendEntries(ctx context.Context, b backend.Backend) (
 		}
 		entries = append(entries, entry)
 	}
+
 	return entries, nil
 }
 
@@ -325,6 +335,7 @@ func (d *Discovery) readEntry(ctx context.Context, b backend.Backend, p string) 
 	if err := json.Unmarshal(buf[:n], &entry); err != nil {
 		return entry, err
 	}
+
 	return entry, nil
 }
 

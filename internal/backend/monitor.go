@@ -21,6 +21,7 @@ func NewHealthMonitor(backends map[string]Backend) *HealthMonitor {
 	for name := range backends {
 		status[name] = true
 	}
+
 	return &HealthMonitor{
 		backends: backends,
 		status:   status,
@@ -68,6 +69,7 @@ func (m *HealthMonitor) checkAll(ctx context.Context) {
 				m.status[name] = true
 			}
 			m.mu.Unlock()
+
 			return nil
 		})
 	}
@@ -77,6 +79,7 @@ func (m *HealthMonitor) checkAll(ctx context.Context) {
 func (m *HealthMonitor) IsHealthy(name string) bool {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
+
 	return m.status[name]
 }
 
@@ -89,5 +92,6 @@ func (m *HealthMonitor) GetHealthyBackends() []string {
 			res = append(res, name)
 		}
 	}
+
 	return res
 }

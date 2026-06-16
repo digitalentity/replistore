@@ -27,6 +27,7 @@ func newEntryFile(t *testing.T, id, addr string, seq int64) *bmock.MockFile {
 		copy(args.Get(1).([]byte), data)
 	}).Return(len(data), io.EOF)
 	f.On("Close").Return(nil)
+
 	return f
 }
 

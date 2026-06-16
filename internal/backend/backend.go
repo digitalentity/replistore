@@ -68,5 +68,6 @@ func Create(typeName string, name string, options map[string]any) (Backend, erro
 	if !ok {
 		return nil, fmt.Errorf("unknown backend type: %s", typeName)
 	}
+
 	return factory(name, options)
 }

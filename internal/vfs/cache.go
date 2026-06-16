@@ -149,6 +149,7 @@ func mergeDirMeta(existing *Metadata, incoming Metadata, incomingBackends []stri
 func mergeMeta(existing *Metadata, incoming Metadata, incomingBackends []string) {
 	if existing.IsDir || incoming.IsDir {
 		mergeDirMeta(existing, incoming, incomingBackends)
+
 		return
 	}
 
@@ -164,6 +165,7 @@ func mergeMeta(existing *Metadata, incoming Metadata, incomingBackends []string)
 			existing.ModTime = incoming.ModTime
 			existing.Gen = incoming.Gen
 			existing.Backends = append([]string(nil), incomingBackends...)
+
 			return
 		case incoming.Gen < existing.Gen:
 			// Rule 1: lower generation is ignored.
@@ -174,6 +176,7 @@ func mergeMeta(existing *Metadata, incoming Metadata, incomingBackends []string)
 			if incoming.ModTime.After(existing.ModTime) {
 				existing.ModTime = incoming.ModTime
 			}
+
 			return
 		}
 		// Rule 3: equal Gen, different Size — fall through to (mtime, size) LWW.
@@ -213,6 +216,7 @@ func unionBackends(a, b []string) []string {
 			}
 		}
 	}
+
 	return res
 }
 
@@ -348,16 +352,19 @@ func listTombstones(ctx context.Context, b backend.Backend) map[string]int64 {
 		sc, err := readMetaDoc(ctx, b, p)
 		if err != nil {
 			logrus.WithField("component", "vfs").WithField("doc", p).Debugf("Metadata read on %s failed: %v", b.GetName(), err)
+
 			return nil
 		}
 		if sc.Deleted && sc.Path != "" {
 			res[sc.Path] = sc.Gen
 		}
+
 		return nil
 	})
 	if err != nil && !os.IsNotExist(err) && !errors.Is(err, os.ErrNotExist) {
 		logrus.WithField("component", "vfs").Debugf("Metadata walk on %s failed: %v", b.GetName(), err)
 	}
+
 	return res
 }
 
@@ -378,10 +385,12 @@ func GatherTombstones(ctx context.Context, backends []backend.Backend) map[strin
 					merged[path] = gen
 				}
 			}
+
 			return nil
 		})
 	}
 	_ = g.Wait()
+
 	return merged
 }
 
@@ -392,6 +401,7 @@ func backendsByName(backends []backend.Backend) map[string]backend.Backend {
 	for _, b := range backends {
 		m[b.GetName()] = b
 	}
+
 	return m
 }
 
@@ -430,17 +440,21 @@ func (c *Cache) walkBackends(ctx context.Context, backends []backend.Backend) ma
 					IsDir:    info.IsDir,
 					Backends: []string{b.GetName()},
 				}
+
 				return nil
 			})
 			if err != nil {
 				c.logger().Errorf("Background sync error on %s: %v", b.GetName(), err)
+
 				return nil // Don't fail other backends
 			}
 			c.Reconcile(b.GetName(), seenPaths, walkStart)
+
 			return nil
 		})
 	}
 	_ = g.Wait()
+
 	return perBackend
 }
 
@@ -472,6 +486,7 @@ func resolveGlobalState(ctx context.Context, perBackend map[string]map[string]Me
 			cands = dropZombies(cands, tombGen)
 			if len(cands) == 0 {
 				dead = append(dead, path)
+
 				continue
 			}
 		} else if isFileConflict(cands) {
@@ -479,6 +494,7 @@ func resolveGlobalState(ctx context.Context, perBackend map[string]map[string]Me
 		}
 		resolved[path] = foldCandidates(cands)
 	}
+
 	return resolved, dead
 }
 
@@ -492,6 +508,7 @@ func dropZombies(cands []Metadata, tombGen int64) []Metadata {
 			live = append(live, m)
 		}
 	}
+
 	return live
 }
 
@@ -513,6 +530,7 @@ func isFileConflict(cands []Metadata) bool {
 			conflict = true
 		}
 	}
+
 	return conflict
 }
 
@@ -542,6 +560,7 @@ func foldCandidates(cands []Metadata) *Metadata {
 	for _, m := range cands[1:] {
 		mergeMeta(&res, m, m.Backends)
 	}
+
 	return &res
 }
 
@@ -633,6 +652,7 @@ func splitPath(path string) []string {
 			res = append(res, s)
 		}
 	}
+
 	return res
 }
 
@@ -642,6 +662,7 @@ func joinPath(parent, name string) string {
 	if parent == "" {
 		return name
 	}
+
 	return parent + "/" + name
 }
 
@@ -667,6 +688,7 @@ func (c *Cache) Rename(oldPath, newPath string) bool {
 	node, ok := sourceParent.Children[sourceNodeName]
 	if !ok {
 		sourceParent.Mu.Unlock()
+
 		return false
 	}
 	delete(sourceParent.Children, sourceNodeName)
@@ -709,6 +731,7 @@ func (c *Cache) getWithLock(path string) (*Node, bool) {
 		}
 		curr = next
 	}
+
 	return curr, true
 }
 
@@ -737,6 +760,7 @@ func (c *Cache) ensurePathWithLock(path string) *Node {
 		curr = next
 		parent.Mu.Unlock()
 	}
+
 	return curr
 }
 
@@ -768,6 +792,7 @@ func (c *Cache) FetchEntry(ctx context.Context, path string, backends []backend.
 					notExistCount++
 					stateMu.Unlock()
 				}
+
 				return nil // backend doesn't have it or errored
 			}
 
@@ -806,10 +831,12 @@ func (c *Cache) FetchEntry(ctx context.Context, path string, backends []backend.
 				bestMeta = meta
 				bestMeta.Backends = []string{b.GetName()}
 				found = true
+
 				return nil
 			}
 
 			mergeMeta(&bestMeta, meta, []string{b.GetName()})
+
 			return nil
 		})
 	}
@@ -836,6 +863,7 @@ func (c *Cache) FetchEntry(ctx context.Context, path string, backends []backend.
 	if !ok {
 		return nil, os.ErrNotExist
 	}
+
 	return node, nil
 }
 
@@ -862,6 +890,7 @@ func (c *Cache) FetchDir(ctx context.Context, path string, backends []backend.Ba
 					definitiveCount++
 					stateMu.Unlock()
 				}
+
 				return nil
 			}
 			stateMu.Lock()
@@ -882,6 +911,7 @@ func (c *Cache) FetchDir(ctx context.Context, path string, backends []backend.Ba
 					IsDir:   info.IsDir,
 				}, b.GetName())
 			}
+
 			return nil
 		})
 	}
@@ -898,6 +928,7 @@ func (c *Cache) FetchDir(ctx context.Context, path string, backends []backend.Ba
 	node.Mu.Lock()
 	node.FullyIndexed = true
 	node.Mu.Unlock()
+
 	return nil
 }
 
@@ -927,6 +958,7 @@ func (c *Cache) Get(path string) (*Node, bool) {
 		}
 		curr = next
 	}
+
 	return curr, true
 }
 
@@ -959,6 +991,7 @@ func (c *Cache) Warmup(ctx context.Context, backends []backend.Backend) {
 			} else {
 				c.logger().Infof("Finished scanning backend: %s", b.GetName())
 			}
+
 			return nil
 		})
 	}
@@ -993,6 +1026,7 @@ func (c *Cache) FindDegraded(rf int) []*Node {
 		}
 		n.Mu.RUnlock()
 	})
+
 	return degraded
 }
 
@@ -1006,6 +1040,7 @@ func (c *Cache) FindOverReplicated(rf int) []*Node {
 		}
 		n.Mu.RUnlock()
 	})
+
 	return overReplicated
 }
 
@@ -1099,6 +1134,7 @@ func (c *Cache) LoadFromFile(path string) error {
 	c.Root = sc.Root.toNode()
 	c.LastReconciled = sc.LastReconciled
 	c.Mu.Unlock()
+
 	return nil
 }
 

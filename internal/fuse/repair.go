@@ -68,6 +68,7 @@ func (m *RepairManager) performScrub(ctx context.Context) {
 	lock, err := m.fs.acquireLock(ctx, GlobalRepairLockPath)
 	if err != nil {
 		m.logger().Debug("Another node is currently performing repairs, skipping this cycle")
+
 		return
 	}
 	if lock != nil {
@@ -82,6 +83,7 @@ func (m *RepairManager) performScrub(ctx context.Context) {
 
 	if len(degraded) == 0 && len(overReplicated) == 0 {
 		m.logger().Info("No degraded or over-replicated files found")
+
 		return
 	}
 
@@ -100,6 +102,7 @@ func (m *RepairManager) performScrub(ctx context.Context) {
 			if err := m.repairNode(gCtx, node); err != nil {
 				m.logger().WithField("path", node.Meta.Path).Errorf("Failed to repair: %v", err)
 			}
+
 			return nil // Don't fail the whole scrub on single file error
 		})
 	}
@@ -109,6 +112,7 @@ func (m *RepairManager) performScrub(ctx context.Context) {
 			if err := m.pruneNode(gCtx, node); err != nil {
 				m.logger().WithField("path", node.Meta.Path).Errorf("Failed to prune: %v", err)
 			}
+
 			return nil
 		})
 	}
@@ -144,6 +148,7 @@ func (m *RepairManager) enforceTombstone(ctx context.Context, path string, tombG
 	if err != nil {
 		// Another node is working on this path; skip it this cycle.
 		m.logger().WithField("path", path).Debugf("Tombstone enforcement: could not lock, skipping: %v", err)
+
 		return
 	}
 	if lock != nil {
@@ -161,6 +166,7 @@ func (m *RepairManager) enforceTombstone(ctx context.Context, path string, tombG
 			}
 			m.logger().WithField("path", path).Debugf("Tombstone enforcement: stat on %s failed: %v", name, err)
 			failed = true
+
 			continue
 		}
 
@@ -170,12 +176,14 @@ func (m *RepairManager) enforceTombstone(ctx context.Context, path string, tombG
 		} else if !errors.Is(scErr, os.ErrNotExist) && !os.IsNotExist(scErr) {
 			m.logger().WithField("path", path).Debugf("Tombstone enforcement: sidecar read on %s failed: %v", name, scErr)
 			failed = true
+
 			continue
 		}
 
 		if gen > tombGen {
 			// A write newer than the deletion: the tombstone is obsolete.
 			obsolete = true
+
 			continue
 		}
 
@@ -190,6 +198,7 @@ func (m *RepairManager) enforceTombstone(ctx context.Context, path string, tombG
 		if removeErr != nil && !os.IsNotExist(removeErr) && !errors.Is(removeErr, os.ErrNotExist) {
 			m.logger().WithField("path", path).Warnf("Tombstone enforcement: failed to remove zombie from %s: %v", name, removeErr)
 			failed = true
+
 			continue
 		}
 		if err := vfs.RemoveSidecar(ctx, b, path); err != nil {
@@ -244,6 +253,7 @@ func (m *RepairManager) repairNode(ctx context.Context, node *vfs.Node) error {
 
 	if len(currentBackends) >= m.fs.ReplicationFactor {
 		node.Mu.Unlock()
+
 		return nil // Already repaired or not degraded
 	}
 
@@ -251,6 +261,7 @@ func (m *RepairManager) repairNode(ctx context.Context, node *vfs.Node) error {
 	var sourceName string
 	for bName := range currentBackends {
 		sourceName = bName
+
 		break
 	}
 	node.Mu.Unlock()
@@ -282,6 +293,7 @@ func (m *RepairManager) repairNode(ctx context.Context, node *vfs.Node) error {
 	node.Mu.Lock()
 	if len(node.Meta.Backends) >= m.fs.ReplicationFactor {
 		node.Mu.Unlock()
+
 		return nil
 	}
 	// Re-sync currentBackends in case they changed
@@ -355,6 +367,7 @@ func (m *RepairManager) repairNode(ctx context.Context, node *vfs.Node) error {
 		dstFile, err := targetBackend.OpenFile(ctx, path, os.O_CREATE|os.O_TRUNC|os.O_RDWR, node.Meta.Mode)
 		if err != nil {
 			m.logger().WithField("path", path).Warnf("Repair failed on target %s: %v", targetName, err)
+
 			continue
 		}
 
@@ -365,6 +378,7 @@ func (m *RepairManager) repairNode(ctx context.Context, node *vfs.Node) error {
 		if _, err := io.Copy(&offsetWriter{ctx: ctx, f: dstFile}, io.TeeReader(&offsetReader{ctx: ctx, f: srcFile}, hasher)); err != nil {
 			_ = dstFile.Close()
 			m.logger().WithField("path", path).Warnf("Copy failed to %s: %v", targetName, err)
+
 			continue
 		}
 		_ = dstFile.Close()
@@ -419,6 +433,7 @@ func (m *RepairManager) copyRepairedSidecar(ctx context.Context, sourceBackend, 
 	}
 	if err := vfs.WriteSidecar(ctx, sourceBackend, path, sc); err != nil {
 		m.logger().WithField("path", path).Warnf("Failed to record content sum on %s: %v", sourceName, err)
+
 		return
 	}
 	srcSC.Sum = sum
@@ -450,6 +465,7 @@ func (m *RepairManager) pruneNode(ctx context.Context, node *vfs.Node) error {
 	node.Mu.Lock()
 	if len(node.Meta.Backends) <= m.fs.ReplicationFactor {
 		node.Mu.Unlock()
+
 		return nil
 	}
 	current = append([]string(nil), node.Meta.Backends...)
@@ -500,6 +516,7 @@ func (m *RepairManager) pruneNode(ctx context.Context, node *vfs.Node) error {
 		err := targetBackend.Remove(ctx, path)
 		if err != nil && !os.IsNotExist(err) && !errors.Is(err, os.ErrNotExist) {
 			m.logger().WithField("path", path).Warnf("Failed to prune replica from backend %s: %v", targetName, err)
+
 			continue
 		}
 
@@ -534,8 +551,10 @@ func sourceModTime(ctx context.Context, source backend.Backend, path string, fal
 	fi, err := source.Stat(ctx, path)
 	if err != nil {
 		logrus.WithField("component", "repair").WithField("path", path).Debugf("Stat on %s failed, using cached mtime: %v", source.GetName(), err)
+
 		return fallback
 	}
+
 	return fi.ModTime
 }
 
@@ -549,6 +568,7 @@ type offsetReader struct {
 func (r *offsetReader) Read(p []byte) (int, error) {
 	n, err := r.f.ReadAt(r.ctx, p, r.offset)
 	r.offset += int64(n)
+
 	return n, err
 }
 
@@ -561,6 +581,7 @@ type offsetWriter struct {
 func (w *offsetWriter) Write(p []byte) (int, error) {
 	n, err := w.f.WriteAt(w.ctx, p, w.offset)
 	w.offset += int64(n)
+
 	return n, err
 }
 
@@ -573,12 +594,14 @@ func removeAll(ctx context.Context, b backend.Backend, path string) error {
 		} else {
 			files = append(files, p)
 		}
+
 		return nil
 	})
 	if err != nil {
 		if os.IsNotExist(err) || errors.Is(err, os.ErrNotExist) {
 			return nil
 		}
+
 		return err
 	}
 
@@ -602,5 +625,6 @@ func removeAll(ctx context.Context, b backend.Backend, path string) error {
 	if err := b.Remove(ctx, path); err != nil && !os.IsNotExist(err) && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
+
 	return nil
 }

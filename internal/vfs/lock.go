@@ -53,18 +53,21 @@ func randomHex() string {
 		// time-derived value rather than panicking.
 		return fmt.Sprintf("fallback-%d", time.Now().UnixNano())
 	}
+
 	return hex.EncodeToString(b)
 }
 
 func (l *DistributedLock) IsValid() bool {
 	l.mu.RLock()
 	defer l.mu.RUnlock()
+
 	return l.isValid
 }
 
 func (l *DistributedLock) ExpiresAt() time.Time {
 	l.mu.RLock()
 	defer l.mu.RUnlock()
+
 	return l.expiresAt
 }
 
@@ -74,6 +77,7 @@ func (l *DistributedLock) IsValidWithBuffer(buffer time.Duration) bool {
 	if !l.isValid {
 		return false
 	}
+
 	return time.Now().Add(buffer).Before(l.expiresAt)
 }
 
@@ -100,6 +104,7 @@ func (l *DistributedLock) Acquire(ctx context.Context) error {
 		lastErr = l.tryAcquire(ctx)
 		if lastErr == nil {
 			l.log.Infof("Successfully acquired distributed lock (fencing token: %s)", l.FencingToken)
+
 			return nil
 		}
 		if attempt == acquireMaxAttempts {
@@ -117,10 +122,12 @@ func (l *DistributedLock) Acquire(ctx context.Context) error {
 		select {
 		case <-ctx.Done():
 			timer.Stop()
+
 			return ctx.Err()
 		case <-timer.C:
 		}
 	}
+
 	return lastErr
 }
 
@@ -164,6 +171,7 @@ func (l *DistributedLock) tryAcquire(ctx context.Context) error {
 			}
 			mu.Unlock()
 		}
+
 		return nil
 	})
 
@@ -181,6 +189,7 @@ func (l *DistributedLock) tryAcquire(ctx context.Context) error {
 				}
 				mu.Unlock()
 			}
+
 			return nil
 		})
 	}
@@ -194,12 +203,14 @@ func (l *DistributedLock) tryAcquire(ctx context.Context) error {
 		l.expiresAt = time.Now().Add(l.Manager.LeaseTTL)
 		l.mu.Unlock()
 		l.startRenewal(grantedPeers)
+
 		return nil
 	}
 
 	// Rollback if quorum not reached
 	l.log.Warnf("Failed to reach quorum (%d/%d), rolling back", successes, quorum)
 	l.rollback(grantedPeers, fencingToken)
+
 	return errors.New("failed to acquire distributed lock")
 }
 
@@ -235,6 +246,7 @@ func (l *DistributedLock) startRenewal(peers []string) {
 			select {
 			case <-ctx.Done():
 				l.rollback(peers, l.FencingToken)
+
 				return
 			case <-ticker.C:
 				if l.renew(peers) {
@@ -245,6 +257,7 @@ func (l *DistributedLock) startRenewal(peers []string) {
 					l.mu.Lock()
 					l.isValid = false
 					l.mu.Unlock()
+
 					return
 				}
 				l.log.Warnf("Renewal round missed quorum, retrying before lease deadline (%v)", l.ExpiresAt())
@@ -293,6 +306,7 @@ func (l *DistributedLock) renew(peers []string) bool {
 				successes++
 				mu.Unlock()
 			}
+
 			return nil
 		})
 	}
@@ -305,6 +319,7 @@ func (l *DistributedLock) renew(peers []string) bool {
 		l.mu.Unlock()
 		l.log.Debugf("Successfully renewed distributed lock lease (%d/%d)", successes, quorum)
 	}
+
 	return ok
 }
 
@@ -333,6 +348,7 @@ func (l *DistributedLock) rollback(peers []string, token string) {
 				}
 				_ = cluster.CallUDP(gCtx, l.Manager.Secret, p.Address, cluster.TypReleaseLock, req, &status)
 			}
+
 			return nil
 		})
 	}

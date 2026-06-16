@@ -50,6 +50,7 @@ func (bc *BackendConfig) ToOptions() map[string]any {
 		opts["tags"] = bc.Tags
 	}
 	maps.Copy(opts, bc.Options)
+
 	return opts
 }
 
@@ -157,5 +158,6 @@ func validateClusterConfig(cfg *Config) error {
 	if len(cfg.ClusterSecret) < 16 {
 		return fmt.Errorf("cluster_secret must be at least 16 characters long (got %d)", len(cfg.ClusterSecret))
 	}
+
 	return nil
 }

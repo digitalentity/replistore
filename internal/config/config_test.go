@@ -60,6 +60,7 @@ func TestLoadConfig_ExpectedClusterSize(t *testing.T) {
 		_, err = tmpFile.WriteString(content)
 		require.NoError(t, err)
 		tmpFile.Close()
+
 		return tmpFile.Name()
 	}
 
@@ -106,6 +107,7 @@ func TestLoadConfig_AdvertiseAddr(t *testing.T) {
 		_, err = tmpFile.WriteString(content)
 		require.NoError(t, err)
 		tmpFile.Close()
+
 		return tmpFile.Name()
 	}
 
@@ -176,6 +178,7 @@ func TestLoadConfig_ClusterSecret(t *testing.T) {
 		_, err = tmpFile.WriteString(content)
 		require.NoError(t, err)
 		tmpFile.Close()
+
 		return tmpFile.Name()
 	}
 

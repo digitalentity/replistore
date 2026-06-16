@@ -116,6 +116,7 @@ func (m *LockManager) Start(address string) (string, error) {
 	go m.janitorLoop()
 
 	m.log.Infof("Lock UDP server listening on %s", actualAddr)
+
 	return actualAddr, nil
 }
 
@@ -155,6 +156,7 @@ func (m *LockManager) sweepExpiredGrants(now time.Time) {
 			// Range read and the delete is never collected.
 			m.grants.CompareAndDelete(key, val)
 		}
+
 		return true
 	})
 }
@@ -175,6 +177,7 @@ func (m *LockManager) RequestLock(req LockRequest, resp *LockResponse) error {
 			// lock instance on the same node)
 			log.Warnf("Rejecting lock request from node %s (lock ID %s): held by node %s (lock ID %s, expires in %v)", req.NodeID, req.LockID, grant.NodeID, grant.LockID, grant.ExpiresAt.Sub(now))
 			resp.Status = LockReject
+
 			return nil
 		}
 	}
@@ -187,6 +190,7 @@ func (m *LockManager) RequestLock(req LockRequest, resp *LockResponse) error {
 	if fencingToken == "" {
 		log.Warnf("Rejecting lock request from node %s (lock ID %s): missing fencing token", req.NodeID, req.LockID)
 		resp.Status = LockReject
+
 		return nil
 	}
 	// Grant (or refresh, for an idempotent retry of the same acquisition) the lock.
@@ -200,6 +204,7 @@ func (m *LockManager) RequestLock(req LockRequest, resp *LockResponse) error {
 	log.Infof("Granted lock request to node %s (lock ID %s, token %s)", req.NodeID, req.LockID, fencingToken)
 	resp.Status = LockOK
 	resp.FencingToken = fencingToken
+
 	return nil
 }
 
@@ -212,6 +217,7 @@ func (m *LockManager) RenewLock(req LockRenewal, resp *LockStatus) error {
 	if !ok {
 		log.Warnf("Rejecting lock renewal from node %s (lock ID %s): no active grant found", req.NodeID, req.LockID)
 		*resp = LockReject
+
 		return nil
 	}
 
@@ -220,6 +226,7 @@ func (m *LockManager) RenewLock(req LockRenewal, resp *LockStatus) error {
 		// Not the owner or stale token
 		log.Warnf("Rejecting lock renewal from node %s (lock ID %s): owner mismatch (held by node %s, lock ID %s)", req.NodeID, req.LockID, grant.NodeID, grant.LockID)
 		*resp = LockReject
+
 		return nil
 	}
 
@@ -229,6 +236,7 @@ func (m *LockManager) RenewLock(req LockRenewal, resp *LockStatus) error {
 		m.grants.Delete(path)
 		log.Warnf("Rejecting lock renewal from node %s (lock ID %s): lease expired at %v", req.NodeID, req.LockID, grant.ExpiresAt)
 		*resp = LockReject
+
 		return nil
 	}
 
@@ -238,6 +246,7 @@ func (m *LockManager) RenewLock(req LockRenewal, resp *LockStatus) error {
 
 	log.Debugf("Renewed lock for node %s (lock ID %s, expires in %v)", req.NodeID, req.LockID, m.LeaseTTL)
 	*resp = LockOK
+
 	return nil
 }
 
@@ -250,6 +259,7 @@ func (m *LockManager) ReleaseLock(req LockRelease, resp *LockStatus) error {
 		// Already released or expired
 		log.Debugf("Lock release request from node %s (lock ID %s): already released or expired", req.NodeID, req.LockID)
 		*resp = LockOK
+
 		return nil
 	}
 
@@ -258,11 +268,13 @@ func (m *LockManager) ReleaseLock(req LockRelease, resp *LockStatus) error {
 		// Not the owner or different token, but we still return OK because it's effectively released
 		log.Debugf("Lock release request from node %s (lock ID %s): ownership mismatch, returning OK", req.NodeID, req.LockID)
 		*resp = LockOK
+
 		return nil
 	}
 
 	m.grants.Delete(path)
 	log.Infof("Released lock for node %s (lock ID %s)", req.NodeID, req.LockID)
 	*resp = LockOK
+
 	return nil
 }

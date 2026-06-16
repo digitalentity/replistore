@@ -40,6 +40,7 @@ func (r *handleRegistry) deregister(node *vfs.Node, h *FileHandle) {
 	for i, cand := range hs {
 		if cand == h {
 			hs = append(hs[:i], hs[i+1:]...)
+
 			break
 		}
 	}
@@ -60,5 +61,6 @@ func (r *handleRegistry) forNode(node *vfs.Node) []*FileHandle {
 	}
 	out := make([]*FileHandle, len(hs))
 	copy(out, hs)
+
 	return out
 }

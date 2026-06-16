@@ -300,6 +300,7 @@ func TestOffsetWriter_Write(t *testing.T) {
 func mockTombstoneTree(b *bmock.MockBackend, tombs map[string]int64) {
 	if len(tombs) == 0 {
 		b.On("Walk", mock.Anything, ".replistore/meta", mock.Anything).Return(os.ErrNotExist)
+
 		return
 	}
 	b.On("Walk", mock.Anything, ".replistore/meta", mock.Anything).Run(func(args mock.Arguments) {
@@ -338,6 +339,7 @@ func newTombstoneTestManager(b1, b2 *bmock.MockBackend) *RepairManager {
 		WriteQuorum:       1,
 		Selector:          vfs.NewFirstSelector(nil),
 	}
+
 	return NewRepairManager(fs, time.Hour, 1)
 }
 

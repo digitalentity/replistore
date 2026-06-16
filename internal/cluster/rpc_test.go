@@ -119,8 +119,10 @@ func TestLockManager_SweepExpiredGrants(t *testing.T) {
 		n := 0
 		m.grants.Range(func(_, _ any) bool {
 			n++
+
 			return true
 		})
+
 		return n
 	}
 

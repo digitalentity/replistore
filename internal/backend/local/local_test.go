@@ -71,6 +71,7 @@ func TestLocalBackend_Lifecycle(t *testing.T) {
 	walked := map[string]bool{}
 	err = b.Walk(ctx, ".", func(path string, info backend.FileInfo) error {
 		walked[path] = info.IsDir
+
 		return nil
 	})
 	require.NoError(t, err, "walk failed")

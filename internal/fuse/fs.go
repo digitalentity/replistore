@@ -73,13 +73,16 @@ func (f *RepliFS) Root() (fs.Node, error) {
 func (f *RepliFS) acquireLock(ctx context.Context, path string) (*vfs.DistributedLock, error) {
 	if f.LockManager == nil || f.Discovery == nil {
 		f.pathLogger(path).Debug("Distributed locking is disabled or not configured")
+
 		return nil, nil //nolint:nilnil // Locking disabled or not configured
 	}
 	lock := vfs.NewDistributedLock(path, f.LockManager, f.Discovery)
 	if err := lock.Acquire(ctx); err != nil {
 		f.pathLogger(path).Errorf("Failed to acquire distributed lock: %v", err)
+
 		return nil, err
 	}
+
 	return lock, nil
 }
 
@@ -161,6 +164,7 @@ func (f *RepliFS) writeTombstones(ctx context.Context, path string, sc vfs.Sidec
 			defer wg.Done()
 			if err := vfs.WriteTombstone(ctx, b, path, sc); err != nil {
 				f.pathLogger(path).Warnf("Failed to write tombstone (gen %d) on backend %s: %v", sc.Gen, bName, err)
+
 				return
 			}
 			mu.Lock()
@@ -169,6 +173,7 @@ func (f *RepliFS) writeTombstones(ctx context.Context, path string, sc vfs.Sidec
 		}(bName, b)
 	}
 	wg.Wait()
+
 	return successes
 }
 
@@ -195,6 +200,7 @@ func (f *RepliFS) maxTombstoneGen(ctx context.Context, path string) int64 {
 				if !errors.Is(err, os.ErrNotExist) && !os.IsNotExist(err) {
 					f.pathLogger(path).Debugf("Metadata read on %s failed: %v", bName, err)
 				}
+
 				return
 			}
 			if !sc.Deleted {
@@ -209,6 +215,7 @@ func (f *RepliFS) maxTombstoneGen(ctx context.Context, path string) int64 {
 		}(bName, b)
 	}
 	wg.Wait()
+
 	return maxGen
 }
 
@@ -218,6 +225,7 @@ func (f *RepliFS) allBackendNames() []string {
 	for name := range f.Backends {
 		res = append(res, name)
 	}
+
 	return res
 }
 
@@ -226,6 +234,7 @@ func (f *RepliFS) getBackendList() []backend.Backend {
 	for _, b := range f.Backends {
 		res = append(res, b)
 	}
+
 	return res
 }
 
@@ -241,6 +250,7 @@ func (d *Dir) Attr(ctx context.Context, a *fuse.Attr) error {
 	a.Mode = d.node.Meta.Mode
 	a.Size = uint64(d.node.Meta.Size)
 	a.Mtime = d.node.Meta.ModTime
+
 	return nil
 }
 
@@ -278,6 +288,7 @@ func (d *Dir) Lookup(ctx context.Context, name string) (fs.Node, error) {
 	if child.Meta.IsDir {
 		return &Dir{fs: d.fs, node: child}, nil
 	}
+
 	return &File{fs: d.fs, node: child}, nil
 }
 
@@ -299,6 +310,7 @@ func (d *Dir) fetchChild(ctx context.Context, childPath string, cached *vfs.Node
 			if ok {
 				d.fs.Cache.Evict(childPath)
 			}
+
 			return nil, syscall.ENOENT
 		}
 		d.fs.pathLogger(childPath).Errorf("Lazy fetch/Revalidate failed: %v", err)
@@ -311,6 +323,7 @@ func (d *Dir) fetchChild(ctx context.Context, childPath string, cached *vfs.Node
 		node = cached
 	}
 	d.fs.pathLogger(childPath).Debug("Lazy fetch/Revalidate success")
+
 	return node, nil
 }
 
@@ -332,6 +345,7 @@ func (d *Dir) mkdirOnBackend(ctx context.Context, name string, b backend.Backend
 
 	if !os.IsExist(err) && !errors.Is(err, os.ErrExist) {
 		d.fs.pathLogger(path).Warnf("Failed to create directory on %s: %v", name, err)
+
 		return false, false
 	}
 
@@ -340,12 +354,15 @@ func (d *Dir) mkdirOnBackend(ctx context.Context, name string, b backend.Backend
 	info, statErr := b.Stat(ctx, path)
 	if statErr != nil {
 		d.fs.pathLogger(path).Warnf("Failed to stat existing path on %s: %v", name, statErr)
+
 		return false, false
 	}
 	if !info.IsDir {
 		d.fs.pathLogger(path).Warnf("Path already exists on %s but is not a directory", name)
+
 		return false, false
 	}
+
 	return false, true
 }
 
@@ -390,6 +407,7 @@ func (d *Dir) ReadDirAll(ctx context.Context) ([]fuse.Dirent, error) {
 		}
 		res = append(res, de)
 	}
+
 	return res, nil
 }
 
@@ -398,6 +416,7 @@ func (d *Dir) Create(ctx context.Context, req *fuse.CreateRequest, resp *fuse.Cr
 	d.node.Mu.Lock()
 	if _, ok := d.node.Children[req.Name]; ok {
 		d.node.Mu.Unlock()
+
 		return nil, nil, syscall.EEXIST
 	}
 
@@ -441,6 +460,7 @@ func (d *Dir) Create(ctx context.Context, req *fuse.CreateRequest, resp *fuse.Cr
 			lock.Release()
 		}
 		d.fs.pathLogger(path).Errorf("Failed to create file: no healthy backends selected")
+
 		return nil, nil, syscall.EIO
 	}
 
@@ -471,15 +491,18 @@ func (d *Dir) Create(ctx context.Context, req *fuse.CreateRequest, resp *fuse.Cr
 					mu.Lock()
 					existsCount++
 					mu.Unlock()
+
 					return nil
 				}
 				d.fs.pathLogger(path).Warnf("Failed to create file on backend %s: %v", bName, err)
+
 				return nil // Don't fail the whole operation yet
 			}
 			mu.Lock()
 			h.backends[bName] = sf
 			successfulBackends = append(successfulBackends, bName)
 			mu.Unlock()
+
 			return nil
 		})
 	}
@@ -495,9 +518,11 @@ func (d *Dir) Create(ctx context.Context, req *fuse.CreateRequest, resp *fuse.Cr
 				d.fs.pathLogger(path).Warnf("FetchEntry after create conflict failed: %v", ferr)
 			}
 			d.fs.pathLogger(path).Warn("Create conflict: file already exists on backend(s)")
+
 			return nil, nil, syscall.EEXIST
 		}
 		d.fs.pathLogger(path).Errorf("Failed to create file: write quorum not met (%d/%d)", len(successfulBackends), d.fs.WriteQuorum)
+
 		return nil, nil, fmt.Errorf("could not reach write quorum: %d/%d", len(successfulBackends), d.fs.WriteQuorum)
 	}
 
@@ -537,6 +562,7 @@ func (d *Dir) Create(ctx context.Context, req *fuse.CreateRequest, resp *fuse.Cr
 		_ = h.Release(ctx, nil)
 		d.removeCreated(ctx, path, toRemove)
 		d.fs.pathLogger(path).Warn("Create conflict: another operation won the race, cleaning up local orphans")
+
 		return nil, nil, syscall.EEXIST
 	}
 
@@ -558,6 +584,7 @@ func (d *Dir) Create(ctx context.Context, req *fuse.CreateRequest, resp *fuse.Cr
 	d.fs.handles.register(child, h)
 
 	d.fs.pathLogger(path).Infof("Successfully created file with generation %d", newGen)
+
 	return h.file, h, nil
 }
 
@@ -580,6 +607,7 @@ func (d *Dir) Mkdir(ctx context.Context, req *fuse.MkdirRequest) (fs.Node, error
 	d.node.Mu.Lock()
 	if _, ok := d.node.Children[req.Name]; ok {
 		d.node.Mu.Unlock()
+
 		return nil, syscall.EEXIST
 	}
 	parentPath := d.node.Meta.Path
@@ -626,6 +654,7 @@ func (d *Dir) Mkdir(ctx context.Context, req *fuse.MkdirRequest) (fs.Node, error
 			}
 			satisfiedOn = append(satisfiedOn, name)
 			mu.Unlock()
+
 			return nil
 		})
 	}
@@ -637,6 +666,7 @@ func (d *Dir) Mkdir(ctx context.Context, req *fuse.MkdirRequest) (fs.Node, error
 			_ = d.fs.Backends[bName].Remove(ctx, path)
 		}
 		d.fs.pathLogger(path).Errorf("Failed to create directory: write quorum not met (%d/%d)", len(satisfiedOn), d.fs.WriteQuorum)
+
 		return nil, fmt.Errorf("could not reach write quorum for mkdir: %d/%d", len(satisfiedOn), d.fs.WriteQuorum)
 	}
 
@@ -649,6 +679,7 @@ func (d *Dir) Mkdir(ctx context.Context, req *fuse.MkdirRequest) (fs.Node, error
 	// Check conflict
 	if _, ok := d.node.Children[req.Name]; ok {
 		d.fs.pathLogger(path).Warn("Mkdir conflict: directory already exists in cache")
+
 		return nil, syscall.EEXIST
 	}
 
@@ -665,6 +696,7 @@ func (d *Dir) Mkdir(ctx context.Context, req *fuse.MkdirRequest) (fs.Node, error
 		Children: make(map[string]*vfs.Node),
 	}
 	d.node.Children[req.Name] = child
+
 	return &Dir{fs: d.fs, node: child}, nil
 }
 
@@ -733,6 +765,7 @@ func (d *Dir) Remove(ctx context.Context, req *fuse.RemoveRequest) error {
 	d.fs.pathLogger(path).Infof("Removing path: writing tombstone gen %d to all backends (quorum: %d)", tombGen, d.fs.WriteQuorum)
 	if successes := d.fs.writeTombstones(ctx, path, tomb, d.fs.allBackendNames()); successes < d.fs.WriteQuorum {
 		d.fs.pathLogger(path).Errorf("Failed to remove: tombstone write quorum not met (%d/%d)", successes, d.fs.WriteQuorum)
+
 		return fmt.Errorf("could not reach write quorum for tombstone: %d/%d", successes, d.fs.WriteQuorum)
 	}
 
@@ -752,6 +785,7 @@ func (d *Dir) Remove(ctx context.Context, req *fuse.RemoveRequest) error {
 			} else {
 				d.fs.pathLogger(path).Errorf("Failed to remove from %s: %v", bName, err)
 			}
+
 			return nil
 		})
 	}
@@ -759,6 +793,7 @@ func (d *Dir) Remove(ctx context.Context, req *fuse.RemoveRequest) error {
 
 	if successes < d.fs.WriteQuorum {
 		d.fs.pathLogger(path).Errorf("Failed to remove: file deletion quorum not met (%d/%d)", successes, d.fs.WriteQuorum)
+
 		return fmt.Errorf("could not reach write quorum for remove: %d/%d", successes, d.fs.WriteQuorum)
 	}
 
@@ -835,6 +870,7 @@ func (d *Dir) clearRenameTarget(ctx context.Context, targetDir *Dir, name, newPa
 			} else {
 				d.fs.pathLogger(newPath).Errorf("Failed to remove rename target on %s: %v", bName, err)
 			}
+
 			return nil
 		})
 	}
@@ -874,11 +910,13 @@ func (d *Dir) collectDescendants(ctx context.Context, oldPath string, backends [
 					descants[rel] = true
 					mu.Unlock()
 				}
+
 				return nil
 			})
 			if err != nil && !os.IsNotExist(err) && !errors.Is(err, os.ErrNotExist) {
 				return err
 			}
+
 			return nil
 		})
 	}
@@ -892,6 +930,7 @@ func (d *Dir) collectDescendants(ctx context.Context, oldPath string, backends [
 		res = append(res, rel)
 	}
 	slices.Sort(res)
+
 	return res, nil
 }
 
@@ -1032,6 +1071,7 @@ func (d *Dir) Rename(ctx context.Context, req *fuse.RenameRequest, newDir fs.Nod
 				failures = append(failures, bName)
 				lastErr = err
 			}
+
 			return nil
 		})
 	}
@@ -1047,6 +1087,7 @@ func (d *Dir) Rename(ctx context.Context, req *fuse.RenameRequest, newDir fs.Nod
 		if lastErr != nil {
 			return lastErr
 		}
+
 		return syscall.EIO
 	}
 
@@ -1183,6 +1224,7 @@ func (d *Dir) collectDescendantGenerations(ctx context.Context, oldPath string, 
 		}(rel)
 	}
 	wg.Wait()
+
 	return oldDescendantGens
 }
 
@@ -1198,6 +1240,7 @@ func (d *Dir) getDescendantGen(ctx context.Context, path string, backends []stri
 			}
 		}
 	}
+
 	return 0
 }
 
@@ -1213,6 +1256,7 @@ func (f *File) Attr(ctx context.Context, a *fuse.Attr) error {
 	a.Mode = f.node.Meta.Mode
 	a.Size = uint64(f.node.Meta.Size)
 	a.Mtime = f.node.Meta.ModTime
+
 	return nil
 }
 
@@ -1229,6 +1273,7 @@ func (f *File) Fsync(ctx context.Context, req *fuse.FsyncRequest) error {
 				firstErr = err
 			}
 		}
+
 		return firstErr
 	}
 
@@ -1254,6 +1299,7 @@ func (f *File) Fsync(ctx context.Context, req *fuse.FsyncRequest) error {
 				mu.Lock()
 				lastErr = fmt.Errorf("backend %s not found", bName)
 				mu.Unlock()
+
 				return nil
 			}
 
@@ -1262,6 +1308,7 @@ func (f *File) Fsync(ctx context.Context, req *fuse.FsyncRequest) error {
 				mu.Lock()
 				lastErr = err
 				mu.Unlock()
+
 				return nil
 			}
 			defer sf.Close()
@@ -1270,12 +1317,14 @@ func (f *File) Fsync(ctx context.Context, req *fuse.FsyncRequest) error {
 				mu.Lock()
 				lastErr = err
 				mu.Unlock()
+
 				return nil
 			}
 
 			mu.Lock()
 			successes++
 			mu.Unlock()
+
 			return nil
 		})
 	}
@@ -1336,6 +1385,7 @@ func (f *File) Setattr(ctx context.Context, req *fuse.SetattrRequest, resp *fuse
 				failures = append(failures, bName)
 				lastErr = fmt.Errorf("backend %s not found", bName)
 				mu.Unlock()
+
 				return nil
 			}
 			err := b.Truncate(gCtx, path, size)
@@ -1348,6 +1398,7 @@ func (f *File) Setattr(ctx context.Context, req *fuse.SetattrRequest, resp *fuse
 			} else {
 				successes++
 			}
+
 			return nil
 		})
 	}
@@ -1355,6 +1406,7 @@ func (f *File) Setattr(ctx context.Context, req *fuse.SetattrRequest, resp *fuse
 
 	if successes < f.fs.WriteQuorum {
 		f.fs.pathLogger(path).Errorf("Failed to truncate: write quorum not met (%d/%d, last error: %v)", successes, f.fs.WriteQuorum, lastErr)
+
 		return fmt.Errorf("could not reach write quorum during truncate: %d/%d (last error: %w)", successes, f.fs.WriteQuorum, lastErr)
 	}
 	f.fs.pathLogger(path).Debugf("Truncated file to size %d (quorum %d met)", size, successes)
@@ -1467,6 +1519,7 @@ func (f *File) Open(ctx context.Context, req *fuse.OpenRequest, resp *fuse.OpenR
 			if err != nil {
 				f.fs.pathLogger(path).Errorf("Failed to open write file on backend %s: %v", bName, err)
 				_ = h.Release(ctx, nil)
+
 				return nil, err
 			}
 			h.backends[bName] = sf
@@ -1489,6 +1542,7 @@ func (f *File) Open(ctx context.Context, req *fuse.OpenRequest, resp *fuse.OpenR
 
 	h.file = f
 	atomic.AddInt32(&f.node.OpenHandles, 1)
+
 	return h, nil
 }
 
@@ -1503,6 +1557,7 @@ func (f *File) inlineHeal(ctx context.Context, h *FileHandle, path string, backe
 	sourceName, targets, ok := f.selectHealTargets(backends)
 	if !ok {
 		_ = h.Release(ctx, nil)
+
 		return nil, syscall.EIO
 	}
 
@@ -1510,6 +1565,7 @@ func (f *File) inlineHeal(ctx context.Context, h *FileHandle, path string, backe
 	for _, targetName := range targets {
 		if err := f.healCopy(ctx, path, sourceName, targetName); err != nil {
 			_ = h.Release(ctx, nil)
+
 			return nil, err
 		}
 
@@ -1526,6 +1582,7 @@ func (f *File) inlineHeal(ctx context.Context, h *FileHandle, path string, backe
 		backends = append(backends, targetName)
 	}
 	f.fs.pathLogger(path).Info("Inline heal completed")
+
 	return backends, nil
 }
 
@@ -1549,6 +1606,7 @@ func (f *File) selectHealTargets(backends []string) (string, []string, bool) {
 	for _, bName := range backends {
 		if healthyMap[bName] {
 			source = bName
+
 			break
 		}
 	}
@@ -1572,6 +1630,7 @@ func (f *File) selectHealTargets(backends []string) (string, []string, bool) {
 			break
 		}
 	}
+
 	return source, targets, true
 }
 
@@ -1582,6 +1641,7 @@ func (f *File) healCopy(ctx context.Context, path, sourceName, targetName string
 	srcFile, err := sourceBackend.OpenFile(ctx, path, os.O_RDONLY, 0)
 	if err != nil {
 		f.fs.pathLogger(path).Errorf("Inline heal: failed to open source file on %s: %v", sourceName, err)
+
 		return err
 	}
 	defer func() { _ = srcFile.Close() }()
@@ -1594,6 +1654,7 @@ func (f *File) healCopy(ctx context.Context, path, sourceName, targetName string
 	dstFile, err := targetBackend.OpenFile(ctx, path, os.O_CREATE|os.O_TRUNC|os.O_RDWR, mode)
 	if err != nil {
 		f.fs.pathLogger(path).Errorf("Inline heal: failed to create target file on %s: %v", targetName, err)
+
 		return err
 	}
 	defer func() { _ = dstFile.Close() }()
@@ -1616,6 +1677,7 @@ func (f *File) healCopy(ctx context.Context, path, sourceName, targetName string
 	if err := targetBackend.Chtimes(ctx, path, mtime, mtime); err != nil {
 		f.fs.pathLogger(path).Warnf("Failed to preserve mtime on %s: %v", targetName, err)
 	}
+
 	return nil
 }
 
@@ -1647,16 +1709,19 @@ func (f *File) openReadHandle(ctx context.Context, h *FileHandle, path string) e
 		b, ok := f.fs.Backends[bName]
 		if !ok {
 			f.fs.pathLogger(path).Warnf("Backend %s listed is not configured", bName)
+
 			continue
 		}
 		sf, err := b.OpenFile(ctx, path, os.O_RDONLY, 0)
 		if err != nil {
 			f.fs.pathLogger(path).Warnf("Read-only open failed on backend %s: %v", bName, err)
 			lastErr = err
+
 			continue
 		}
 		h.backends[bName] = sf
 		f.fs.pathLogger(path).Debugf("Opened read-only file handle on backends: %v", candidates)
+
 		return nil
 	}
 
@@ -1664,6 +1729,7 @@ func (f *File) openReadHandle(ctx context.Context, h *FileHandle, path string) e
 	if lastErr == nil {
 		return syscall.EIO
 	}
+
 	return lastErr
 }
 
@@ -1687,6 +1753,7 @@ func (h *FileHandle) Read(ctx context.Context, req *fuse.ReadRequest, resp *fuse
 			if !tried[name] {
 				sf = f
 				currentBackendName = name
+
 				break
 			}
 		}
@@ -1697,6 +1764,7 @@ func (h *FileHandle) Read(ctx context.Context, req *fuse.ReadRequest, resp *fuse
 			if !h.openFallbackBackend(ctx, tried) {
 				return syscall.EIO
 			}
+
 			continue
 		}
 
@@ -1717,6 +1785,7 @@ func (h *FileHandle) Read(ctx context.Context, req *fuse.ReadRequest, resp *fuse
 		}
 
 		resp.Data = buf[:n]
+
 		return nil
 	}
 }
@@ -1736,6 +1805,7 @@ func (h *FileHandle) openFallbackBackend(ctx context.Context, tried map[string]b
 		h.mu.Lock()
 		if _, ok := h.backends[bName]; ok {
 			h.mu.Unlock()
+
 			return true
 		}
 		h.mu.Unlock()
@@ -1746,6 +1816,7 @@ func (h *FileHandle) openFallbackBackend(ctx context.Context, tried map[string]b
 			h.mu.Lock()
 			h.backends[bName] = sf
 			h.mu.Unlock()
+
 			return true
 		}
 		// Mark as tried if Open fails too
@@ -1783,6 +1854,7 @@ func (h *FileHandle) Write(ctx context.Context, req *fuse.WriteRequest, resp *fu
 			} else {
 				successes++
 			}
+
 			return nil
 		})
 	}
@@ -1792,6 +1864,7 @@ func (h *FileHandle) Write(ctx context.Context, req *fuse.WriteRequest, resp *fu
 		if len(failures) > 0 {
 			h.cleanupFailedBackends(failures)
 		}
+
 		return fmt.Errorf("could not reach write quorum: %d/%d (last error: %w)", successes, h.file.fs.WriteQuorum, lastErr)
 	}
 
@@ -1896,6 +1969,7 @@ func (h *FileHandle) syncBackends(ctx context.Context) error {
 			} else {
 				successes++
 			}
+
 			return nil
 		})
 	}
@@ -1903,6 +1977,7 @@ func (h *FileHandle) syncBackends(ctx context.Context) error {
 
 	if successes < h.file.fs.WriteQuorum {
 		h.file.fs.pathLogger(h.file.node.Meta.Path).Errorf("Failed to sync: write quorum not met (%d/%d, last error: %v)", successes, h.file.fs.WriteQuorum, lastErr)
+
 		return fmt.Errorf("could not reach write quorum during sync: %d/%d (last error: %w)", successes, h.file.fs.WriteQuorum, lastErr)
 	}
 
@@ -1934,5 +2009,6 @@ func (h *FileHandle) Release(ctx context.Context, req *fuse.ReleaseRequest) erro
 	if h.file != nil {
 		h.file.fs.pathLogger(h.file.node.Meta.Path).Debug("Released file handle")
 	}
+
 	return nil
 }

@@ -46,7 +46,7 @@ linters:
     - nestif
     - nilerr
     - nilnil
-    # - nlreturn
+    - nlreturn
     - noctx
     - nonamedreturns
     - perfsprint

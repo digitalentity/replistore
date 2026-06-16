@@ -67,6 +67,7 @@ const metaDir = ReservedDir + "/meta"
 func MetaPath(path string) string {
 	sum := sha256.Sum256([]byte(path))
 	h := hex.EncodeToString(sum[:])
+
 	return metaDir + "/" + h[0:2] + "/" + h[2:4] + "/" + h + ".json"
 }
 
@@ -108,6 +109,7 @@ func readMetaDoc(ctx context.Context, b backend.Backend, scPath string) (Sidecar
 	if sc.V != sidecarFormatVersion {
 		return Sidecar{}, fmt.Errorf("metadata %s on %s: unsupported format version %d", scPath, b.GetName(), sc.V)
 	}
+
 	return sc, nil
 }
 
@@ -122,8 +124,10 @@ func sidecarGen(ctx context.Context, b backend.Backend, path string) int64 {
 		if !errors.Is(err, os.ErrNotExist) && !os.IsNotExist(err) {
 			logrus.Debugf("vfs: metadata read for %q on %s failed: %v", path, b.GetName(), err)
 		}
+
 		return 0
 	}
+
 	return sc.Gen
 }
 
@@ -133,6 +137,7 @@ func sidecarGen(ctx context.Context, b backend.Backend, path string) int64 {
 // internally.
 func WriteSidecar(ctx context.Context, b backend.Backend, path string, sc Sidecar) error {
 	sc.Deleted = false
+
 	return writeMetaDoc(ctx, b, path, sc)
 }
 
@@ -141,6 +146,7 @@ func WriteSidecar(ctx context.Context, b backend.Backend, path string, sc Sideca
 // is set internally.
 func WriteTombstone(ctx context.Context, b backend.Backend, path string, sc Sidecar) error {
 	sc.Deleted = true
+
 	return writeMetaDoc(ctx, b, path, sc)
 }
 
@@ -167,8 +173,10 @@ func writeMetaDoc(ctx context.Context, b backend.Backend, path string, sc Sideca
 	}
 	if _, err := f.WriteAt(ctx, data, 0); err != nil {
 		_ = f.Close()
+
 		return err
 	}
+
 	return f.Close()
 }
 
@@ -181,6 +189,7 @@ func RemoveMeta(ctx context.Context, b backend.Backend, path string) error {
 	if err == nil || os.IsNotExist(err) || errors.Is(err, os.ErrNotExist) {
 		return nil
 	}
+
 	return err
 }
 

@@ -37,6 +37,7 @@ func (s *RandomSelector) SelectForRead(meta Metadata) string {
 	if len(healthyBackends) == 0 {
 		return ""
 	}
+
 	return healthyBackends[s.r.Intn(len(healthyBackends))]
 }
 
@@ -54,6 +55,7 @@ func (s *FirstSelector) SelectForRead(meta Metadata) string {
 			return b
 		}
 	}
+
 	return ""
 }
 
@@ -67,6 +69,7 @@ func (s *FirstSelector) SelectForWrite(count int, allBackends []string) []string
 			}
 		}
 	}
+
 	return res
 }
 
@@ -95,6 +98,7 @@ func (s *RandomSelector) SelectForWrite(count int, allBackends []string) []strin
 	for i := range count {
 		res[i] = healthyBackends[perm[i]]
 	}
+
 	return res
 }
 
@@ -124,6 +128,7 @@ func (s *SpaceAwareSelector) hasAffinityTag(b backend.Backend) bool {
 			return true
 		}
 	}
+
 	return false
 }
 
@@ -136,6 +141,7 @@ func (s *SpaceAwareSelector) getFreeSpace(name string) uint64 {
 	if err != nil {
 		return 0
 	}
+
 	return space
 }
 
@@ -176,6 +182,7 @@ func (s *SpaceAwareSelector) SelectForRead(meta Metadata) string {
 	if len(fastest) == 0 {
 		return candidates[s.r.Intn(len(candidates))]
 	}
+
 	return fastest[s.r.Intn(len(fastest))]
 }
 
@@ -220,6 +227,7 @@ func (s *SpaceAwareSelector) SelectForWrite(count int, allBackends []string) []s
 			if spaceI != spaceJ {
 				return spaceI > spaceJ
 			}
+
 			return bCold[i] < bCold[j]
 		})
 		topCold := bCold[0]
@@ -245,6 +253,7 @@ func (s *SpaceAwareSelector) SelectForWrite(count int, allBackends []string) []s
 		if spaceI != spaceJ {
 			return spaceI > spaceJ
 		}
+
 		return remaining[i] < remaining[j]
 	})
 

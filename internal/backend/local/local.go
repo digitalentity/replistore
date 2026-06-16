@@ -53,6 +53,7 @@ func init() {
 		} else if tList, ok := options["tags"].([]string); ok {
 			tags = tList
 		}
+
 		return NewLocalBackend(name, path, speed, tags), nil
 	})
 }
@@ -70,6 +71,7 @@ func (b *LocalBackend) GetFreeSpace() (uint64, error) {
 	if err := syscall.Statfs(b.Path, &stat); err != nil {
 		return 0, err
 	}
+
 	return stat.Bavail * uint64(stat.Bsize), nil
 }
 
@@ -89,13 +91,16 @@ func (b *LocalBackend) Connect() error {
 			if err := os.MkdirAll(b.Path, 0755); err != nil {
 				return fmt.Errorf("local backend root path %q does not exist and could not be created: %w", b.Path, err)
 			}
+
 			return nil
 		}
+
 		return fmt.Errorf("local backend root path %q access error: %w", b.Path, err)
 	}
 	if !fi.IsDir() {
 		return fmt.Errorf("local backend root path %q is not a directory", b.Path)
 	}
+
 	return nil
 }
 
@@ -104,12 +109,14 @@ func (b *LocalBackend) Ping(ctx context.Context) error {
 		return err
 	}
 	_, err := os.Stat(b.Path)
+
 	return err
 }
 
 func (b *LocalBackend) resolve(subPath string) string {
 	subPath = strings.ReplaceAll(subPath, "\\", "/")
 	cleaned := filepath.Clean("/" + subPath)
+
 	return filepath.Join(b.Path, cleaned)
 }
 
@@ -136,6 +143,7 @@ func (b *LocalBackend) ReadDir(ctx context.Context, path string) ([]backend.File
 			IsDir:   info.IsDir(),
 		})
 	}
+
 	return results, nil
 }
 
@@ -148,6 +156,7 @@ func (b *LocalBackend) Stat(ctx context.Context, path string) (backend.FileInfo,
 	if err != nil {
 		return backend.FileInfo{}, err
 	}
+
 	return backend.FileInfo{
 		Name:    info.Name(),
 		Size:    info.Size(),
@@ -204,6 +213,7 @@ func (b *LocalBackend) OpenFile(ctx context.Context, path string, flag int, perm
 	if err != nil {
 		return nil, err
 	}
+
 	return &localFile{f}, nil
 }
 
@@ -212,6 +222,7 @@ func (b *LocalBackend) Mkdir(ctx context.Context, path string, perm os.FileMode)
 		return err
 	}
 	realPath := b.resolve(path)
+
 	return os.Mkdir(realPath, perm)
 }
 
@@ -220,6 +231,7 @@ func (b *LocalBackend) MkdirAll(ctx context.Context, path string, perm os.FileMo
 		return err
 	}
 	realPath := b.resolve(path)
+
 	return os.MkdirAll(realPath, perm)
 }
 
@@ -228,6 +240,7 @@ func (b *LocalBackend) Remove(ctx context.Context, path string) error {
 		return err
 	}
 	realPath := b.resolve(path)
+
 	return os.Remove(realPath)
 }
 
@@ -237,6 +250,7 @@ func (b *LocalBackend) Rename(ctx context.Context, oldPath, newPath string) erro
 	}
 	oldRealPath := b.resolve(oldPath)
 	newRealPath := b.resolve(newPath)
+
 	return os.Rename(oldRealPath, newRealPath)
 }
 
@@ -245,6 +259,7 @@ func (b *LocalBackend) Chtimes(ctx context.Context, path string, atime, mtime ti
 		return err
 	}
 	realPath := b.resolve(path)
+
 	return os.Chtimes(realPath, atime, mtime)
 }
 
@@ -253,6 +268,7 @@ func (b *LocalBackend) Truncate(ctx context.Context, path string, size int64) er
 		return err
 	}
 	realPath := b.resolve(path)
+
 	return os.Truncate(realPath, size)
 }
 
@@ -264,6 +280,7 @@ func (f *localFile) ReadAt(ctx context.Context, b []byte, off int64) (int, error
 	if err := ctx.Err(); err != nil {
 		return 0, err
 	}
+
 	return f.File.ReadAt(b, off)
 }
 
@@ -271,6 +288,7 @@ func (f *localFile) WriteAt(ctx context.Context, b []byte, off int64) (int, erro
 	if err := ctx.Err(); err != nil {
 		return 0, err
 	}
+
 	return f.File.WriteAt(b, off)
 }
 
@@ -278,6 +296,7 @@ func (f *localFile) Sync(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+
 	return f.File.Sync()
 }
 

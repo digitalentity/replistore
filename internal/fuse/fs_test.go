@@ -32,6 +32,7 @@ type sidecarCapture struct {
 func (c *sidecarCapture) get() (vfs.Sidecar, int) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+
 	return c.last, c.count
 }
 
@@ -49,6 +50,7 @@ func expectReservedWrite(b *bmock.MockBackend, reservedPath string) *sidecarCapt
 		_ = json.Unmarshal(args.Get(1).([]byte), &c.last)
 	}).Return(0, nil).Maybe()
 	f.On("Close").Return(nil).Maybe()
+
 	return c
 }
 
