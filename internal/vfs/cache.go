@@ -119,28 +119,36 @@ func NewCache() *Cache {
 // The node becomes a directory and the file's backend is still unioned into
 // the presence set, so namespace operations fan out everywhere the path is
 // occupied. A warning is logged per occurrence.
+// mergeDirMeta merges a node where at least one side is a directory. Directory
+// presence masks files (the directory wins any type conflict), backend names
+// are unioned into the presence set, and ModTime is only bumped forward for
+// display. See mergeMeta for the full rationale.
+func mergeDirMeta(existing *Metadata, incoming Metadata, incomingBackends []string) {
+	if existing.IsDir != incoming.IsDir {
+		p := existing.Path
+		if p == "" {
+			p = incoming.Path
+		}
+		if p == "" {
+			p = existing.Name
+		}
+		logrus.WithField("component", "vfs").WithField("path", p).Warn("Type conflict: file on some backends, directory on others; treating as directory")
+	}
+	if !existing.IsDir {
+		// Directory wins the type conflict: convert the node to a directory.
+		existing.IsDir = true
+		existing.Size = 0
+		existing.Mode = incoming.Mode
+	}
+	existing.Backends = unionBackends(existing.Backends, incomingBackends)
+	if incoming.ModTime.After(existing.ModTime) {
+		existing.ModTime = incoming.ModTime
+	}
+}
+
 func mergeMeta(existing *Metadata, incoming Metadata, incomingBackends []string) {
 	if existing.IsDir || incoming.IsDir {
-		if existing.IsDir != incoming.IsDir {
-			p := existing.Path
-			if p == "" {
-				p = incoming.Path
-			}
-			if p == "" {
-				p = existing.Name
-			}
-			logrus.WithField("component", "vfs").WithField("path", p).Warn("Type conflict: file on some backends, directory on others; treating as directory")
-		}
-		if !existing.IsDir {
-			// Directory wins the type conflict: convert the node to a directory.
-			existing.IsDir = true
-			existing.Size = 0
-			existing.Mode = incoming.Mode
-		}
-		existing.Backends = unionBackends(existing.Backends, incomingBackends)
-		if incoming.ModTime.After(existing.ModTime) {
-			existing.ModTime = incoming.ModTime
-		}
+		mergeDirMeta(existing, incoming, incomingBackends)
 		return
 	}
 

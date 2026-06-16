@@ -92,6 +92,7 @@ func (f *RepliFS) acquireLock(ctx context.Context, path string) (*vfs.Distribute
 // since an operation on it just failed), in which case the stale replica
 // survives and may resurface via background sync. A tombstone mechanism
 // (REVIEW.md C6) is the durable fix for that.
+//
 //nolint:contextcheck // runs asynchronously in the background
 func (f *RepliFS) removeStaleReplica(path string, backendName string) {
 	b, ok := f.Backends[backendName]
@@ -262,31 +263,10 @@ func (d *Dir) Lookup(ctx context.Context, name string) (fs.Node, error) {
 	}
 
 	if !ok || stale {
-		if !ok {
-			d.fs.pathLogger(childPath).Debug("Lazy fetching metadata")
-		} else {
-			d.fs.pathLogger(childPath).Debug("Re-validating stale metadata")
-		}
-		node, err := d.fs.Cache.FetchEntry(ctx, childPath, d.fs.getBackendList())
+		node, err := d.fetchChild(ctx, childPath, child, ok)
 		if err != nil {
-			if errors.Is(err, os.ErrNotExist) {
-				d.fs.pathLogger(childPath).Debug("Lazy fetch/Revalidate: child not found on any backend")
-				if ok {
-					d.fs.Cache.Evict(childPath)
-				}
-				return nil, syscall.ENOENT
-			}
-			d.fs.pathLogger(childPath).Errorf("Lazy fetch/Revalidate failed: %v", err)
-			if ok {
-				d.fs.pathLogger(childPath).Warnf("Using stale cached entry for %s", childPath)
-				node = child
-			} else {
-				// ErrUnavailable or any other error: we don't know whether the
-				// entry exists, so don't lie with ENOENT.
-				return nil, syscall.EIO
-			}
+			return nil, err
 		}
-		d.fs.pathLogger(childPath).Debug("Lazy fetch/Revalidate success")
 		child = node
 	}
 
@@ -294,6 +274,74 @@ func (d *Dir) Lookup(ctx context.Context, name string) (fs.Node, error) {
 		return &Dir{fs: d.fs, node: child}, nil
 	}
 	return &File{fs: d.fs, node: child}, nil
+}
+
+// fetchChild lazily fetches or revalidates a child's metadata. cached is the
+// existing cache node (may be nil) and ok reports whether it was cached. On a
+// transient backend failure it falls back to the stale cached node rather than
+// reporting a misleading ENOENT.
+func (d *Dir) fetchChild(ctx context.Context, childPath string, cached *vfs.Node, ok bool) (*vfs.Node, error) {
+	if ok {
+		d.fs.pathLogger(childPath).Debug("Re-validating stale metadata")
+	} else {
+		d.fs.pathLogger(childPath).Debug("Lazy fetching metadata")
+	}
+
+	node, err := d.fs.Cache.FetchEntry(ctx, childPath, d.fs.getBackendList())
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			d.fs.pathLogger(childPath).Debug("Lazy fetch/Revalidate: child not found on any backend")
+			if ok {
+				d.fs.Cache.Evict(childPath)
+			}
+			return nil, syscall.ENOENT
+		}
+		d.fs.pathLogger(childPath).Errorf("Lazy fetch/Revalidate failed: %v", err)
+		if !ok {
+			// ErrUnavailable or any other error: we don't know whether the
+			// entry exists, so don't lie with ENOENT.
+			return nil, syscall.EIO
+		}
+		d.fs.pathLogger(childPath).Warnf("Using stale cached entry for %s", childPath)
+		node = cached
+	}
+	d.fs.pathLogger(childPath).Debug("Lazy fetch/Revalidate success")
+	return node, nil
+}
+
+// mkdirOnBackend creates path on a single backend. created reports whether this
+// call created the directory (a rollback candidate); satisfied reports whether
+// the directory is present afterward (counted toward quorum). A backend failure
+// is logged and yields satisfied=false rather than failing the whole operation.
+func (d *Dir) mkdirOnBackend(ctx context.Context, name string, b backend.Backend, path, parentPath string, mode os.FileMode) (bool, bool) {
+	if parentPath != "" {
+		if err := b.MkdirAll(ctx, parentPath, 0755); err != nil {
+			d.fs.pathLogger(path).Warnf("Failed to MkdirAll parent %s on backend %s: %v", parentPath, name, err)
+		}
+	}
+
+	err := b.Mkdir(ctx, path, mode)
+	if err == nil {
+		return true, true
+	}
+
+	if !os.IsExist(err) && !errors.Is(err, os.ErrExist) {
+		d.fs.pathLogger(path).Warnf("Failed to create directory on %s: %v", name, err)
+		return false, false
+	}
+
+	// The directory may already exist on this backend (e.g. created by another
+	// cluster node). Verify it really is a directory.
+	info, statErr := b.Stat(ctx, path)
+	if statErr != nil {
+		d.fs.pathLogger(path).Warnf("Failed to stat existing path on %s: %v", name, statErr)
+		return false, false
+	}
+	if !info.IsDir {
+		d.fs.pathLogger(path).Warnf("Path already exists on %s but is not a directory", name)
+		return false, false
+	}
+	return false, true
 }
 
 func (d *Dir) ReadDirAll(ctx context.Context) ([]fuse.Dirent, error) {
@@ -563,35 +611,14 @@ func (d *Dir) Mkdir(ctx context.Context, req *fuse.MkdirRequest) (fs.Node, error
 	d.fs.pathLogger(path).Infof("Creating directory on all backends (quorum: %d)", d.fs.WriteQuorum)
 	for name, b := range d.fs.Backends {
 		g.Go(func() error {
-			if parentPath != "" {
-				if err := b.MkdirAll(gCtx, parentPath, 0755); err != nil {
-					d.fs.pathLogger(path).Warnf("Failed to MkdirAll parent %s on backend %s: %v", parentPath, name, err)
-				}
-			}
-			err := b.Mkdir(gCtx, path, req.Mode)
-			if err != nil {
-				if os.IsExist(err) || errors.Is(err, os.ErrExist) {
-					// The directory may already exist on this backend (e.g. created
-					// by another cluster node). Verify it really is a directory.
-					info, statErr := b.Stat(gCtx, path)
-					if statErr != nil {
-						d.fs.pathLogger(path).Warnf("Failed to stat existing path on %s: %v", name, statErr)
-						return nil
-					}
-					if !info.IsDir {
-						d.fs.pathLogger(path).Warnf("Path already exists on %s but is not a directory", name)
-						return nil
-					}
-					mu.Lock()
-					satisfiedOn = append(satisfiedOn, name)
-					mu.Unlock()
-					return nil
-				}
-				d.fs.pathLogger(path).Warnf("Failed to create directory on %s: %v", name, err)
-				return nil // Don't fail the whole operation if one backend fails
+			created, satisfied := d.mkdirOnBackend(gCtx, name, b, path, parentPath, req.Mode)
+			if !satisfied {
+				return nil
 			}
 			mu.Lock()
-			createdOn = append(createdOn, name)
+			if created {
+				createdOn = append(createdOn, name)
+			}
 			satisfiedOn = append(satisfiedOn, name)
 			mu.Unlock()
 			return nil
@@ -1303,115 +1330,9 @@ func (f *File) Open(ctx context.Context, req *fuse.OpenRequest, resp *fuse.OpenR
 		copy(backends, f.node.Meta.Backends)
 		f.node.Mu.RUnlock()
 
-		if len(backends) < f.fs.ReplicationFactor {
-			allBackendNames := make([]string, 0, len(f.fs.Backends))
-			for name := range f.fs.Backends {
-				allBackendNames = append(allBackendNames, name)
-			}
-
-			healthyBackends := f.fs.Selector.SelectForWrite(f.fs.ReplicationFactor, allBackendNames)
-
-			healthyMap := make(map[string]bool)
-			for _, hb := range healthyBackends {
-				healthyMap[hb] = true
-			}
-
-			// Find if there is at least one healthy backend that currently contains the file (source backend)
-			var sourceBackendName string
-			for _, bName := range backends {
-				if healthyMap[bName] {
-					sourceBackendName = bName
-					break
-				}
-			}
-
-			if sourceBackendName == "" {
-				_ = h.Release(ctx, nil)
-				return nil, syscall.EIO
-			}
-
-			// Find target backends (healthy backends that do not currently have the file) up to the replication factor.
-			currentBackendsMap := make(map[string]bool)
-			for _, bName := range backends {
-				currentBackendsMap[bName] = true
-			}
-
-			var targetBackends []string
-			for _, hb := range healthyBackends {
-				if !currentBackendsMap[hb] {
-					targetBackends = append(targetBackends, hb)
-					// Stop if we have reached the replication factor in total (existing backends + new targets)
-					if len(backends)+len(targetBackends) == f.fs.ReplicationFactor {
-						break
-					}
-				}
-			}
-
-			f.fs.pathLogger(path).Infof("File is degraded (%d/%d backends); starting inline heal from %s to target backends: %v", len(backends), f.fs.ReplicationFactor, sourceBackendName, targetBackends)
-			// For each target backend:
-			for _, targetName := range targetBackends {
-				sourceBackend := f.fs.Backends[sourceBackendName]
-				srcFile, err := sourceBackend.OpenFile(ctx, path, os.O_RDONLY, 0)
-				if err != nil {
-					f.fs.pathLogger(path).Errorf("Inline heal: failed to open source file on %s: %v", sourceBackendName, err)
-					_ = h.Release(ctx, nil)
-					return nil, err
-				}
-
-				f.node.Mu.RLock()
-				mode := f.node.Meta.Mode
-				f.node.Mu.RUnlock()
-
-				targetBackend := f.fs.Backends[targetName]
-				dstFile, err := targetBackend.OpenFile(ctx, path, os.O_CREATE|os.O_TRUNC|os.O_RDWR, mode)
-				if err != nil {
-					f.fs.pathLogger(path).Errorf("Inline heal: failed to create target file on %s: %v", targetName, err)
-					_ = srcFile.Close()
-					_ = h.Release(ctx, nil)
-					return nil, err
-				}
-
-				// Copy the data from the source file to the target file.
-				// Content checksums are deliberately not computed here
-				// (unlike RepairManager.repairNode): the post-heal generation
-				// bump below blanks Sidecar.Sum anyway, since the write
-				// session is about to mutate the content.
-				reader := &offsetReader{ctx: ctx, f: srcFile}
-				writer := &offsetWriter{ctx: ctx, f: dstFile}
-				if _, err := io.Copy(writer, reader); err != nil {
-					_ = srcFile.Close()
-					_ = dstFile.Close()
-					_ = h.Release(ctx, nil)
-					return nil, err
-				}
-
-				_ = srcFile.Close()
-				_ = dstFile.Close()
-
-				// Preserve the source replica's mtime on the destination so
-				// the replicas compare as the same version during
-				// reconciliation (see RepairManager.repairNode).
-				f.node.Mu.RLock()
-				cachedModTime := f.node.Meta.ModTime
-				f.node.Mu.RUnlock()
-				mtime := sourceModTime(ctx, sourceBackend, path, cachedModTime)
-				if err := targetBackend.Chtimes(ctx, path, mtime, mtime); err != nil {
-					f.fs.pathLogger(path).Warnf("Failed to preserve mtime on %s: %v", targetName, err)
-				}
-
-				// Update the cache node's metadata: acquire f.node.Mu.Lock(), append the target backend name to f.node.Meta.Backends if not already present, and unlock.
-				f.node.Mu.Lock()
-				found := slices.Contains(f.node.Meta.Backends, targetName)
-				if !found {
-					f.node.Meta.Backends = append(f.node.Meta.Backends, targetName)
-				}
-				f.node.Mu.Unlock()
-
-				f.fs.pathLogger(path).Infof("Inline heal: successfully replicated to backend %s", targetName)
-				// Update the local backends slice variable to include the new backend so that it is opened for writing by the subsequent loop.
-				backends = append(backends, targetName)
-			}
-			f.fs.pathLogger(path).Info("Inline heal completed")
+		backends, err = f.inlineHeal(ctx, h, path, backends)
+		if err != nil {
+			return nil, err
 		}
 
 		// Generation bump: exactly once per write session, under the path and
@@ -1430,52 +1351,9 @@ func (f *File) Open(ctx context.Context, req *fuse.OpenRequest, resp *fuse.OpenR
 	// Unlock I/O: Open outside of lock (already done since we RUnlocked above)
 
 	if req.Flags.IsReadOnly() {
-		f.node.Mu.RLock()
-		meta := f.node.Meta
-		f.node.Mu.RUnlock()
-
-		// Candidate order: the selector's pick first (health-aware/random
-		// placement), then any remaining replicas as listed in the metadata.
-		var candidates []string
-		if bName := f.fs.Selector.SelectForRead(meta); bName != "" {
-			candidates = append(candidates, bName)
+		if err := f.openReadHandle(ctx, h, path); err != nil {
+			return nil, err
 		}
-		for _, bName := range meta.Backends {
-			if len(candidates) > 0 && bName == candidates[0] {
-				continue
-			}
-			candidates = append(candidates, bName)
-		}
-		if len(candidates) == 0 {
-			return nil, syscall.EIO
-		}
-
-		var lastErr error
-		opened := false
-		for _, bName := range candidates {
-			b, ok := f.fs.Backends[bName]
-			if !ok {
-				f.fs.pathLogger(path).Warnf("Backend %s listed is not configured", bName)
-				continue
-			}
-			sf, err := b.OpenFile(ctx, path, os.O_RDONLY, 0)
-			if err != nil {
-				f.fs.pathLogger(path).Warnf("Read-only open failed on backend %s: %v", bName, err)
-				lastErr = err
-				continue
-			}
-			h.backends[bName] = sf
-			opened = true
-			break
-		}
-		if !opened {
-			f.fs.pathLogger(path).Errorf("Failed to open read-only file on any backend")
-			if lastErr == nil {
-				return nil, syscall.EIO
-			}
-			return nil, lastErr
-		}
-		f.fs.pathLogger(path).Debugf("Opened read-only file handle on backends: %v", candidates)
 	} else {
 		for _, bName := range backends {
 			b := f.fs.Backends[bName]
@@ -1506,6 +1384,181 @@ func (f *File) Open(ctx context.Context, req *fuse.OpenRequest, resp *fuse.OpenR
 	h.file = f
 	atomic.AddInt32(&f.node.OpenHandles, 1)
 	return h, nil
+}
+
+// inlineHeal replicates a degraded file to additional healthy backends, up to
+// the replication factor, before a write session begins. It returns the
+// updated backend list. On error it releases h and returns.
+func (f *File) inlineHeal(ctx context.Context, h *FileHandle, path string, backends []string) ([]string, error) {
+	if len(backends) >= f.fs.ReplicationFactor {
+		return backends, nil
+	}
+
+	sourceName, targets, ok := f.selectHealTargets(backends)
+	if !ok {
+		_ = h.Release(ctx, nil)
+		return nil, syscall.EIO
+	}
+
+	f.fs.pathLogger(path).Infof("File is degraded (%d/%d backends); starting inline heal from %s to target backends: %v", len(backends), f.fs.ReplicationFactor, sourceName, targets)
+	for _, targetName := range targets {
+		if err := f.healCopy(ctx, path, sourceName, targetName); err != nil {
+			_ = h.Release(ctx, nil)
+			return nil, err
+		}
+
+		// Update the cache node's metadata: append the target backend name if
+		// not already present.
+		f.node.Mu.Lock()
+		if !slices.Contains(f.node.Meta.Backends, targetName) {
+			f.node.Meta.Backends = append(f.node.Meta.Backends, targetName)
+		}
+		f.node.Mu.Unlock()
+
+		f.fs.pathLogger(path).Infof("Inline heal: successfully replicated to backend %s", targetName)
+		// Include the new backend so it is opened for writing below.
+		backends = append(backends, targetName)
+	}
+	f.fs.pathLogger(path).Info("Inline heal completed")
+	return backends, nil
+}
+
+// selectHealTargets picks a healthy source replica that holds the file and the
+// healthy target backends that do not, up to the replication factor. ok is
+// false when no healthy source replica exists.
+func (f *File) selectHealTargets(backends []string) (string, []string, bool) {
+	allBackendNames := make([]string, 0, len(f.fs.Backends))
+	for name := range f.fs.Backends {
+		allBackendNames = append(allBackendNames, name)
+	}
+
+	healthyBackends := f.fs.Selector.SelectForWrite(f.fs.ReplicationFactor, allBackendNames)
+
+	healthyMap := make(map[string]bool)
+	for _, hb := range healthyBackends {
+		healthyMap[hb] = true
+	}
+
+	var source string
+	for _, bName := range backends {
+		if healthyMap[bName] {
+			source = bName
+			break
+		}
+	}
+	if source == "" {
+		return "", nil, false
+	}
+
+	currentBackendsMap := make(map[string]bool)
+	for _, bName := range backends {
+		currentBackendsMap[bName] = true
+	}
+
+	var targets []string
+	for _, hb := range healthyBackends {
+		if currentBackendsMap[hb] {
+			continue
+		}
+		targets = append(targets, hb)
+		// Stop once existing plus new targets reach the replication factor.
+		if len(backends)+len(targets) == f.fs.ReplicationFactor {
+			break
+		}
+	}
+	return source, targets, true
+}
+
+// healCopy replicates path's content from the source backend to the target
+// backend and preserves the source replica's mtime.
+func (f *File) healCopy(ctx context.Context, path, sourceName, targetName string) error {
+	sourceBackend := f.fs.Backends[sourceName]
+	srcFile, err := sourceBackend.OpenFile(ctx, path, os.O_RDONLY, 0)
+	if err != nil {
+		f.fs.pathLogger(path).Errorf("Inline heal: failed to open source file on %s: %v", sourceName, err)
+		return err
+	}
+	defer func() { _ = srcFile.Close() }()
+
+	f.node.Mu.RLock()
+	mode := f.node.Meta.Mode
+	f.node.Mu.RUnlock()
+
+	targetBackend := f.fs.Backends[targetName]
+	dstFile, err := targetBackend.OpenFile(ctx, path, os.O_CREATE|os.O_TRUNC|os.O_RDWR, mode)
+	if err != nil {
+		f.fs.pathLogger(path).Errorf("Inline heal: failed to create target file on %s: %v", targetName, err)
+		return err
+	}
+	defer func() { _ = dstFile.Close() }()
+
+	// Content checksums are deliberately not computed here (unlike
+	// RepairManager.repairNode): the post-heal generation bump in Open blanks
+	// Sidecar.Sum anyway, since the write session is about to mutate content.
+	reader := &offsetReader{ctx: ctx, f: srcFile}
+	writer := &offsetWriter{ctx: ctx, f: dstFile}
+	if _, err := io.Copy(writer, reader); err != nil {
+		return err
+	}
+
+	// Preserve the source replica's mtime on the destination so the replicas
+	// compare as the same version during reconciliation.
+	f.node.Mu.RLock()
+	cachedModTime := f.node.Meta.ModTime
+	f.node.Mu.RUnlock()
+	mtime := sourceModTime(ctx, sourceBackend, path, cachedModTime)
+	if err := targetBackend.Chtimes(ctx, path, mtime, mtime); err != nil {
+		f.fs.pathLogger(path).Warnf("Failed to preserve mtime on %s: %v", targetName, err)
+	}
+	return nil
+}
+
+// openReadHandle opens a read-only replica for h, trying the selector's
+// preferred backend first and falling back to the remaining replicas.
+func (f *File) openReadHandle(ctx context.Context, h *FileHandle, path string) error {
+	f.node.Mu.RLock()
+	meta := f.node.Meta
+	f.node.Mu.RUnlock()
+
+	// Candidate order: the selector's pick first (health-aware/random
+	// placement), then any remaining replicas as listed in the metadata.
+	var candidates []string
+	if bName := f.fs.Selector.SelectForRead(meta); bName != "" {
+		candidates = append(candidates, bName)
+	}
+	for _, bName := range meta.Backends {
+		if len(candidates) > 0 && bName == candidates[0] {
+			continue
+		}
+		candidates = append(candidates, bName)
+	}
+	if len(candidates) == 0 {
+		return syscall.EIO
+	}
+
+	var lastErr error
+	for _, bName := range candidates {
+		b, ok := f.fs.Backends[bName]
+		if !ok {
+			f.fs.pathLogger(path).Warnf("Backend %s listed is not configured", bName)
+			continue
+		}
+		sf, err := b.OpenFile(ctx, path, os.O_RDONLY, 0)
+		if err != nil {
+			f.fs.pathLogger(path).Warnf("Read-only open failed on backend %s: %v", bName, err)
+			lastErr = err
+			continue
+		}
+		h.backends[bName] = sf
+		f.fs.pathLogger(path).Debugf("Opened read-only file handle on backends: %v", candidates)
+		return nil
+	}
+
+	f.fs.pathLogger(path).Errorf("Failed to open read-only file on any backend")
+	if lastErr == nil {
+		return syscall.EIO
+	}
+	return lastErr
 }
 
 type FileHandle struct {

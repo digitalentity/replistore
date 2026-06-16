@@ -1,13 +1,13 @@
 package fuse
 
 import (
-	"slices"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"io"
 	"os"
+	"slices"
 	"sync/atomic"
 	"time"
 
@@ -376,20 +376,7 @@ func (m *RepairManager) repairNode(ctx context.Context, node *vfs.Node) error {
 		// repair: the target just reports generation 0 until the next write.
 		if srcSCErr == nil {
 			sum := "sha256:" + hex.EncodeToString(hasher.Sum(nil))
-			sc := srcSC
-			sc.Sum = sum
-			if err := vfs.WriteSidecar(ctx, targetBackend, path, sc); err != nil {
-				m.logger().WithField("path", path).Warnf("Failed to copy sidecar to %s: %v", targetName, err)
-			}
-			// The source content was just read in full, so record what we saw
-			// on the source too if its sum was unknown or stale. Non-fatal.
-			if srcSC.Sum != sum {
-				if err := vfs.WriteSidecar(ctx, sourceBackend, path, sc); err != nil {
-					m.logger().WithField("path", path).Warnf("Failed to record content sum on %s: %v", sourceName, err)
-				} else {
-					srcSC.Sum = sum
-				}
-			}
+			m.copyRepairedSidecar(ctx, sourceBackend, targetBackend, path, sourceName, targetName, &srcSC, sum)
 		}
 
 		// Update metadata
@@ -403,6 +390,29 @@ func (m *RepairManager) repairNode(ctx context.Context, node *vfs.Node) error {
 	}
 
 	return nil
+}
+
+// copyRepairedSidecar replicates the source's version sidecar to the target,
+// stamping in the freshly computed content sum, and records that sum on the
+// source too if its own sidecar was unknown or stale (updating srcSC). Sidecar
+// failures are non-fatal: the target reports generation 0 until the next write.
+func (m *RepairManager) copyRepairedSidecar(ctx context.Context, sourceBackend, targetBackend backend.Backend, path, sourceName, targetName string, srcSC *vfs.Sidecar, sum string) {
+	sc := *srcSC
+	sc.Sum = sum
+	if err := vfs.WriteSidecar(ctx, targetBackend, path, sc); err != nil {
+		m.logger().WithField("path", path).Warnf("Failed to copy sidecar to %s: %v", targetName, err)
+	}
+
+	// The source content was just read in full, so record what we saw on the
+	// source too if its sum was unknown or stale. Non-fatal.
+	if srcSC.Sum == sum {
+		return
+	}
+	if err := vfs.WriteSidecar(ctx, sourceBackend, path, sc); err != nil {
+		m.logger().WithField("path", path).Warnf("Failed to record content sum on %s: %v", sourceName, err)
+		return
+	}
+	srcSC.Sum = sum
 }
 
 func (m *RepairManager) pruneNode(ctx context.Context, node *vfs.Node) error {

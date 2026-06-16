@@ -97,30 +97,8 @@ func main() {
 	// Warmup/Load Cache (Background & Disk-backed)
 	cache := vfs.NewCache()
 	cacheFile := filepath.Join(cfg.StateDir, "cache.json")
-	loadedFromDisk := false
-	cacheFresh := false
 
-	if err := os.MkdirAll(cfg.StateDir, 0755); err != nil {
-		logrus.Errorf("Failed to create state directory %s: %v", cfg.StateDir, err)
-	} else {
-		if _, err := os.Stat(cacheFile); err == nil {
-			logrus.Infof("Loading metadata cache from disk: %s", cacheFile)
-			if err := cache.LoadFromFile(cacheFile); err != nil {
-				logrus.Errorf("Failed to load metadata cache: %v", err)
-			} else {
-				loadedFromDisk = true
-				logrus.Info("Metadata cache loaded successfully from disk")
-
-				cache.Mu.RLock()
-				lastRecon := cache.LastReconciled
-				cache.Mu.RUnlock()
-				if !lastRecon.IsZero() && time.Since(lastRecon) < refreshInterval {
-					cacheFresh = true
-					logrus.Infof("Loaded cache is fresh (last reconciled: %v, threshold: %v). Skipping initial background scan.", lastRecon.Format(time.RFC3339), refreshInterval)
-				}
-			}
-		}
-	}
+	loadedFromDisk, cacheFresh := loadCacheFromDisk(cfg.StateDir, cacheFile, cache, refreshInterval)
 
 	go func() {
 		if cacheFresh {
@@ -256,4 +234,35 @@ func main() {
 	if err := srv.Serve(replFS); err != nil {
 		logrus.Fatal(err)
 	}
+}
+
+// loadCacheFromDisk creates the state directory and loads a persisted metadata
+// cache if present. loaded reports whether a cache file was read; fresh reports
+// whether it was reconciled within refreshInterval (letting the caller skip the
+// initial background scan). A missing file or any failure yields false, false.
+func loadCacheFromDisk(stateDir, cacheFile string, cache *vfs.Cache, refreshInterval time.Duration) (bool, bool) {
+	if err := os.MkdirAll(stateDir, 0755); err != nil {
+		logrus.Errorf("Failed to create state directory %s: %v", stateDir, err)
+		return false, false
+	}
+
+	if _, err := os.Stat(cacheFile); err != nil {
+		return false, false
+	}
+
+	logrus.Infof("Loading metadata cache from disk: %s", cacheFile)
+	if err := cache.LoadFromFile(cacheFile); err != nil {
+		logrus.Errorf("Failed to load metadata cache: %v", err)
+		return false, false
+	}
+	logrus.Info("Metadata cache loaded successfully from disk")
+
+	cache.Mu.RLock()
+	lastRecon := cache.LastReconciled
+	cache.Mu.RUnlock()
+	if !lastRecon.IsZero() && time.Since(lastRecon) < refreshInterval {
+		logrus.Infof("Loaded cache is fresh (last reconciled: %v, threshold: %v). Skipping initial background scan.", lastRecon.Format(time.RFC3339), refreshInterval)
+		return true, true
+	}
+	return true, false
 }

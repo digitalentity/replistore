@@ -102,21 +102,8 @@ func LoadConfig(path string) (*Config, error) {
 	}
 
 	if cfg.ListenAddr != "" {
-		if cfg.ExpectedClusterSize < 2 {
-			return nil, errors.New("expected_cluster_size must be >= 2 when listen_addr is set: distributed locking requires a known cluster size for quorum")
-		}
-		if cfg.AdvertiseAddr == "" {
-			return nil, errors.New("advertise_addr must be set when listen_addr is set: peers need a reachable host:port address for this node")
-		}
-		host, _, err := net.SplitHostPort(cfg.AdvertiseAddr)
-		if err != nil || host == "" {
-			return nil, fmt.Errorf("advertise_addr %q is not a valid host:port address", cfg.AdvertiseAddr)
-		}
-		if cfg.ClusterSecret == "" {
-			return nil, errors.New("cluster_secret must be set when listen_addr is set: lock datagrams between nodes are authenticated with HMAC-SHA256 using this shared secret")
-		}
-		if len(cfg.ClusterSecret) < 16 {
-			return nil, fmt.Errorf("cluster_secret must be at least 16 characters long (got %d)", len(cfg.ClusterSecret))
+		if err := validateClusterConfig(&cfg); err != nil {
+			return nil, err
 		}
 	} else if cfg.ExpectedClusterSize <= 0 {
 		// Single node, no clustering: the value is unused.
@@ -148,4 +135,27 @@ func LoadConfig(path string) (*Config, error) {
 	}
 
 	return &cfg, nil
+}
+
+// validateClusterConfig checks the clustering fields required when listen_addr
+// is set: distributed locking needs a known quorum size, a reachable advertise
+// address, and a shared HMAC secret.
+func validateClusterConfig(cfg *Config) error {
+	if cfg.ExpectedClusterSize < 2 {
+		return errors.New("expected_cluster_size must be >= 2 when listen_addr is set: distributed locking requires a known cluster size for quorum")
+	}
+	if cfg.AdvertiseAddr == "" {
+		return errors.New("advertise_addr must be set when listen_addr is set: peers need a reachable host:port address for this node")
+	}
+	host, _, err := net.SplitHostPort(cfg.AdvertiseAddr)
+	if err != nil || host == "" {
+		return fmt.Errorf("advertise_addr %q is not a valid host:port address", cfg.AdvertiseAddr)
+	}
+	if cfg.ClusterSecret == "" {
+		return errors.New("cluster_secret must be set when listen_addr is set: lock datagrams between nodes are authenticated with HMAC-SHA256 using this shared secret")
+	}
+	if len(cfg.ClusterSecret) < 16 {
+		return fmt.Errorf("cluster_secret must be at least 16 characters long (got %d)", len(cfg.ClusterSecret))
+	}
+	return nil
 }
