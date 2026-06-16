@@ -60,6 +60,9 @@ Export metrics for operation latency (read/write/metadata), cache hit/miss ratio
 ### 8.2. Secure Secret Management
 Integrate with external secret providers (e.g., HashiCorp Vault) or system keyrings instead of relying on environment variables or plain-text configuration for SMB passwords and the `cluster_secret`.
 
+### 8.3. REST/HTTP Control & Observability API
+Implement an HTTP server exposing the REST API for system state monitoring (node health, backend latency, cluster peers, cache statistics, active lock leases) and direct data operations (raw file download/upload with automatic directory provisioning and static token authorization). See [docs/api.md](docs/api.md) for endpoints specification.
+
 ## Known Gaps (from code review)
 
 One-liners for the items still open in [REVIEW.md](REVIEW.md); see the finding bodies there for details.

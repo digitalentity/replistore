@@ -23,6 +23,7 @@ For detailed information about RepliStore's design, architecture, and operation,
 - [Component Details](docs/components/)
 - [Operational Flows](docs/flows/)
 - [Configuration Guide](docs/configuration.md)
+- [Control & Observability API](docs/api.md)
 - [Testing Guide](docs/testing.md)
 - [Roadmap & Known Gaps](ROADMAP.md)
 - [Code Review Findings](REVIEW.md)
