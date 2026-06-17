@@ -83,6 +83,10 @@ func (b *SMBBackend) GetTags() []string {
 	return b.Tags
 }
 
+func (b *SMBBackend) GetAddress() string {
+	return b.Address
+}
+
 func (b *SMBBackend) GetName() string {
 	return b.Name
 }
@@ -219,3 +223,59 @@ func isConnectionError(err error) bool {
 
 	return false
 }
+
+// resetConnLocked tears down the connection state without a graceful SMB
+// teardown. Closing the raw conn is enough to unblock any in-flight I/O; the
+// share and session handles are dropped rather than Umount/Logoff'd, as those
+// would attempt network round-trips on a connection we are abandoning, which
+// could itself hang on the very failure we are reacting to. Callers must hold
+// b.mu.
+func (b *SMBBackend) resetConnLocked() {
+	if b.conn != nil {
+		_ = b.conn.Close()
+	}
+	b.conn = nil
+	b.session = nil
+	b.share = nil
+}
+
+// watchdog force-closes the backend connection if ctx is cancelled before the
+// returned cancel func is called. It exists solely to unblock context-unaware
+// *smb2.File I/O, which the go-smb2 library cannot otherwise interrupt; share
+// operations are cancelled through Share.WithContext and must not use this.
+//
+// The connection is snapshotted at call time so a concurrent reconnect is never
+// torn down by a stale watchdog. Closing the shared conn unblocks every in-flight
+// op on it, not just this one, but that blast radius is inherent to a library
+// that multiplexes all requests over a single connection with no per-request
+// cancellation.
+func (b *SMBBackend) watchdog(ctx context.Context) func() {
+	b.mu.Lock()
+	conn := b.conn
+	b.mu.Unlock()
+
+	done := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+			// If the op already finished, done is closed too and select picked
+			// this branch on a tie. Prefer done so a healthy conn is never torn
+			// down out from under a completed op.
+			select {
+			case <-done:
+				return
+			default:
+			}
+			b.mu.Lock()
+			if b.conn == conn {
+				b.resetConnLocked()
+			}
+			b.mu.Unlock()
+		case <-done:
+		}
+	}()
+	return func() {
+		close(done)
+	}
+}
+
