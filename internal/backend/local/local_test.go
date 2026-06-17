@@ -26,7 +26,7 @@ func TestLocalBackend_Lifecycle(t *testing.T) {
 	assert.Equal(t, "test-local", b.GetName())
 
 	// 2. Connect
-	err = b.Connect()
+	err = b.Connect(context.Background())
 	require.NoError(t, err, "connect failed")
 
 	// 3. Ping

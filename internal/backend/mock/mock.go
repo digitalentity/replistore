@@ -41,8 +41,8 @@ func (m *MockBackend) GetFreeSpace() (uint64, error) {
 	return args.Get(0).(uint64), args.Error(1)
 }
 
-func (m *MockBackend) Connect() error {
-	args := m.Called()
+func (m *MockBackend) Connect(ctx context.Context) error {
+	args := m.Called(ctx)
 
 	return args.Error(0)
 }

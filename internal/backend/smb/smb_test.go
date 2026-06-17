@@ -164,3 +164,59 @@ func TestIsConnectionError(t *testing.T) {
 		assert.Equal(t, tc.expected, got, "isConnectionError(%v)", tc.err)
 	}
 }
+
+func TestServiceCtx(t *testing.T) {
+	b := &SMBBackend{}
+	assert.Equal(t, context.Background(), b.serviceCtx(), "nil ctx must fall back to Background")
+
+	ctx := t.Context()
+	b.ctx = ctx
+	assert.Equal(t, ctx, b.serviceCtx(), "must return the captured lifecycle ctx")
+}
+
+func TestOpenScopedCtx_SwapsToLifecycleOnRelease(t *testing.T) {
+	callCtx, cancelCall := context.WithCancel(context.Background())
+	defer cancelCall()
+	lifeCtx, cancelLife := context.WithCancel(context.Background())
+	defer cancelLife()
+
+	c := newOpenScopedCtx(callCtx, lifeCtx)
+
+	// Before release the wrapper tracks the caller context.
+	cancelCall()
+	require.ErrorIs(t, c.Err(), context.Canceled)
+	select {
+	case <-c.Done():
+	default:
+		t.Fatal("Done must fire while bound to a cancelled caller ctx")
+	}
+
+	// After release it detaches from the caller ctx and tracks the lifecycle.
+	c.release()
+	require.NoError(t, c.Err(), "released ctx must not observe caller cancellation")
+	select {
+	case <-c.Done():
+		t.Fatal("Done must not fire while the lifecycle ctx is live")
+	default:
+	}
+
+	// Lifecycle cancellation still propagates after release.
+	cancelLife()
+	require.ErrorIs(t, c.Err(), context.Canceled)
+}
+
+func TestOpenScopedCtx_DeadlineForwarded(t *testing.T) {
+	deadline := time.Now().Add(time.Hour)
+	callCtx, cancel := context.WithDeadline(context.Background(), deadline)
+	defer cancel()
+
+	c := newOpenScopedCtx(callCtx, context.Background())
+
+	got, ok := c.Deadline()
+	require.True(t, ok)
+	assert.True(t, got.Equal(deadline), "must forward the caller deadline")
+
+	c.release()
+	_, ok = c.Deadline()
+	assert.False(t, ok, "background lifecycle has no deadline")
+}

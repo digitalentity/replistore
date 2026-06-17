@@ -88,7 +88,10 @@ func (b *LocalBackend) Close() error {
 	return nil
 }
 
-func (b *LocalBackend) Connect() error {
+func (b *LocalBackend) Connect(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	fi, err := os.Stat(b.Path)
 	if err != nil {
 		if os.IsNotExist(err) {

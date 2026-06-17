@@ -70,7 +70,7 @@ func main() {
 			slog.Error("Failed to create backend", slog.String("backend", bc.Name), slog.Any("error", err))
 			continue
 		}
-		if err := b.Connect(); err != nil {
+		if err := b.Connect(ctx); err != nil {
 			slog.Error("Failed to connect to backend", slog.String("backend", bc.Name), slog.Any("error", err))
 			continue
 		}

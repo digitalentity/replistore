@@ -28,7 +28,13 @@ type SMBBackend struct {
 	Speed    int
 	Tags     []string
 
-	mu      sync.Mutex
+	mu sync.Mutex
+	// ctx is the backend lifecycle context captured at Connect. It governs work
+	// that runs outside any single request: reconnect dials in connectLocked and
+	// the RPC lifetime of open *smb2.File handles (see serviceCtx and OpenFile).
+	// It is not a per-request context. Guarded by mu.
+	//nolint:containedctx // by design: backend lifecycle ctx, not a request ctx.
+	ctx     context.Context
 	session *smb2.Session
 	share   *smb2.Share
 	conn    net.Conn
@@ -114,19 +120,38 @@ func (b *SMBBackend) closeLocked() {
 	}
 }
 
-func (b *SMBBackend) Connect() error {
+func (b *SMBBackend) Connect(ctx context.Context) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	b.ctx = ctx
 
 	return b.connectLocked()
+}
+
+// serviceCtx returns the lifecycle context captured at Connect, or
+// context.Background if Connect has not run. Safe for concurrent use; callers
+// must not already hold b.mu.
+func (b *SMBBackend) serviceCtx() context.Context {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.ctx == nil {
+		return context.Background()
+	}
+
+	return b.ctx
 }
 
 //nolint:contextcheck // runs independently of request context
 func (b *SMBBackend) connectLocked() error {
 	b.closeLocked()
 
+	ctx := b.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
 	dialer := &net.Dialer{Timeout: defaultDialTimeout}
-	conn, err := dialer.DialContext(context.Background(), "tcp", b.Address)
+	conn, err := dialer.DialContext(ctx, "tcp", b.Address)
 	if err != nil {
 		return fmt.Errorf("dial failed: %w", err)
 	}
@@ -140,7 +165,7 @@ func (b *SMBBackend) connectLocked() error {
 		},
 	}
 
-	s, err := d.DialConn(context.Background(), conn, b.Address)
+	s, err := d.DialConn(ctx, conn, b.Address)
 	if err != nil {
 		_ = conn.Close()
 		b.conn = nil
@@ -274,6 +299,7 @@ func (b *SMBBackend) watchdog(ctx context.Context) func() {
 		case <-done:
 		}
 	}()
+
 	return func() {
 		close(done)
 	}

@@ -4,6 +4,8 @@ go 1.26.4
 
 require (
 	bazil.org/fuse v0.0.0-20230120002735-62a210ff1fd5
+	github.com/absfs/memfs v1.1.0
+	github.com/absfs/smbfs v0.9.1
 	github.com/bwmarrin/snowflake v0.3.0
 	github.com/cloudsoda/go-smb2 v0.0.0-20260609183447-7b96c35f5f4b
 	github.com/samber/slog-multi v1.8.0
@@ -13,10 +15,13 @@ require (
 )
 
 require (
+	github.com/absfs/absfs v1.0.0 // indirect
+	github.com/absfs/inode v1.0.0 // indirect
 	github.com/cloudsoda/sddl v0.0.0-20250224235906-926454e91efc // indirect
 	github.com/davecgh/go-spew v1.1.1 // indirect
 	github.com/geoffgarside/ber v1.2.0 // indirect
 	github.com/hashicorp/go-uuid v1.0.3 // indirect
+	github.com/hirochachacha/go-smb2 v1.1.0 // indirect
 	github.com/jcmturner/aescts/v2 v2.0.0 // indirect
 	github.com/jcmturner/dnsutils/v2 v2.0.0 // indirect
 	github.com/jcmturner/gofork v1.7.6 // indirect

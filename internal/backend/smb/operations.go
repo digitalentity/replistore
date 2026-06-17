@@ -104,8 +104,15 @@ func (b *SMBBackend) Stat(ctx context.Context, path string) (backend.FileInfo, e
 func (b *SMBBackend) OpenFile(ctx context.Context, path string, flag int, perm os.FileMode) (backend.File, error) {
 	var f *smb2.File
 	err := b.execute(ctx, func(share *smb2.Share) error {
+		// Bound the open by the caller ctx, then hand the resulting handle a ctx
+		// scoped to the backend lifecycle: go-smb2 binds a File to the ctx of the
+		// Share that opened it, so subsequent Read/Write must outlive this
+		// short-lived open ctx. release swaps the binding once open returns.
+		openCtx := newOpenScopedCtx(ctx, b.serviceCtx())
 		var err error
-		f, err = share.OpenFile(toSMBPath(path), flag, perm)
+		//nolint:contextcheck // openCtx intentionally detaches to the lifecycle ctx after open.
+		f, err = share.WithContext(openCtx).OpenFile(toSMBPath(path), flag, perm)
+		openCtx.release()
 
 		return err
 	})
