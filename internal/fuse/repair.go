@@ -499,10 +499,11 @@ func (m *RepairManager) repairNode(ctx context.Context, node *vfs.Node) error {
 		pw := &progressWriter{
 			w: &offsetWriter{ctx: ctx, f: dstFile},
 			onProgress: func(n int) {
+				const maxPercentage = 100.0
 				copiedBytes += int64(n)
-				pct := (float64(copiedBytes) / float64(fileSize)) * 100.0
-				if pct > 100.0 {
-					pct = 100.0
+				pct := (float64(copiedBytes) / float64(fileSize)) * maxPercentage
+				if pct > maxPercentage {
+					pct = maxPercentage
 				}
 				m.activeRepairsMu.Lock()
 				ar.ProgressPercent = pct

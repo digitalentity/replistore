@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -52,6 +53,13 @@ func main() {
 		os.Exit(1)
 	}
 
+	if err := run(cfg, nodeID); err != nil {
+		slog.Error("RepliStore failed", slog.Any("error", err))
+		os.Exit(1)
+	}
+}
+
+func run(cfg *config.Config, nodeID string) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -68,10 +76,12 @@ func main() {
 		b, err := backend.Create(bc.Type, bc.Name, bc.ToOptions())
 		if err != nil {
 			slog.Error("Failed to create backend", slog.String("backend", bc.Name), slog.Any("error", err))
+
 			continue
 		}
 		if err := b.Connect(ctx); err != nil {
 			slog.Error("Failed to connect to backend", slog.String("backend", bc.Name), slog.Any("error", err))
+
 			continue
 		}
 		backends[bc.Name] = b
@@ -80,7 +90,8 @@ func main() {
 
 	if len(backends) == 0 {
 		slog.Error("No backends connected")
-		os.Exit(1)
+
+		return errors.New("no backends connected")
 	}
 
 	// Initialize P2P Lock Manager and Discovery
@@ -93,13 +104,15 @@ func main() {
 		lockMgr.Secret = []byte(cfg.ClusterSecret)
 		if _, err := lockMgr.Start(cfg.ListenAddr); err != nil {
 			slog.Error("Failed to start lock manager", slog.Any("error", err))
-			os.Exit(1)
+
+			return fmt.Errorf("failed to start lock manager: %w", err)
 		}
 
 		disco = cluster.NewDiscovery(nodeID, cfg.AdvertiseAddr, backendList)
 		if err := disco.Start(ctx); err != nil {
 			slog.Error("Failed to start discovery", slog.Any("error", err))
-			os.Exit(1)
+
+			return fmt.Errorf("failed to start discovery: %w", err)
 		}
 		slog.Info("P2P Cluster discovery started",
 			slog.String("node_id", nodeID),
@@ -174,7 +187,8 @@ func main() {
 	)
 	if err != nil {
 		slog.Error("FUSE mount failed", slog.Any("error", err))
-		os.Exit(1)
+
+		return fmt.Errorf("FUSE mount failed: %w", err)
 	}
 	defer c.Close()
 
@@ -271,9 +285,10 @@ func main() {
 
 	slog.Info("Mounted filesystem", slog.String("mount_point", cfg.MountPoint))
 	if err := srv.Serve(replFS); err != nil {
-		slog.Error("FUSE server stopped with error", slog.Any("error", err))
-		os.Exit(1)
+		return fmt.Errorf("FUSE server stopped with error: %w", err)
 	}
+
+	return nil
 }
 
 // loadCacheFromDisk creates the state directory and loads a persisted metadata
@@ -283,6 +298,7 @@ func main() {
 func loadCacheFromDisk(stateDir, cacheFile string, cache *vfs.Cache, refreshInterval time.Duration) (bool, bool) {
 	if err := os.MkdirAll(stateDir, 0750); err != nil {
 		slog.Error("Failed to create state directory", slog.String("state_dir", stateDir), slog.Any("error", err))
+
 		return false, false
 	}
 
@@ -293,6 +309,7 @@ func loadCacheFromDisk(stateDir, cacheFile string, cache *vfs.Cache, refreshInte
 	slog.Info("Loading metadata cache from disk", slog.String("cache_file", cacheFile))
 	if err := cache.LoadFromFile(cacheFile); err != nil {
 		slog.Error("Failed to load metadata cache", slog.Any("error", err))
+
 		return false, false
 	}
 	slog.Info("Metadata cache loaded successfully from disk")
@@ -305,6 +322,7 @@ func loadCacheFromDisk(stateDir, cacheFile string, cache *vfs.Cache, refreshInte
 			slog.Time("last_reconciled", lastRecon),
 			slog.Duration("threshold", refreshInterval),
 		)
+
 		return true, true
 	}
 

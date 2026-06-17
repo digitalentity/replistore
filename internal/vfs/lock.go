@@ -227,6 +227,7 @@ func (l *DistributedLock) tryAcquire(ctx context.Context) error {
 	if gCtx.Err() != nil {
 		return rerrors.ErrLockTimeout
 	}
+
 	return rerrors.ErrLockConflict
 }
 

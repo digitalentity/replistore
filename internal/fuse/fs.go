@@ -261,7 +261,6 @@ type Dir struct {
 }
 
 func (d *Dir) Attr(ctx context.Context, a *fuse.Attr) (err error) {
-	ctx = trace(ctx)
 	start := time.Now()
 	defer func() {
 		observability.RecordFSOp("attr", start)
@@ -282,7 +281,7 @@ func (d *Dir) Attr(ctx context.Context, a *fuse.Attr) (err error) {
 	return nil
 }
 
-//nolint:ireturn // fs.Node is an interface required by bazil.org/fuse/fs
+//nolint:ireturn,nonamedreturns
 func (d *Dir) Lookup(ctx context.Context, name string) (node fs.Node, err error) {
 	ctx = trace(ctx)
 	start := time.Now()
@@ -354,7 +353,7 @@ func (d *Dir) fetchChild(ctx context.Context, childPath string, cached *vfs.Node
 			// entry exists, so don't lie with ENOENT.
 			return nil, syscall.EIO
 		}
-		d.fs.pathLogger(ctx, childPath).Warn(fmt.Sprintf("Using stale cached entry for %s", childPath))
+		d.fs.pathLogger(ctx, childPath).Warn("Using stale cached entry for " + childPath)
 		node = cached
 	}
 	d.fs.pathLogger(ctx, childPath).Debug("Lazy fetch/Revalidate success")
@@ -401,6 +400,7 @@ func (d *Dir) mkdirOnBackend(ctx context.Context, name string, b backend.Backend
 	return false, true
 }
 
+//nolint:nonamedreturns
 func (d *Dir) ReadDirAll(ctx context.Context) (entries []fuse.Dirent, err error) {
 	ctx = trace(ctx)
 	start := time.Now()
@@ -453,7 +453,7 @@ func (d *Dir) ReadDirAll(ctx context.Context) (entries []fuse.Dirent, err error)
 	return res, nil
 }
 
-//nolint:ireturn // fs.Node and fs.Handle are interfaces required by bazil.org/fuse/fs
+//nolint:ireturn,nonamedreturns
 func (d *Dir) Create(ctx context.Context, req *fuse.CreateRequest, resp *fuse.CreateResponse) (node fs.Node, handle fs.Handle, err error) {
 	ctx = trace(ctx)
 	start := time.Now()
@@ -508,7 +508,7 @@ func (d *Dir) Create(ctx context.Context, req *fuse.CreateRequest, resp *fuse.Cr
 		if lock != nil {
 			lock.Release()
 		}
-		d.fs.pathLogger(ctx, path).Error(fmt.Sprintf("Failed to create file: no healthy backends selected"))
+		d.fs.pathLogger(ctx, path).Error("Failed to create file: no healthy backends selected")
 
 		return nil, nil, syscall.EIO
 	}
@@ -651,7 +651,7 @@ func (d *Dir) removeCreated(ctx context.Context, path string, backends []string)
 	}
 }
 
-//nolint:ireturn // fs.Node is an interface required by bazil.org/fuse/fs
+//nolint:ireturn,nonamedreturns
 func (d *Dir) Mkdir(ctx context.Context, req *fuse.MkdirRequest) (node fs.Node, err error) {
 	ctx = trace(ctx)
 	start := time.Now()
@@ -1320,7 +1320,6 @@ type File struct {
 }
 
 func (f *File) Attr(ctx context.Context, a *fuse.Attr) (err error) {
-	ctx = trace(ctx)
 	start := time.Now()
 	defer func() {
 		observability.RecordFSOp("attr", start)
@@ -1540,7 +1539,7 @@ func (f *File) Setattr(ctx context.Context, req *fuse.SetattrRequest, resp *fuse
 	return f.Attr(ctx, &resp.Attr)
 }
 
-//nolint:ireturn // fs.Handle is an interface required by bazil.org/fuse/fs
+//nolint:ireturn,nonamedreturns
 func (f *File) Open(ctx context.Context, req *fuse.OpenRequest, resp *fuse.OpenResponse) (handle fs.Handle, err error) {
 	ctx = trace(ctx)
 	start := time.Now()
@@ -1679,7 +1678,7 @@ func (f *File) inlineHeal(ctx context.Context, h *FileHandle, path string, backe
 		}
 		f.node.Mu.Unlock()
 
-		f.fs.pathLogger(ctx, path).Info(fmt.Sprintf("Inline heal: successfully replicated to backend %s", targetName))
+		f.fs.pathLogger(ctx, path).Info("Inline heal: successfully replicated to backend " + targetName)
 		// Include the new backend so it is opened for writing below.
 		backends = append(backends, targetName)
 	}
@@ -1827,7 +1826,7 @@ func (f *File) openReadHandle(ctx context.Context, h *FileHandle, path string) e
 		return nil
 	}
 
-	f.fs.pathLogger(ctx, path).Error(fmt.Sprintf("Failed to open read-only file on any backend"))
+	f.fs.pathLogger(ctx, path).Error("Failed to open read-only file on any backend")
 	if lastErr == nil {
 		return syscall.EIO
 	}

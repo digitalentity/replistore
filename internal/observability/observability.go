@@ -42,7 +42,10 @@ func RecordFSOp(op string, start time.Time) {
 		c.Add(1)
 	}
 	if d, ok := fsOpsDurationNs[op]; ok {
-		d.Add(uint64(time.Since(start).Nanoseconds()))
+		ns := time.Since(start).Nanoseconds()
+		if ns >= 0 {
+			d.Add(uint64(ns))
+		}
 	}
 }
 
@@ -104,9 +107,11 @@ func Init(levelStr, formatStr, nodeID string) error {
 }
 
 func hashNodeID(nodeID string) int64 {
+	const maxSnowflakeNodeID = 1024
 	h := fnv.New32a()
 	_, _ = h.Write([]byte(nodeID))
-	return int64(h.Sum32() % 1024)
+
+	return int64(h.Sum32() % maxSnowflakeNodeID)
 }
 
 // GenerateCorrelationID generates a base36-encoded Snowflake ID.
@@ -114,8 +119,10 @@ func GenerateCorrelationID() string {
 	if sfNode == nil {
 		var b [8]byte
 		_, _ = rand.Read(b[:])
+
 		return strconv.FormatUint(binary.BigEndian.Uint64(b[:]), 36)
 	}
+
 	return strconv.FormatInt(sfNode.Generate().Int64(), 36)
 }
 
@@ -129,6 +136,7 @@ func CorrelationID(ctx context.Context) string {
 	if id, ok := ctx.Value(correlationIDKey).(string); ok {
 		return id
 	}
+
 	return ""
 }
 
@@ -141,5 +149,6 @@ func Logger(ctx context.Context) *slog.Logger {
 	if id := CorrelationID(ctx); id != "" {
 		logger = logger.With(slog.String("correlation_id", id))
 	}
+
 	return logger
 }
