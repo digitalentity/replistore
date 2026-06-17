@@ -18,6 +18,7 @@ Welcome to the RepliStore documentation. This project provides a distributed, FU
     - [Startup & Warmup](flows/startup.md) - Building the initial metadata cache.
 - [**Configuration Guide**](configuration.md) - Detailed description of `config.yaml` options.
 - [**Control & Observability API**](api.md) - HTTP REST API endpoints and data access.
+- [**Observability & Logging Design**](observability.md) - Plan for standard `log/slog` migration, custom error mappings, and metrics instrumentation.
 - [**Testing Guide**](testing.md) - How to run and extend the test suite.
 - [**Roadmap & Known Gaps**](../ROADMAP.md) - Proposed improvements not yet implemented and open issues from code review.
 

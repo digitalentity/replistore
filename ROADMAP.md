@@ -54,13 +54,20 @@ The repair copy loop reads the source file once *per target* and writes targets 
 
 ## 8. Operational & Observability
 
-### 8.1. Metrics Export (Prometheus)
+### 8.1. Observability, Logging, and Error Handling Upgrade
+Implement the comprehensive observability upgrade. See details in [docs/observability.md](docs/observability.md). This includes:
+- **Migration to standard `log/slog`** with `samber/slog-multi` for handler composition and structured fields.
+- **Context-bound Correlation/Request IDs** across FUSE, VFS, and SMB backend operations.
+- **Improved error wrapping** and POSIX translation mapping at the FUSE layer (`syscall.Errno`).
+- **Request logging middleware** using `samber/slog-http` on the REST API server.
+
+### 8.2. Metrics Export (Prometheus)
 Export metrics for operation latency (read/write/metadata), cache hit/miss ratios, backend health and latency, and replication health (number of degraded files, replica divergence events — repair already keeps an internal divergence counter intended to feed this).
 
-### 8.2. Secure Secret Management
+### 8.3. Secure Secret Management
 Integrate with external secret providers (e.g., HashiCorp Vault) or system keyrings instead of relying on environment variables or plain-text configuration for SMB passwords and the `cluster_secret`.
 
-### 8.3. REST/HTTP Control & Observability API
+### 8.4. REST/HTTP Control & Observability API
 Implement an HTTP server exposing the REST API for system state monitoring (node health, backend latency, cluster peers, cache statistics, active lock leases) and direct data operations (raw file download/upload with automatic directory provisioning and static token authorization). See [docs/api.md](docs/api.md) for endpoints specification.
 
 ## Known Gaps (from code review)
