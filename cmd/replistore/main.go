@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
+	"log/slog"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -17,8 +19,8 @@ import (
 	"github.com/digitalentity/replistore/internal/cluster"
 	"github.com/digitalentity/replistore/internal/config"
 	rfuse "github.com/digitalentity/replistore/internal/fuse"
+	"github.com/digitalentity/replistore/internal/observability"
 	"github.com/digitalentity/replistore/internal/vfs"
-	"github.com/sirupsen/logrus"
 )
 
 const (
@@ -33,35 +35,8 @@ func main() {
 
 	cfg, err := config.LoadConfig(*configPath)
 	if err != nil {
-		logrus.Fatalf("Failed to load config: %v", err)
-	}
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	logrus.Infof("Starting RepliStore with %d backends (RF=%d, WQ=%d)", len(cfg.Backends), cfg.ReplicationFactor, cfg.WriteQuorum)
-
-	// Initialize backends
-	backends := map[string]backend.Backend{}
-	backendList := []backend.Backend{}
-	for _, bc := range cfg.Backends {
-		b, err := backend.Create(bc.Type, bc.Name, bc.ToOptions())
-		if err != nil {
-			logrus.Errorf("Failed to create backend %s: %v", bc.Name, err)
-
-			continue
-		}
-		if err := b.Connect(); err != nil {
-			logrus.Errorf("Failed to connect to backend %s: %v", bc.Name, err)
-
-			continue
-		}
-		backends[bc.Name] = b
-		backendList = append(backendList, b)
-	}
-
-	if len(backends) == 0 {
-		logrus.Fatal("No backends connected")
+		fmt.Fprintf(os.Stderr, "Failed to load config: %v\n", err)
+		os.Exit(1)
 	}
 
 	// Node identity: cluster node ID when clustering is enabled, and the
@@ -71,24 +46,65 @@ func main() {
 		nodeID = "replistore-" + time.Now().Format("150405")
 	}
 
+	// Initialize Observability (slog + Snowflake)
+	if err := observability.Init(cfg.Logging.Level, cfg.Logging.Format, nodeID); err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to initialize observability: %v\n", err)
+		os.Exit(1)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	slog.Info("Starting RepliStore",
+		slog.Int("backend_count", len(cfg.Backends)),
+		slog.Int("replication_factor", cfg.ReplicationFactor),
+		slog.Int("write_quorum", cfg.WriteQuorum),
+	)
+
+	// Initialize backends
+	backends := map[string]backend.Backend{}
+	backendList := []backend.Backend{}
+	for _, bc := range cfg.Backends {
+		b, err := backend.Create(bc.Type, bc.Name, bc.ToOptions())
+		if err != nil {
+			slog.Error("Failed to create backend", slog.String("backend", bc.Name), slog.Any("error", err))
+			continue
+		}
+		if err := b.Connect(); err != nil {
+			slog.Error("Failed to connect to backend", slog.String("backend", bc.Name), slog.Any("error", err))
+			continue
+		}
+		backends[bc.Name] = b
+		backendList = append(backendList, b)
+	}
+
+	if len(backends) == 0 {
+		slog.Error("No backends connected")
+		os.Exit(1)
+	}
+
 	// Initialize P2P Lock Manager and Discovery
 	var lockMgr *cluster.LockManager
 	var disco *cluster.Discovery
 
 	if cfg.ListenAddr != "" {
-
 		lockMgr = cluster.NewLockManager(nodeID)
 		lockMgr.ExpectedClusterSize = cfg.ExpectedClusterSize
 		lockMgr.Secret = []byte(cfg.ClusterSecret)
 		if _, err := lockMgr.Start(cfg.ListenAddr); err != nil {
-			logrus.Fatalf("Failed to start lock manager: %v", err)
+			slog.Error("Failed to start lock manager", slog.Any("error", err))
+			os.Exit(1)
 		}
 
 		disco = cluster.NewDiscovery(nodeID, cfg.AdvertiseAddr, backendList)
 		if err := disco.Start(ctx); err != nil {
-			logrus.Fatalf("Failed to start discovery: %v", err)
+			slog.Error("Failed to start discovery", slog.Any("error", err))
+			os.Exit(1)
 		}
-		logrus.Infof("P2P Cluster discovery started. Node ID: %s, Advertise address: %s", nodeID, cfg.AdvertiseAddr)
+		slog.Info("P2P Cluster discovery started",
+			slog.String("node_id", nodeID),
+			slog.String("advertise_addr", cfg.AdvertiseAddr),
+		)
 	}
 
 	// Initialize Health Monitor
@@ -98,7 +114,10 @@ func main() {
 	// Start background sync config
 	refreshInterval, err := time.ParseDuration(cfg.CacheRefreshInterval)
 	if err != nil {
-		logrus.Warnf("Invalid cache_refresh_interval '%s', defaulting to 5m: %v", cfg.CacheRefreshInterval, err)
+		slog.Warn("Invalid cache_refresh_interval, defaulting to 5m",
+			slog.String("interval", cfg.CacheRefreshInterval),
+			slog.Any("error", err),
+		)
 		refreshInterval = defaultCacheRefreshInterval
 	}
 
@@ -113,14 +132,14 @@ func main() {
 			return
 		}
 		if loadedFromDisk {
-			logrus.Info("Metadata cache loaded from disk is stale. Starting background validation scan...")
+			slog.Info("Metadata cache loaded from disk is stale. Starting background validation scan...")
 		} else {
-			logrus.Info("Starting background metadata warmup...")
+			slog.Info("Starting background metadata warmup...")
 		}
 		cache.Warmup(ctx, backendList)
-		logrus.Info("Metadata cache warmup/validation complete")
+		slog.Info("Metadata cache warmup/validation complete")
 		if err := cache.SaveToFile(cacheFile); err != nil {
-			logrus.Errorf("Failed to save metadata cache to disk: %v", err)
+			slog.Error("Failed to save metadata cache to disk", slog.Any("error", err))
 		}
 	}()
 
@@ -134,9 +153,9 @@ func main() {
 				return
 			case <-ticker.C:
 				if err := cache.SaveToFile(cacheFile); err != nil {
-					logrus.Errorf("Failed to periodically save metadata cache to disk: %v", err)
+					slog.Error("Failed to periodically save metadata cache to disk", slog.Any("error", err))
 				} else {
-					logrus.Debug("Periodically saved metadata cache to disk")
+					slog.Debug("Periodically saved metadata cache to disk")
 				}
 			}
 		}
@@ -144,7 +163,7 @@ func main() {
 
 	if refreshInterval > 0 {
 		cache.StartSync(ctx, backendList, refreshInterval)
-		logrus.Infof("Background metadata sync started (interval: %v)", refreshInterval)
+		slog.Info("Background metadata sync started", slog.Duration("interval", refreshInterval))
 	}
 
 	// Mount FUSE
@@ -154,13 +173,17 @@ func main() {
 		fuse.Subtype("replistore"),
 	)
 	if err != nil {
-		logrus.Fatal(err)
+		slog.Error("FUSE mount failed", slog.Any("error", err))
+		os.Exit(1)
 	}
 	defer c.Close()
 
 	maxIODuration, err := time.ParseDuration(cfg.MaxIODuration)
 	if err != nil {
-		logrus.Warnf("Invalid max_io_duration '%s', defaulting to 1s: %v", cfg.MaxIODuration, err)
+		slog.Warn("Invalid max_io_duration, defaulting to 1s",
+			slog.String("duration", cfg.MaxIODuration),
+			slog.Any("error", err),
+		)
 		maxIODuration = 1 * time.Second
 	}
 
@@ -193,7 +216,10 @@ func main() {
 	// Initialize and start Repair Manager
 	repairInterval, err := time.ParseDuration(cfg.RepairInterval)
 	if err != nil && cfg.RepairInterval != "" {
-		logrus.Warnf("Invalid repair_interval '%s', defaulting to 1h: %v", cfg.RepairInterval, err)
+		slog.Warn("Invalid repair_interval, defaulting to 1h",
+			slog.String("interval", cfg.RepairInterval),
+			slog.Any("error", err),
+		)
 		repairInterval = 1 * time.Hour
 	} else if cfg.RepairInterval == "" {
 		repairInterval = 1 * time.Hour
@@ -201,7 +227,10 @@ func main() {
 	repairManager := rfuse.NewRepairManager(replFS, repairInterval, cfg.RepairConcurrency)
 	repairManager.Start(ctx)
 	if repairInterval > 0 {
-		logrus.Infof("Background repair manager started (interval: %v, concurrency: %d)", repairInterval, cfg.RepairConcurrency)
+		slog.Info("Background repair manager started",
+			slog.Duration("interval", repairInterval),
+			slog.Int("concurrency", cfg.RepairConcurrency),
+		)
 	}
 
 	// Handle signals for graceful unmount
@@ -209,7 +238,7 @@ func main() {
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
 		<-sigChan
-		logrus.Info("Unmounting...")
+		slog.Info("Unmounting...")
 		if disco != nil {
 			disco.Stop()
 		}
@@ -221,28 +250,29 @@ func main() {
 		// deferred cleanup, so close the FUSE conn and backends explicitly.
 		cancel()
 
-		logrus.Info("Saving metadata cache to disk before exit...")
+		slog.Info("Saving metadata cache to disk before exit...")
 		if err := cache.SaveToFile(cacheFile); err != nil {
-			logrus.Errorf("Failed to save metadata cache to disk at shutdown: %v", err)
+			slog.Error("Failed to save metadata cache to disk at shutdown", slog.Any("error", err))
 		} else {
-			logrus.Info("Metadata cache saved successfully")
+			slog.Info("Metadata cache saved successfully")
 		}
 
 		if err := fuse.Unmount(cfg.MountPoint); err != nil {
-			logrus.Warnf("Failed to unmount %s: %v", cfg.MountPoint, err)
+			slog.Warn("Failed to unmount", slog.String("mount_point", cfg.MountPoint), slog.Any("error", err))
 		}
 		_ = c.Close()
 		for name, b := range backends {
 			if err := b.Close(); err != nil {
-				logrus.Warnf("Error closing backend %s: %v", name, err)
+				slog.Warn("Error closing backend", slog.String("backend", name), slog.Any("error", err))
 			}
 		}
 		os.Exit(0)
 	}()
 
-	logrus.Infof("Mounted at %s", cfg.MountPoint)
+	slog.Info("Mounted filesystem", slog.String("mount_point", cfg.MountPoint))
 	if err := srv.Serve(replFS); err != nil {
-		logrus.Fatal(err)
+		slog.Error("FUSE server stopped with error", slog.Any("error", err))
+		os.Exit(1)
 	}
 }
 
@@ -252,8 +282,7 @@ func main() {
 // initial background scan). A missing file or any failure yields false, false.
 func loadCacheFromDisk(stateDir, cacheFile string, cache *vfs.Cache, refreshInterval time.Duration) (bool, bool) {
 	if err := os.MkdirAll(stateDir, 0750); err != nil {
-		logrus.Errorf("Failed to create state directory %s: %v", stateDir, err)
-
+		slog.Error("Failed to create state directory", slog.String("state_dir", stateDir), slog.Any("error", err))
 		return false, false
 	}
 
@@ -261,20 +290,21 @@ func loadCacheFromDisk(stateDir, cacheFile string, cache *vfs.Cache, refreshInte
 		return false, false
 	}
 
-	logrus.Infof("Loading metadata cache from disk: %s", cacheFile)
+	slog.Info("Loading metadata cache from disk", slog.String("cache_file", cacheFile))
 	if err := cache.LoadFromFile(cacheFile); err != nil {
-		logrus.Errorf("Failed to load metadata cache: %v", err)
-
+		slog.Error("Failed to load metadata cache", slog.Any("error", err))
 		return false, false
 	}
-	logrus.Info("Metadata cache loaded successfully from disk")
+	slog.Info("Metadata cache loaded successfully from disk")
 
 	cache.Mu.RLock()
 	lastRecon := cache.LastReconciled
 	cache.Mu.RUnlock()
 	if !lastRecon.IsZero() && time.Since(lastRecon) < refreshInterval {
-		logrus.Infof("Loaded cache is fresh (last reconciled: %v, threshold: %v). Skipping initial background scan.", lastRecon.Format(time.RFC3339), refreshInterval)
-
+		slog.Info("Loaded cache is fresh. Skipping initial background scan.",
+			slog.Time("last_reconciled", lastRecon),
+			slog.Duration("threshold", refreshInterval),
+		)
 		return true, true
 	}
 

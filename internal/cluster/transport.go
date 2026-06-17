@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"strings"
 	"time"
@@ -256,7 +257,7 @@ func (m *LockManager) serveLoop() {
 			// Unauthenticated or malformed traffic is dropped silently (no
 			// response: nothing here is worth telling an unauthenticated
 			// sender).
-			m.log.Debugf("Dropping lock datagram from %s: %v", src, err)
+			m.log.Debug("Dropping lock datagram", slog.String("src", src.String()), slog.Any("error", err))
 
 			continue
 		}
@@ -266,7 +267,7 @@ func (m *LockManager) serveLoop() {
 		case TypRequestLock:
 			var req LockRequest
 			if err := json.Unmarshal(claims.Body, &req); err != nil {
-				m.log.Debugf("Dropping lock datagram from %s: bad body: %v", src, err)
+				m.log.Debug("Dropping lock datagram: bad body", slog.String("src", src.String()), slog.Any("error", err))
 
 				continue
 			}
@@ -276,7 +277,7 @@ func (m *LockManager) serveLoop() {
 		case TypRenewLock:
 			var req LockRenewal
 			if err := json.Unmarshal(claims.Body, &req); err != nil {
-				m.log.Debugf("Dropping lock datagram from %s: bad body: %v", src, err)
+				m.log.Debug("Dropping lock datagram: bad body", slog.String("src", src.String()), slog.Any("error", err))
 
 				continue
 			}
@@ -286,7 +287,7 @@ func (m *LockManager) serveLoop() {
 		case TypReleaseLock:
 			var req LockRelease
 			if err := json.Unmarshal(claims.Body, &req); err != nil {
-				m.log.Debugf("Dropping lock datagram from %s: bad body: %v", src, err)
+				m.log.Debug("Dropping lock datagram: bad body", slog.String("src", src.String()), slog.Any("error", err))
 
 				continue
 			}
@@ -294,19 +295,19 @@ func (m *LockManager) serveLoop() {
 			_ = m.ReleaseLock(req, &status)
 			respBody = status
 		default:
-			m.log.Debugf("Dropping lock datagram from %s: unknown type %q", src, claims.Typ)
+			m.log.Debug("Dropping lock datagram: unknown type", slog.String("src", src.String()), slog.String("type", claims.Typ))
 
 			continue
 		}
 
 		reply, err := signMessage(m.Secret, claims.Typ+respSuffix, claims.RID, respBody)
 		if err != nil {
-			m.log.Debugf("Failed to sign lock response: %v", err)
+			m.log.Debug("Failed to sign lock response", slog.Any("error", err))
 
 			continue
 		}
 		if _, err := m.conn.WriteToUDP(reply, src); err != nil {
-			m.log.Debugf("Failed to send lock response to %s: %v", src, err)
+			m.log.Debug("Failed to send lock response", slog.String("src", src.String()), slog.Any("error", err))
 		}
 	}
 }

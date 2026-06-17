@@ -4,14 +4,15 @@ import (
 	"context"
 	cryptorand "crypto/rand"
 	"encoding/hex"
-	"errors"
 	"fmt"
+	"log/slog"
 	"math/rand"
 	"sync"
 	"time"
 
 	"github.com/digitalentity/replistore/internal/cluster"
-	"github.com/sirupsen/logrus"
+	rerrors "github.com/digitalentity/replistore/internal/errors"
+	"github.com/digitalentity/replistore/internal/observability"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -27,7 +28,7 @@ type DistributedLock struct {
 	mu            sync.RWMutex
 	cancelRenewal context.CancelFunc
 	renewalWg     sync.WaitGroup
-	log           *logrus.Entry
+	log           *slog.Logger
 }
 
 func NewDistributedLock(path string, mgr *cluster.LockManager, disco *cluster.Discovery) *DistributedLock {
@@ -41,7 +42,7 @@ func NewDistributedLock(path string, mgr *cluster.LockManager, disco *cluster.Di
 		FencingToken: randomHex(),
 		Manager:      mgr,
 		Discovery:    disco,
-		log:          logrus.WithField("component", "dist-lock").WithField("path", path),
+		log:          slog.Default().With(slog.String("component", "dist-lock"), slog.String("path", path)),
 	}
 }
 
@@ -109,7 +110,7 @@ func (l *DistributedLock) Acquire(ctx context.Context) error {
 	for attempt := 1; attempt <= acquireMaxAttempts; attempt++ {
 		lastErr = l.tryAcquire(ctx)
 		if lastErr == nil {
-			l.log.Infof("Successfully acquired distributed lock (fencing token: %s)", l.FencingToken)
+			observability.Logger(ctx).Info("Successfully acquired distributed lock", slog.String("fencing_token", l.FencingToken))
 
 			return nil
 		}
@@ -143,7 +144,10 @@ func (l *DistributedLock) tryAcquire(ctx context.Context) error {
 	peers := l.Discovery.GetPeers()
 	quorum := (l.Manager.ExpectedClusterSize / quorumDivisor) + quorumOffset
 
-	l.log.Debugf("Attempting to acquire lock with %d peers (quorum: %d)", len(peers), quorum)
+	observability.Logger(ctx).Debug("Attempting to acquire lock",
+		slog.Int("peer_count", len(peers)),
+		slog.Int("quorum", quorum),
+	)
 
 	lamportTime := l.Manager.Clock.Tick()
 	req := cluster.LockRequest{
@@ -214,10 +218,16 @@ func (l *DistributedLock) tryAcquire(ctx context.Context) error {
 	}
 
 	// Rollback if quorum not reached
-	l.log.Warnf("Failed to reach quorum (%d/%d), rolling back", successes, quorum)
+	observability.Logger(ctx).Warn("Failed to reach quorum, rolling back",
+		slog.Int("successes", successes),
+		slog.Int("quorum", quorum),
+	)
 	l.rollback(grantedPeers, fencingToken)
 
-	return errors.New("failed to acquire distributed lock")
+	if gCtx.Err() != nil {
+		return rerrors.ErrLockTimeout
+	}
+	return rerrors.ErrLockConflict
 }
 
 func (l *DistributedLock) Release() {
@@ -237,7 +247,8 @@ func (l *DistributedLock) startRenewal(peers []string) {
 	l.cancelRenewal = cancel
 	l.renewalWg.Add(1)
 
-	l.log.Debugf("Starting background lock renewal for peers: %v", peers)
+	l.log.Debug("Starting background lock renewal", slog.Any("peers", peers))
+
 	go func() {
 		defer l.renewalWg.Done()
 		// Renew on a faster cadence than the lease lasts (TTL/3) so a single
@@ -266,7 +277,7 @@ func (l *DistributedLock) startRenewal(peers []string) {
 
 					return
 				}
-				l.log.Warnf("Renewal round missed quorum, retrying before lease deadline (%v)", l.ExpiresAt())
+				l.log.Warn("Renewal round missed quorum, retrying before lease deadline", slog.Time("expires_at", l.ExpiresAt()))
 			}
 		}
 	}()
@@ -323,7 +334,7 @@ func (l *DistributedLock) renew(peers []string) bool {
 		l.mu.Lock()
 		l.expiresAt = time.Now().Add(l.Manager.LeaseTTL)
 		l.mu.Unlock()
-		l.log.Debugf("Successfully renewed distributed lock lease (%d/%d)", successes, quorum)
+		l.log.Debug("Successfully renewed distributed lock lease", slog.Int("successes", successes), slog.Int("quorum", quorum))
 	}
 
 	return ok

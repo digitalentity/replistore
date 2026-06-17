@@ -29,7 +29,8 @@ import (
 	gopath "path"
 
 	"github.com/digitalentity/replistore/internal/backend"
-	"github.com/sirupsen/logrus"
+	"github.com/digitalentity/replistore/internal/observability"
+	"log/slog"
 )
 
 // Sidecar is the per-path version metadata stored under metaDir, keyed by the
@@ -123,7 +124,11 @@ func sidecarGen(ctx context.Context, b backend.Backend, path string) int64 {
 	sc, err := ReadMeta(ctx, b, path)
 	if err != nil {
 		if !errors.Is(err, os.ErrNotExist) && !os.IsNotExist(err) {
-			logrus.Debugf("vfs: metadata read for %q on %s failed: %v", path, b.GetName(), err)
+			observability.Logger(ctx).Debug("vfs: metadata read failed",
+				slog.String("path", path),
+				slog.String("backend", b.GetName()),
+				slog.Any("error", err),
+			)
 		}
 
 		return 0

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"os"
 	"strings"
 	"sync"
@@ -12,14 +13,15 @@ import (
 	"time"
 
 	"github.com/digitalentity/replistore/internal/backend"
-	"github.com/sirupsen/logrus"
+	rerrors "github.com/digitalentity/replistore/internal/errors"
+	"github.com/digitalentity/replistore/internal/observability"
 	"golang.org/x/sync/errgroup"
 )
 
 // ErrUnavailable indicates that no backend was able to give an authoritative
 // answer (e.g. all backends were unreachable), so the result must not be
 // treated as a definitive "does not exist".
-var ErrUnavailable = errors.New("vfs: no backend available for authoritative answer")
+var ErrUnavailable = rerrors.ErrUnavailable
 
 // ReservedDir is the directory on each backend that holds RepliStore's
 // cluster-internal state (peer registry, version metadata). It is never
@@ -59,8 +61,8 @@ type Cache struct {
 	Mu             sync.RWMutex
 }
 
-func (c *Cache) logger() *logrus.Entry {
-	return logrus.WithField("component", "vfs")
+func (c *Cache) logger(ctx context.Context) *slog.Logger {
+	return observability.Logger(ctx).With(slog.String("component", "vfs"))
 }
 
 func NewCache() *Cache {
@@ -132,7 +134,10 @@ func mergeDirMeta(existing *Metadata, incoming Metadata, incomingBackends []stri
 		if p == "" {
 			p = existing.Name
 		}
-		logrus.WithField("component", "vfs").WithField("path", p).Warn("Type conflict: file on some backends, directory on others; treating as directory")
+		slog.Warn("Type conflict: file on some backends, directory on others; treating as directory",
+			slog.String("component", "vfs"),
+			slog.String("path", p),
+		)
 	}
 	if !existing.IsDir {
 		// Directory wins the type conflict: convert the node to a directory.
@@ -351,7 +356,12 @@ func listTombstones(ctx context.Context, b backend.Backend) map[string]int64 {
 		}
 		sc, err := readMetaDoc(ctx, b, p)
 		if err != nil {
-			logrus.WithField("component", "vfs").WithField("doc", p).Debugf("Metadata read on %s failed: %v", b.GetName(), err)
+			observability.Logger(ctx).Debug("Metadata read failed",
+				slog.String("component", "vfs"),
+				slog.String("doc", p),
+				slog.String("backend", b.GetName()),
+				slog.Any("error", err),
+			)
 
 			return nil
 		}
@@ -362,7 +372,11 @@ func listTombstones(ctx context.Context, b backend.Backend) map[string]int64 {
 		return nil
 	})
 	if err != nil && !os.IsNotExist(err) && !errors.Is(err, os.ErrNotExist) {
-		logrus.WithField("component", "vfs").Debugf("Metadata walk on %s failed: %v", b.GetName(), err)
+		observability.Logger(ctx).Debug("Metadata walk failed",
+			slog.String("component", "vfs"),
+			slog.String("backend", b.GetName()),
+			slog.Any("error", err),
+		)
 	}
 
 	return res
@@ -421,7 +435,7 @@ func (c *Cache) walkBackends(ctx context.Context, backends []backend.Backend) ma
 		state := perBackend[b.GetName()] // each goroutine writes only its own map
 		g.Go(func() error {
 			walkStart := time.Now()
-			c.logger().Debugf("Background syncing backend: %s", b.GetName())
+			c.logger(gCtx).Debug("Background syncing backend", slog.String("backend", b.GetName()))
 			seenPaths := make(map[string]bool)
 			err := b.Walk(gCtx, "", func(path string, info backend.FileInfo) error {
 				if IsReservedPath(path) {
@@ -444,7 +458,10 @@ func (c *Cache) walkBackends(ctx context.Context, backends []backend.Backend) ma
 				return nil
 			})
 			if err != nil {
-				c.logger().Errorf("Background sync error on %s: %v", b.GetName(), err)
+				c.logger(gCtx).Error("Background sync error on backend",
+					slog.String("backend", b.GetName()),
+					slog.Any("error", err),
+				)
 
 				return nil // Don't fail other backends
 			}
@@ -822,7 +839,11 @@ func (c *Cache) FetchEntry(ctx context.Context, path string, backends []backend.
 					stateMu.Unlock()
 				}
 			case !os.IsNotExist(scErr) && !errors.Is(scErr, os.ErrNotExist):
-				c.logger().WithField("path", path).Debugf("Metadata read on %s failed: %v", b.GetName(), scErr)
+				c.logger(gCtx).Debug("Metadata read failed",
+					slog.String("path", path),
+					slog.String("backend", b.GetName()),
+					slog.Any("error", scErr),
+				)
 			}
 
 			stateMu.Lock()
@@ -967,7 +988,7 @@ func (c *Cache) Warmup(ctx context.Context, backends []backend.Backend) {
 	g, gCtx := errgroup.WithContext(ctx)
 	for _, b := range backends {
 		g.Go(func() error {
-			c.logger().Infof("Scanning backend: %s", b.GetName())
+			c.logger(gCtx).Info("Scanning backend", slog.String("backend", b.GetName()))
 			err := b.Walk(gCtx, "", func(path string, info backend.FileInfo) error {
 				if IsReservedPath(path) {
 					// Cluster-internal state is never indexed.
@@ -988,9 +1009,12 @@ func (c *Cache) Warmup(ctx context.Context, backends []backend.Backend) {
 				return nil
 			})
 			if err != nil {
-				c.logger().Errorf("Error scanning backend %s: %v", b.GetName(), err)
+				c.logger(gCtx).Error("Error scanning backend",
+					slog.String("backend", b.GetName()),
+					slog.Any("error", err),
+				)
 			} else {
-				c.logger().Infof("Finished scanning backend: %s", b.GetName())
+				c.logger(gCtx).Info("Finished scanning backend", slog.String("backend", b.GetName()))
 			}
 
 			return nil

@@ -12,12 +12,15 @@ import (
 // The per-call context is therefore honored as a cancellation pre-check only.
 type smbFile struct {
 	*smb2.File
+	backend *SMBBackend
 }
 
 func (f *smbFile) ReadAt(ctx context.Context, b []byte, off int64) (int, error) {
 	if err := ctx.Err(); err != nil {
 		return 0, err
 	}
+
+	defer f.backend.watchdog(ctx)()
 
 	return f.File.ReadAt(b, off)
 }
@@ -27,6 +30,8 @@ func (f *smbFile) WriteAt(ctx context.Context, b []byte, off int64) (int, error)
 		return 0, err
 	}
 
+	defer f.backend.watchdog(ctx)()
+
 	return f.File.WriteAt(b, off)
 }
 
@@ -34,6 +39,8 @@ func (f *smbFile) Sync(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+
+	defer f.backend.watchdog(ctx)()
 
 	return f.File.Sync()
 }

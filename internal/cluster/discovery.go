@@ -14,7 +14,7 @@ import (
 	"time"
 
 	"github.com/digitalentity/replistore/internal/backend"
-	"github.com/sirupsen/logrus"
+	"log/slog"
 )
 
 const (
@@ -62,7 +62,7 @@ type Discovery struct {
 
 	stopCh   chan struct{}
 	stopOnce sync.Once
-	log      *logrus.Entry
+	log      *slog.Logger
 }
 
 func NewDiscovery(nodeID, advertiseAddr string, backends []backend.Backend) *Discovery {
@@ -73,7 +73,7 @@ func NewDiscovery(nodeID, advertiseAddr string, backends []backend.Backend) *Dis
 		backends:      backends,
 		states:        make(map[string]*peerState),
 		stopCh:        make(chan struct{}),
-		log:           logrus.WithField("component", "discovery").WithField("node_id", nodeID),
+		log:           slog.Default().With(slog.String("component", "discovery"), slog.String("node_id", nodeID)),
 	}
 }
 
@@ -85,7 +85,7 @@ func (d *Discovery) Start(ctx context.Context) error {
 	okCount := 0
 	for _, b := range d.backends {
 		if err := d.writeEntry(ctx, b); err != nil {
-			d.log.WithError(err).Warnf("Failed to write peer entry to backend %s", b.GetName())
+			d.log.Warn("Failed to write peer entry to backend", slog.String("backend", b.GetName()), slog.Any("error", err))
 			lastErr = err
 
 			continue
@@ -113,7 +113,7 @@ func (d *Discovery) Stop() {
 		entryPath := d.entryPath(d.NodeID)
 		for _, b := range d.backends {
 			if err := b.Remove(ctx, entryPath); err != nil {
-				d.log.WithError(err).Debugf("Failed to remove peer entry from backend %s", b.GetName())
+				d.log.Debug("Failed to remove peer entry from backend", slog.String("backend", b.GetName()), slog.Any("error", err))
 			}
 		}
 	})
@@ -192,7 +192,7 @@ func (d *Discovery) heartbeatLoop(ctx context.Context) {
 func (d *Discovery) heartbeatOnce(ctx context.Context) {
 	for _, b := range d.backends {
 		if err := d.writeEntry(ctx, b); err != nil {
-			d.log.WithError(err).Warnf("Heartbeat write failed on backend %s", b.GetName())
+			d.log.Warn("Heartbeat write failed on backend", slog.String("backend", b.GetName()), slog.Any("error", err))
 		}
 	}
 }
@@ -222,7 +222,7 @@ func (d *Discovery) pollOnce(ctx context.Context) {
 	for _, b := range d.backends {
 		entries, err := d.readBackendEntries(ctx, b)
 		if err != nil {
-			d.log.WithError(err).Warnf("Failed to list peers on backend %s", b.GetName())
+			d.log.Warn("Failed to list peers on backend", slog.String("backend", b.GetName()), slog.Any("error", err))
 
 			continue
 		}
@@ -261,7 +261,7 @@ func (d *Discovery) pollOnce(ctx context.Context) {
 		if age > peerExpiry {
 			if _, present := d.Peers[id]; present {
 				delete(d.Peers, id)
-				d.log.Debugf("Peer %s expired (no heartbeat for %v)", id, age)
+				d.log.Debug("Peer expired", slog.String("peer_id", id), slog.Duration("age", age))
 			}
 		}
 		if age > purgeAfter {
@@ -275,7 +275,7 @@ func (d *Discovery) pollOnce(ctx context.Context) {
 		if _, ok := observed[id]; !ok {
 			delete(d.Peers, id)
 			delete(d.states, id)
-			d.log.Debugf("Peer %s left the cluster (entry removed)", id)
+			d.log.Debug("Peer left the cluster", slog.String("peer_id", id))
 		}
 	}
 
@@ -305,7 +305,7 @@ func (d *Discovery) readBackendEntries(ctx context.Context, b backend.Backend) (
 		}
 		entry, err := d.readEntry(opCtx, b, path.Join(peersDir, fi.Name))
 		if err != nil {
-			d.log.WithError(err).Debugf("Skipping malformed peer entry %s on backend %s", fi.Name, b.GetName())
+			d.log.Debug("Skipping malformed peer entry", slog.String("entry", fi.Name), slog.String("backend", b.GetName()), slog.Any("error", err))
 
 			continue
 		}
@@ -346,9 +346,9 @@ func (d *Discovery) purgeEntry(ctx context.Context, nodeID string) {
 	for _, b := range d.backends {
 		opCtx, cancel := context.WithTimeout(ctx, backendOpTimeout)
 		if err := b.Remove(opCtx, entryPath); err != nil {
-			d.log.WithError(err).Debugf("Failed to purge stale peer entry %s on backend %s", entryPath, b.GetName())
+			d.log.Debug("Failed to purge stale peer entry", slog.String("entry_path", entryPath), slog.String("backend", b.GetName()), slog.Any("error", err))
 		}
 		cancel()
 	}
-	d.log.Infof("Purged stale peer entry for %s", nodeID)
+	d.log.Info("Purged stale peer entry", slog.String("peer_id", nodeID))
 }

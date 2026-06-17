@@ -18,8 +18,10 @@ This document outlines the architectural plan to modernize error handling, loggi
      - Allows dynamic routing of logs to multiple destinations (e.g. `os.Stdout` for human/k8s logs, and a local circular buffer/file for the HTTP diagnostic API).
      - Allows middleware pipelines (e.g. injecting common attributes, filtering levels dynamically).
 2. **Correlation/Request IDs via Context**:
-   - Create a middleware handler or context wrapper that extracts correlation IDs from `context.Context` and appends them to log attributes automatically.
    - Mint a unique `correlation_id` at FUSE entrypoints (`Attr`, `Lookup`, `Read`, `Write`, `Create`, etc.) and HTTP API handlers.
+   - Generate correlation IDs as time-ordered Snowflake IDs using `github.com/bwmarrin/snowflake` with base36 encoding (`strconv.FormatInt(id.Int64(), 36)`).
+   - Generate numeric 10-bit worker IDs by hashing the node ID/hostname.
+   - Create a context logger wrapper that extracts the correlation ID from `context.Context` and appends it to log attributes automatically.
    - Propagate this context down through the VFS cache and Backend selector layers.
 3. **Log Configuration**:
    - Add fields to `config.yaml`:

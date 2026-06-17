@@ -59,6 +59,11 @@ func (bc *BackendConfig) ToOptions() map[string]any {
 	return opts
 }
 
+type LoggingConfig struct {
+	Level  string `yaml:"level"`
+	Format string `yaml:"format"`
+}
+
 type SelectorConfig struct {
 	Type          string   `yaml:"type"`
 	WriteAffinity []string `yaml:"write_affinity"`
@@ -78,6 +83,7 @@ type Config struct {
 	ExpectedClusterSize  int             `yaml:"expected_cluster_size"`
 	MaxIODuration        string          `yaml:"max_io_duration"`
 	Selector             SelectorConfig  `yaml:"selector"`
+	Logging              LoggingConfig   `yaml:"logging"`
 	Backends             []BackendConfig `yaml:"backends"`
 }
 
@@ -93,7 +99,12 @@ func LoadConfig(path string) (*Config, error) {
 	if err := yaml.Unmarshal([]byte(expandedData), &cfg); err != nil {
 		return nil, err
 	}
-
+	if cfg.Logging.Level == "" {
+		cfg.Logging.Level = "info"
+	}
+	if cfg.Logging.Format == "" {
+		cfg.Logging.Format = "text"
+	}
 	if cfg.Selector.Type == "" {
 		cfg.Selector.Type = "random"
 	}

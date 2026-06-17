@@ -44,6 +44,21 @@ func (b *SMBBackend) GetFreeSpace() (uint64, error) {
 	return free, err
 }
 
+func (b *SMBBackend) GetTotalSpace() (uint64, error) {
+	var total uint64
+	err := b.execute(context.Background(), func(share *smb2.Share) error {
+		info, err := share.Statfs(".")
+		if err != nil {
+			return err
+		}
+		total = info.TotalBlockCount() * info.BlockSize()
+
+		return nil
+	})
+
+	return total, err
+}
+
 func (b *SMBBackend) Ping(ctx context.Context) error {
 	return b.execute(ctx, func(share *smb2.Share) error {
 		_, err := share.Stat(".")
@@ -98,7 +113,7 @@ func (b *SMBBackend) OpenFile(ctx context.Context, path string, flag int, perm o
 		return nil, err
 	}
 
-	return &smbFile{f}, nil
+	return &smbFile{File: f, backend: b}, nil
 }
 
 func (b *SMBBackend) Mkdir(ctx context.Context, path string, perm os.FileMode) error {
