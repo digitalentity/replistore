@@ -19,6 +19,8 @@ Welcome to the RepliStore documentation. This project provides a distributed, FU
 - [**Configuration Guide**](configuration.md) - Detailed description of `config.yaml` options.
 - [**Control & Observability API**](api.md) - HTTP REST API endpoints and data access.
 - [**Observability & Logging Design**](observability.md) - Plan for standard `log/slog` migration, custom error mappings, and metrics instrumentation.
+- [**Proposals**](proposals/)
+    - [go-smb2 Context & Resilience](proposals/go-smb2-context-and-resilience.md) - Defects in the upstream SMB library and the changes planned for our fork.
 - [**Testing Guide**](testing.md) - How to run and extend the test suite.
 - [**Roadmap & Known Gaps**](../ROADMAP.md) - Proposed improvements not yet implemented and open issues from code review.
 
