@@ -13,7 +13,7 @@ import (
 	"time"
 
 	"github.com/digitalentity/replistore/internal/backend"
-	"github.com/cloudsoda/go-smb2"
+	"go.kvsh.ch/smb2"
 )
 
 const defaultDialTimeout = 5 * time.Second

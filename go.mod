@@ -7,9 +7,9 @@ require (
 	github.com/absfs/memfs v1.1.0
 	github.com/absfs/smbfs v0.9.1
 	github.com/bwmarrin/snowflake v0.3.0
-	github.com/cloudsoda/go-smb2 v0.0.0-20260609183447-7b96c35f5f4b
 	github.com/samber/slog-multi v1.8.0
 	github.com/stretchr/testify v1.11.1
+	go.kvsh.ch/smb2 v0.0.1
 	golang.org/x/sync v0.21.0
 	gopkg.in/yaml.v3 v3.0.1
 )

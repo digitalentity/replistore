@@ -5,7 +5,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/cloudsoda/go-smb2"
+	"go.kvsh.ch/smb2"
 )
 
 // openScopedCtx bounds a single OpenFile round-trip by the caller's context

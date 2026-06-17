@@ -3,7 +3,7 @@ package smb
 import (
 	"context"
 
-	"github.com/cloudsoda/go-smb2"
+	"go.kvsh.ch/smb2"
 )
 
 // execute runs op against a context-bound share, transparently reconnecting and
