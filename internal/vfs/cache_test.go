@@ -656,3 +656,29 @@ func TestCache_GraceClockPersistsAcrossSaveLoad(t *testing.T) {
 	require.Len(t, got, 1)
 	assert.Equal(t, "d.txt", got[0].Meta.Name)
 }
+
+func TestCache_Warmup_ErrorDoesNotMarkFullyIndexed(t *testing.T) {
+	ctx := context.Background()
+	cache := vfs.NewCache()
+
+	b1 := &bmock.MockBackend{NameVal: "b1"}
+	b1.On("Walk", mock.Anything, "", mock.Anything).Return(assert.AnError)
+
+	cache.Warmup(ctx, []backend.Backend{b1})
+
+	assert.False(t, cache.Root.FullyIndexed, "Cache should not be marked fully indexed if scanning fails")
+	b1.AssertExpectations(t)
+}
+
+func TestCache_Warmup_SuccessMarksFullyIndexed(t *testing.T) {
+	ctx := context.Background()
+	cache := vfs.NewCache()
+
+	b1 := &bmock.MockBackend{NameVal: "b1"}
+	b1.On("Walk", mock.Anything, "", mock.Anything).Return(nil)
+
+	cache.Warmup(ctx, []backend.Backend{b1})
+
+	assert.True(t, cache.Root.FullyIndexed, "Cache should be marked fully indexed if scanning succeeds")
+	b1.AssertExpectations(t)
+}

@@ -1022,17 +1022,20 @@ func (c *Cache) Warmup(ctx context.Context, backends []backend.Backend) {
 					slog.String("backend", b.GetName()),
 					slog.Any("error", err),
 				)
-			} else {
-				c.logger(gCtx).Info("Finished scanning backend", slog.String("backend", b.GetName()))
+
+				return err
 			}
+			c.logger(gCtx).Info("Finished scanning backend", slog.String("backend", b.GetName()))
 
 			return nil
 		})
 	}
-	_ = g.Wait()
-
-	// Mark all directories as FullyIndexed once we finished the whole scan
-	c.markAllIndexed(c.Root)
+	if err := g.Wait(); err != nil {
+		c.logger(ctx).Error("Warmup failed: at least one backend scan failed. Cache will not be marked fully indexed.", slog.Any("error", err))
+	} else {
+		// Mark all directories as FullyIndexed once we finished the whole scan
+		c.markAllIndexed(c.Root)
+	}
 
 	c.Mu.Lock()
 	c.LastReconciled = time.Now()
