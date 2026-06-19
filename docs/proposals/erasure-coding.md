@@ -14,7 +14,7 @@ We will use systematic Reed-Solomon coding (via the `github.com/klauspost/reedso
 - Each stripe is independently encoded into $N$ data chunks and $M$ parity chunks, where the chunk size is $\text{chunk\_size} = \text{stripe\_size} / N$.
 - The total number of backends configured must be at least $N+M$.
 - Each configured backend stores exactly one **shard** of the file. A shard is the concatenation of that backend's chunk from every stripe (see §1.1).
-- Small files (e.g., $< ec\_stripe\_size$) automatically fall back to standard replication (to avoid $N+M$ small-file metadata overhead and latency). Thus, the mount supports both replicated and EC files concurrently.
+- Small files (e.g., $< erasure\_coding.min\_file\_size$) automatically fall back to standard replication (to avoid $N+M$ small-file metadata overhead and latency). Thus, the mount supports both replicated and EC files concurrently.
 
 The striped layout is what makes partial and random writes affordable: a write only re-encodes the **stripes it dirties**, not the whole file, saving substantial CPU. While the commit protocol writes the entire shard file via temporary copy-on-write to avoid write holes (torn writes), we still avoid full-object re-encoding overhead.
 
@@ -58,32 +58,41 @@ replication_factor: 2
 # Storage mode: "replicated" (default) or "erasure_coded"
 storage_mode: "erasure_coded"
 
-# Erasure Coding parameters (ignored if storage_mode is "replicated")
-ec_data_shards: 4
-ec_parity_shards: 2
-
-# Stripe size in bytes. Must be a multiple of ec_data_shards.
-# This is fixed per file at creation time and recorded in the sidecar/header.
-ec_stripe_size: 1048576
-
-# Min shards that must commit for an EC write to succeed (>= ec_data_shards)
-write_quorum: 5
-
-# Path for the local staging/write-back cache (required for EC writes)
-staging_dir: "/tmp/replistore/staging"
-
-# Threshold size in bytes below which files use replication instead of EC (must be >= ec_stripe_size)
-ec_min_file_size: 1048576
+# Erasure Coding configuration block (ignored if storage_mode is "replicated")
+erasure_coding:
+  profile: "ec4.2"         # Profile name: "ec2.2", "ec3.2", "ec4.2", "ec5.3"
+  stripe_size: 1048576     # Stripe size in bytes (must be a multiple of N)
+  write_quorum: 5          # Min shards that must commit for an EC write to succeed (>= N)
+  staging_dir: "/tmp/replistore/staging" # Local staging/write-back cache path
+  min_file_size: 1048576   # Threshold below which files fallback to replication
 ```
+
+### Storage Profiles Comparison Table:
+
+The following table compares the reliability, overhead, and requirements of the supported storage profiles (including standard replication fallback):
+
+| Storage Configuration | Storage Efficiency | Storage Overhead | Min. Backends Required | Max Disk Failures Tolerated | Synchronous Write Quorum (Recommended) |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| **Replication (RF=2)** | 50.0% | 100% (2.0x) | 2 | 1 | 2 (Full) / 1 (Degraded) |
+| **Replication (RF=3)** | 33.3% | 200% (3.0x) | 3 | 2 | 2 (Quorum) / 1 (Degraded) |
+| **EC 2+2 (`ec2.2`)** | 50.0% | 100% (2.0x) | 4 | 2 | 3 ($N+1$) / 2 ($N$) |
+| **EC 3+2 (`ec3.2`)** | 60.0% | 66.7% (1.67x) | 5 | 2 | 4 ($N+1$) / 3 ($N$) |
+| **EC 4+2 (`ec4.2`)** | 66.7% | 50.0% (1.5x) | 6 | 2 | 5 ($N+1$) / 4 ($N$) |
+| **EC 5+3 (`ec5.3`)** | 62.5% | 60.0% (1.6x) | 8 | 3 | 6 ($N+1$) / 5 ($N$) |
 
 ### Configuration Validation Rules:
 - If `storage_mode` is `"erasure_coded"`:
-  - Both `ec_data_shards` and `ec_parity_shards` must be $> 0$.
-  - The number of configured `backends` must be $\ge ec\_data\_shards + ec\_parity\_shards$.
-  - `ec_stripe_size` must be $> 0$ and an exact multiple of `ec_data_shards` (so `chunk_size` is integral).
-  - `staging_dir` must be set, and the local directory must be accessible/writable.
-  - `ec_min_file_size` must be $\ge ec\_stripe\_size$ to prevent excessive padding overhead on small files (e.g., a file just above the threshold must not pad to a massive stripe size).
-  - The `write_quorum` setting must satisfy `write_quorum >= ec_data_shards` and `write_quorum <= ec_data_shards + ec_parity_shards`. To guarantee redundancy at commit time (e.g., at least 1 parity shard is written synchronously), we recommend configuring `write_quorum` $\ge ec\_data\_shards + 1$.
+  - `erasure_coding.profile` must be one of `"ec2.2"`, `"ec3.2"`, `"ec4.2"`, or `"ec5.3"`.
+  - Let $N$ and $M$ be the data and parity shard counts defined by the profile:
+    - `"ec2.2"`: $N=2, M=2$
+    - `"ec3.2"`: $N=3, M=2$
+    - `"ec4.2"`: $N=4, M=2$
+    - `"ec5.3"`: $N=5, M=3$
+  - The number of configured `backends` must be $\ge N + M$.
+  - `erasure_coding.stripe_size` must be $> 0$ and an exact multiple of $N$ (so `chunk_size` is integral).
+  - `erasure_coding.staging_dir` must be set, and the local directory must be accessible/writable.
+  - `erasure_coding.min_file_size` must be $\ge erasure\_coding.stripe\_size$ to prevent excessive padding overhead on small files.
+  - The `erasure_coding.write_quorum` setting must satisfy `write_quorum >= N` and `write_quorum <= N + M`. To guarantee redundancy at commit time (e.g., at least 1 parity shard is written synchronously), we recommend configuring `write_quorum >= N + 1`.
 
 ---
 
@@ -123,7 +132,7 @@ type Sidecar struct {
 	Deleted     bool        `json:"deleted"`      // Tombstone marker for deletes
 
 	// Version vectors (GlusterFS-style)
-	DataGen     int64       `json:"data_gen"`        // Incremented on content changes (reads/writes/truncates)
+	DataGen     int64       `json:"data_gen"`        // Incremented on content changes (writes/truncates)
 	MetaGen     int64       `json:"meta_gen"`        // Incremented on metadata-only changes (chmod, rename)
 	Dirty       bool        `json:"dirty,omitempty"` // Write-intent lock marker for crash recovery
 
@@ -185,7 +194,7 @@ The header layout contains:
 3. Extract the `SHA-256 Checksum` ($C_{header}$) from the last 32 bytes (`header[992:1024]`).
 4. Compute the SHA-256 checksum over the first 992 bytes of the header (`header[0:992]`).
 5. If the calculated checksum does not match $C_{header}$, reject the file as corrupted.
-6. Read the CBOR payload length from `header[8:12]`. Pass exactly that many bytes from `header[12:12+length]` to the CBOR decoder to prevent parser-dependent issues with trailing null padding.
+6. Read the CBOR payload length from `header[8:12]`. If the length is $> 980$ bytes (usable CBOR space), reject the header as corrupted. Otherwise, pass exactly that many bytes from `header[12:12+length]` to the CBOR decoder to prevent parser-dependent issues with trailing null padding and guard against out-of-range slicing.
 
 ### 4.2. CBOR Metadata Schema:
 To minimize payload size and parsing overhead, CBOR map serialization uses integer keys instead of string names. 
@@ -199,8 +208,8 @@ type ShardHeaderMetadata struct {
 	DataShards      int    `cbor:"3,key"` // N data shards
 	ParityShards    int    `cbor:"4,key"` // M parity shards
 	StripeSize      int64  `cbor:"5,key"` // Stripe size in bytes
-	LogicalSize     int64  `json:"logical_size"` // Logical size of the file
-	FileHash        []byte `cbor:"7,key"` // 32-byte raw Merkle root of original file content (consistent with Sidecar.FileHash)
+	LogicalSize     int64  `cbor:"6,key"` // Logical size of the file
+	FileHash        []byte `cbor:"7,key"` // 32-byte raw Merkle root of original file content (consistent with Sidecar.FileHash, but stored as raw bytes without the "merkle:" string prefix)
 	ShardMerkleRoot []byte `cbor:"8,key"` // 32-byte SHA-256 Merkle root of this shard's chunk hashes
 }
 ```
@@ -214,7 +223,7 @@ ShardHeaderMetadata = {
   4 => uint,            ; parity_shards (M)
   5 => uint,            ; stripe_size in bytes
   6 => uint,            ; logical_size in bytes
-  7 => bstr,            ; file_hash (32-byte raw Merkle root of original file content)
+  7 => bstr,            ; file_hash (32-byte raw Merkle root of original file content, without the "merkle:" string prefix)
   8 => bstr,            ; shard_merkle_root (32-byte raw Merkle root)
 }
 ```
@@ -263,7 +272,7 @@ fileOff  = 1024 + stripe * chunk_size + (off % chunk_size)
    - If a local write staging handle exists for the path, redirect the read to read directly from the local staging file to preserve POSIX compliance.
 2. **Fast-Path (No Failures):**
    - If the bytes requested fall within data shard `chunkIdx` and the backend holding that shard index (per `Shards`) is healthy:
-   - Confirm that the shard's header `data_gen` (read and cached on open) matches the authoritative `Sidecar.DataGen`. If they do not match, the shard is stale (e.g., it missed the last write due to `write_quorum < N+M`); treat this backend index as missing and fall back to the **Slow-Path**.
+   - Confirm that the shard's header `data_gen` (read and cached on open) matches the authoritative `Sidecar.DataGen`. If they do not match, the shard is stale (e.g., it missed the last write due to `erasure_coding.write_quorum < N+M`); treat this backend index as missing and fall back to the **Slow-Path**.
    - Perform a direct `ReadAt` from that backend at `fileOff`. Verify the chunk against its hash retrieved from the cached footer. (To avoid paying an extra backend read roundtrip to fetch the footer on every logical read, the VFS `FileHandle` reads and caches the shard footers and headers from the backends upon file open.)
    - **No decoding/parity overhead is incurred.**
 3. **Slow-Path (Degraded / Failover):**
@@ -274,7 +283,7 @@ fileOff  = 1024 + stripe * chunk_size + (off % chunk_size)
 4. **Boundary-Spanning Reads:**
    - A read crossing a chunk or stripe boundary is split into per-stripe sub-reads. Each sub-read takes the Fast-Path or Slow-Path independently, and the results are merged before returning to the FUSE kernel.
 
-Note on Overhead: For files near the `ec_min_file_size` threshold (which is $\ge ec\_stripe\_size$, e.g. 1MB) spread across $N+M=6$ shards, the 1024-byte header and shard footers add $\sim 0.1\%$ overhead per shard. This overhead scales down quickly for larger files and justifies setting `ec_min_file_size` sufficiently high.
+Note on Overhead: For files near the `erasure_coding.min_file_size` threshold (which is $\ge erasure\_coding.stripe\_size$, e.g. 1MB) spread across $N+M=6$ shards, the 1024-byte header and shard footers add $\sim 0.1\%$ overhead per shard. This overhead scales down quickly for larger files and justifies setting `erasure_coding.min_file_size` sufficiently high.
 
 ---
 
@@ -283,33 +292,37 @@ Note on Overhead: For files near the `ec_min_file_size` threshold (which is $\ge
 We implement a local write-back cache as a staging area, with **dirty-stripe tracking** so that a flush only re-encodes the stripes that actually changed. To eliminate the classic EC "write hole" (torn writes causing permanent data loss on crash), we write updated shard chunks to temporary files and atomically rename them upon quorum validation.
 
 1. **Storage Mode Selection at First Flush:**
-   - The storage mode is determined during the file's first `Flush`/`Close` (before any backend data is written): if the size is $< ec\_min\_file\_size$, the VFS commits it using standard replication (to `replication_factor` backends). If the size is $\ge ec\_min\_file\_size$, it commits it as an erasure-coded file (to $N+M$ backends).
+   - The storage mode is determined during the file's first `Flush`/`Close` (before any backend data is written): if the size is $< erasure\_coding.min\_file\_size$, the VFS commits it using standard replication (to `replication_factor` backends). If the size is $\ge erasure\_coding.min\_file\_size$, it commits it as an erasure-coded file (to $N+M$ backends).
    - Once the file is committed to the backends for the first time, its storage mode is locked and cannot be changed dynamically. Empty files (0 bytes) created but never written remain as candidates for the default mode until their first flush.
 2. **Open for Write:**
-   - Create a local working file in `staging_dir` and a dirty-stripe bitmap.
-   - For an **existing** EC file, stripes are faulted into staging on demand: a write that does not cover a full stripe first reads that stripe (Fast-Path, or Slow-Path if degraded) so the read-modify-write has the surviving data needed to recompute parity.
+   - Create a local working file in `erasure_coding.staging_dir` and a dirty-stripe bitmap.
+   - For an **existing** EC file, stripes are faulted into staging on demand: a write that does not cover a full stripe first reads that stripe (Fast-Path, or Slow-Path if degraded) so the read-modify-write has the surviving data needed to recompute parity. If the stripe is degraded and fewer than $N$ healthy chunks survive (making reconstruction impossible), the VFS must immediately fail the write operation and return an I/O error (`EIO`) to the client.
 3. **Writes:**
    - Each write lands in the staging file and marks the covering stripes dirty.
+
 4. **Flush / Release (Commit Protocol):**
    - If the file was committed in replicated mode (e.g. legacy files, or small files configured to run as replicated): use standard replication (write the whole file to `replication_factor` backends) and skip the EC path.
    - Otherwise, run the EC commit protocol:
      1. **Lock** the path (existing VFS path lock / fencing).
      2. **Set intent:** write the sidecar with `Dirty = true` and `DataGen` incremented. This intent record is the recovery anchor — any crash after this point is detectable.
      3. **Encode dirty stripes:** for each dirty stripe, RS-encode its $N+M$ chunks.
-     4. **Write to temporary shards via Copy-on-Write:** For each backend, copy the existing shard to a temporary file (`path.tmp.shard_index`), patch the dirty stripes with their new chunks, and verify its integrity. Writing the full shard via temp files prevents overwriting the old generation in place (eliminating the EC write hole), though we still save CPU overhead by only re-encoding dirty stripes.
+     4. **Write to temporary shards via Copy-on-Write:** For each backend, copy the existing shard to a temporary file (`path.tmp.shard_index`) (for a new file, simply write a fresh temporary shard file without copying), patch the dirty stripes with their new chunks, and verify its integrity. Writing the full shard via temp files prevents overwriting the old generation in place (eliminating the EC write hole), though we still save CPU overhead by only re-encoding dirty stripes.
         - *Copy-Offload Optimization:* Since copying the entire shard file over the network can incur high I/O latency, the VFS should offload the copy server-side where the backend supports it (e.g., using SMB `FSCTL_SRV_COPYCHUNK` or copy-offload commands). If copy offloading is unsupported by the backend, this I/O amplification must be documented, and EC should be recommended primarily for append-heavy or large sequential workloads rather than frequent small random rewrites.
-     5. **Re-hash and build Footers:** recompute the SHA-256 chunk hash for every dirty chunk, recompute each touched shard's `shard_merkle_root` and the file-level `file_hash` (using `Sidecar.EC.StripeHashes` to incrementally update Merkle roots). Append the new chunk hashes footer to the temporary shard files.
-     6. **Verify write quorum:** the session succeeds only if, for every dirty stripe, at least `write_quorum` chunks were written successfully to the temporary files. If not, leave `Dirty = true` and fail; the client may retry. Note: If `write_quorum` is less than $N+M$ (e.g., 5 of 6), a successful write session will leave some shards stale. This is expected; the VFS cache identifies these via generation checks, and the background `RepairManager` (§8) heals them asynchronously.
+     5. **Overwrite/re-place Footers:** recompute the SHA-256 chunk hash for every dirty chunk, recompute each touched shard's `shard_merkle_root` and the file-level `file_hash` (using `Sidecar.EC.StripeHashes` to incrementally update Merkle roots). Write the new chunk hashes footer directly at the footer offset (`1024 + numStripes * chunk_size`) in the temporary shard files, truncating any old footer remaining beyond the new payload boundary (especially when the stripe count has changed due to truncates).
+     6. **Verify write quorum:** the session succeeds only if at least `erasure_coding.write_quorum` backends (shards) successfully completed their temporary file writes. If not, leave `Dirty = true` and fail; the client may retry. Note: If `erasure_coding.write_quorum` is less than $N+M$ (e.g., 5 of 6), a successful write session will leave some shards stale. This is expected; the VFS cache identifies these via generation checks, and the background `RepairManager` (§8) heals them asynchronously.
      7. **Update Header in Temp and Atomic Commit (Rename):** Update and write the new 1024-byte header block (containing the new `data_gen` and checksums) directly into the temporary shard files `path.tmp.shard_index`. Then, atomically rename the temporary shard files to their final names `path` on the backends. This ensures that the new payload and the new header generation are committed in a single atomic step.
      8. **Clear intent:** write the sidecar with `Dirty = false`, the final `file_hash`, updated `Sidecar.EC.StripeHashes`, and the committed `DataGen`. This sidecar write is the transaction commit point.
      9. **Unlock.**
-   - Delete the local staging file and acknowledge completion of the write/close to the kernel.
+    - Delete the local staging file and acknowledge completion of the write/close to the kernel.
 5. **Truncates and Shrinks:**
    - A file truncate or shrink operation is treated as a content write: it increments `DataGen`, runs through the same staging and commit protocol, and recomputes the stripe count, header `logical_size`, and footer offsets for the newly reduced file geometry.
 
 Crash semantics:
 - A crash during writing leaves the sidecar with `Dirty = true`. Because we write to temporary files, the old generation remains intact on the final paths.
-- **Partial Rename Resolution:** Since renames across $N+M$ backends are non-atomic, a crash during Step 7 can leave $k$ backends renamed to `path` (at generation $G+1$) and the remainder at generation $G$ (some still having the temporary files). The `RepairManager` (§8) handles this: if a quorum of renamed/temporary files is present, it rolls the transaction forward; otherwise, it rolls back by reconstructing any overwritten generation $G+1$ shards from the surviving generation $G$ shards (since $N$ shards are sufficient to reconstruct the old generation $G$ data).
+- **Partial Rename Resolution:** Since renames across $N+M$ backends are non-atomic, a crash during Step 7 can leave $k$ backends renamed to `path` (at generation $G+1$) and the remainder at generation $G$ (some still having the temporary files). The `RepairManager` (§8) reconciles these to determine the transaction outcome:
+  - **Roll Forward:** If $\ge N$ copies at $G+1$ survive (temp files plus already-renamed files combined), it rolls the transaction forward. Step 6 guarantees $\text{ec\_write\_quorum} \ge N$ temp files were written before renames started, so this path is taken if a rename crash occurred mid-protocol.
+  - **Roll Back:** If $< N$ copies at $G+1$ survive, but $\ge N$ copies at $G$ survive (which requires $\le M$ shards to have been renamed to $G+1$), it rolls back by discarding the temporary files and restoring the generation-$G$ version of any shard already renamed to $G+1$, by RS-decoding from the surviving generation-$G$ shards.
+  - **Unrecoverable Failure:** If $< N$ copies survive at both $G$ and $G+1$ (e.g. crash plus multiple concurrent backend failures), the file is unrecoverable. In this case, the `RepairManager` aborts and logs a permanent error to prevent infinite repair loops.
 - **Degraded-Read Performance Cliff:** A failed write that aborts before commit leaves the sidecar at `DataGen = G+1` while the committed backend shard headers are still at $G$. This causes subsequent fast-path reads to mismatch on generation, dropping the entire path into slow-path decode (degraded-read cliff). To bound this performance degradation, the `RepairManager` must prioritize healing paths where `Dirty = true` immediately.
 
 Metadata-only operations (rename, changing `Deleted`, etc.) bump `MetaGen` only, write the sidecar, and never touch shard data or trigger a data heal.
@@ -326,7 +339,10 @@ For erasure-coded files the `RepairManager` performs both shard-loss repair and 
    - its sidecar has `Dirty = true` (interrupted write session), or
    - a shard backend from `Shards` is missing, or
    - a scrub detects a chunk whose SHA-256 disagrees with the hash recorded in the shard's footer.
-2. **Generation reconciliation (GlusterFS-style).** For each affected stripe, read the shard headers from the surviving backends and take the highest `data_gen` as authoritative. Chunks with a lower `data_gen` are treated as missing. If `Dirty = true` in the sidecar, the heal path reconciles whether a quorum of new temporary shard files exists. If yes, it rolls the transaction forward; if no, it discards the temporary files (rolling back).
+2. **Generation reconciliation (GlusterFS-style).** For each affected stripe, read the shard headers from the surviving backends and take the highest `data_gen` as authoritative. Chunks with a lower `data_gen` are treated as missing. If `Dirty = true` in the sidecar, the heal path reconciles the number of surviving copies per generation:
+   - **Roll Forward:** If $\ge N$ copies at $G+1$ survive (temp files plus already-renamed files combined), it rolls forward.
+   - **Roll Back:** If $< N$ copies at $G+1$ survive, but $\ge N$ copies at $G$ survive, it rolls back by discarding the temporary files and restoring the generation-$G$ version of any shard already renamed to $G+1$, by RS-decoding from the surviving generation-$G$ shards.
+   - **Unrecoverable Failure:** If $< N$ copies survive at both $G$ and $G+1$, the stripe is unrecoverable; the heal aborts and raises a permanent error.
 3. **Reconstruct.** If at least $N$ authoritative chunks survive for a stripe, RS-decode the missing/stale chunks, recompute their chunk hashes, write them to temporary files, and rename them atomically. Refresh the affected shard headers (`shard_merkle_root`, `file_hash`) reusing the **authoritative `DataGen`**.
 4. **Finalize.** Once every stripe is consistent and every shard index present, clear `Dirty` in the sidecar.
 
