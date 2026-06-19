@@ -4,7 +4,8 @@
 
 BINARY_NAME=replistore
 BUILD_DIR=build
-VERSION=1.0.0
+VERSION ?= $(shell ./scripts/get_version.sh)
+export VERSION
 ARCH=amd64
 
 all: lint test build
@@ -12,7 +13,7 @@ all: lint test build
 build:
 	@echo "Building binary..."
 	@mkdir -p $(BUILD_DIR)
-	go build -o $(BUILD_DIR)/$(BINARY_NAME) ./cmd/replistore/...
+	go build -ldflags "-X main.Version=$(VERSION)" -o $(BUILD_DIR)/$(BINARY_NAME) ./cmd/replistore/...
 
 test:
 	@echo "Running tests..."

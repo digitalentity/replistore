@@ -24,6 +24,9 @@ import (
 	"github.com/digitalentity/replistore/internal/vfs"
 )
 
+// Version is the build version of RepliStore, injected at compilation.
+var Version = "v0.0.0-unknown"
+
 const (
 	defaultMonitorInterval      = 10 * time.Second
 	defaultCacheRefreshInterval = 5 * time.Minute
@@ -32,8 +35,14 @@ const (
 )
 
 func main() {
+	versionFlag := flag.Bool("version", false, "print version and exit")
 	configPath := flag.String("config", "config.yaml", "path to config file")
 	flag.Parse()
+
+	if *versionFlag {
+		fmt.Println(Version)
+		os.Exit(0)
+	}
 
 	cfg, err := config.LoadConfig(*configPath)
 	if err != nil {
@@ -65,6 +74,7 @@ func run(cfg *config.Config, nodeID string) error {
 	defer cancel()
 
 	slog.Info("Starting RepliStore",
+		slog.String("version", Version),
 		slog.Int("backend_count", len(cfg.Backends)),
 		slog.Int("replication_factor", cfg.ReplicationFactor),
 		slog.Int("write_quorum", cfg.WriteQuorum),
