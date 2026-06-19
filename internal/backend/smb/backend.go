@@ -240,5 +240,3 @@ func isConnectionError(err error) bool {
 
 	return false
 }
-
-

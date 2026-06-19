@@ -1069,22 +1069,15 @@ func (d *Dir) Rename(ctx context.Context, req *fuse.RenameRequest, newDir fs.Nod
 		defer unlockSecond()
 	}
 
-	firstLock, err := d.fs.acquireLock(ctx, firstPath)
+	firstLock, secondLock, err := d.acquireRenameLocks(ctx, firstPath, secondPath)
 	if err != nil {
 		return err
 	}
 	if firstLock != nil {
 		defer firstLock.Release()
 	}
-
-	if firstPath != secondPath {
-		secondLock, err := d.fs.acquireLock(ctx, secondPath)
-		if err != nil {
-			return err
-		}
-		if secondLock != nil {
-			defer secondLock.Release()
-		}
+	if secondLock != nil {
+		defer secondLock.Release()
 	}
 
 	// POSIX rename must atomically replace an existing target. SMB2 rename
@@ -1109,56 +1102,9 @@ func (d *Dir) Rename(ctx context.Context, req *fuse.RenameRequest, newDir fs.Nod
 		oldDescendantGens = d.collectDescendantGenerations(ctx, oldPath, descendants, backends)
 	}
 
-	var mu sync.Mutex
-	var successful []string
-	var failures []string
-	var lastErr error
-
-	g, gCtx := errgroup.WithContext(ctx)
-	for _, bName := range backends {
-		g.Go(func() error {
-			b := d.fs.Backends[bName]
-
-			// Ensure destination parent path exists on this backend
-			if err := b.MkdirAll(gCtx, targetParentPath, 0755); err != nil {
-				d.fs.pathLogger(ctx, oldPath).Warn(fmt.Sprintf("Failed to ensure parent path %s on backend %s: %v", targetParentPath, bName, err))
-				// Continue anyway, maybe it exists
-			}
-
-			err := b.Rename(gCtx, oldPath, newPath)
-			mu.Lock()
-			defer mu.Unlock()
-			switch {
-			case err == nil:
-				successful = append(successful, bName)
-			case isDir && (os.IsNotExist(err) || errors.Is(err, os.ErrNotExist)):
-				// The source dir simply doesn't exist on this backend: that is
-				// neither a success nor a failure for quorum purposes, and
-				// there is no orphan to clean up.
-				d.fs.pathLogger(ctx, oldPath).Debug(fmt.Sprintf("Skipping rename on %s: source does not exist", bName))
-			default:
-				d.fs.pathLogger(ctx, oldPath).Warn(fmt.Sprintf("Failed to rename to %s on %s: %v", newPath, bName, err))
-				failures = append(failures, bName)
-				lastErr = err
-			}
-
-			return nil
-		})
-	}
-	_ = g.Wait()
-
-	if len(successful) < d.fs.WriteQuorum {
-		// Rollback successful ones
-		for _, bName := range successful {
-			b := d.fs.Backends[bName]
-			_ = b.Rename(ctx, newPath, oldPath)
-		}
-		d.fs.pathLogger(ctx, oldPath).Error(fmt.Sprintf("Failed to rename to %s: write quorum not met (%d/%d)", newPath, len(successful), d.fs.WriteQuorum))
-		if lastErr != nil {
-			return lastErr
-		}
-
-		return syscall.EIO
+	successful, failures, err := d.executeBackendRename(ctx, oldPath, newPath, targetParentPath, backends, isDir)
+	if err != nil {
+		return err
 	}
 
 	// The renamed file or directory starts a new lineage at the new path and the old
@@ -1192,32 +1138,9 @@ func (d *Dir) Rename(ctx context.Context, req *fuse.RenameRequest, newDir fs.Nod
 
 	// Re-key descendants' metadata documents: write sidecars at the new paths
 	// and tombstones at the old paths (REVIEW.md C6-dirs).
-	newDescendantGens := make(map[string]int64)
-	if isDir && len(descendants) > 0 {
-		var wg sync.WaitGroup
-		var muLock sync.Mutex
-		for _, rel := range descendants {
-			wg.Add(1)
-			go func(rel string) {
-				defer wg.Done()
-				oldDescendantPath := oldPath + "/" + rel
-				newDescendantPath := newPath + "/" + rel
-				oldGen := oldDescendantGens[rel]
-
-				newGen := max(oldGen, d.fs.maxTombstoneGen(ctx, newDescendantPath)) + 1
-				muLock.Lock()
-				newDescendantGens[rel] = newGen
-				muLock.Unlock()
-
-				d.fs.writeSidecars(ctx, newDescendantPath, vfs.Sidecar{DataGen: newGen, Writer: d.fs.NodeID}, successful)
-
-				tomb := vfs.Sidecar{DataGen: oldGen + 1, Writer: d.fs.NodeID, Deleted: true}
-				if n := d.fs.writeTombstones(ctx, oldDescendantPath, tomb, all); n < len(all) {
-					d.fs.pathLogger(ctx, oldDescendantPath).Warn(fmt.Sprintf("Tombstone for renamed descendant path reached only %d/%d backends", n, len(all)))
-				}
-			}(rel)
-		}
-		wg.Wait()
+	var newDescendantGens map[string]int64
+	if isDir {
+		newDescendantGens = d.renameDescendants(ctx, oldPath, newPath, descendants, oldDescendantGens, successful, all)
 	}
 
 	// Update Cache
@@ -1271,6 +1194,116 @@ func (d *Dir) Rename(ctx context.Context, req *fuse.RenameRequest, newDir fs.Nod
 	}
 
 	return nil
+}
+
+func (d *Dir) executeBackendRename(ctx context.Context, oldPath, newPath, targetParentPath string, backends []string, isDir bool) ([]string, []string, error) {
+	var successful []string
+	var failures []string
+	var mu sync.Mutex
+	var lastErr error
+
+	g, gCtx := errgroup.WithContext(ctx)
+	for _, bName := range backends {
+		g.Go(func() error {
+			b := d.fs.Backends[bName]
+
+			// Ensure destination parent path exists on this backend
+			if err := b.MkdirAll(gCtx, targetParentPath, 0755); err != nil {
+				d.fs.pathLogger(ctx, oldPath).Warn(fmt.Sprintf("Failed to ensure parent path %s on backend %s: %v", targetParentPath, bName, err))
+				// Continue anyway, maybe it exists
+			}
+
+			err := b.Rename(gCtx, oldPath, newPath)
+			mu.Lock()
+			defer mu.Unlock()
+			switch {
+			case err == nil:
+				successful = append(successful, bName)
+			case isDir && (os.IsNotExist(err) || errors.Is(err, os.ErrNotExist)):
+				// The source dir simply doesn't exist on this backend: that is
+				// neither a success nor a failure for quorum purposes, and
+				// there is no orphan to clean up.
+				d.fs.pathLogger(ctx, oldPath).Debug(fmt.Sprintf("Skipping rename on %s: source does not exist", bName))
+			default:
+				d.fs.pathLogger(ctx, oldPath).Warn(fmt.Sprintf("Failed to rename to %s on %s: %v", newPath, bName, err))
+				failures = append(failures, bName)
+				lastErr = err
+			}
+
+			return nil
+		})
+	}
+	_ = g.Wait()
+
+	if len(successful) < d.fs.WriteQuorum {
+		// Rollback successful ones
+		for _, bName := range successful {
+			b := d.fs.Backends[bName]
+			_ = b.Rename(ctx, newPath, oldPath)
+		}
+		d.fs.pathLogger(ctx, oldPath).Error(fmt.Sprintf("Failed to rename to %s: write quorum not met (%d/%d)", newPath, len(successful), d.fs.WriteQuorum))
+		if lastErr != nil {
+			return nil, nil, lastErr
+		}
+
+		return nil, nil, syscall.EIO
+	}
+
+	return successful, failures, nil
+}
+
+func (d *Dir) renameDescendants(ctx context.Context, oldPath, newPath string, descendants []string, oldDescendantGens map[string]int64, successful, all []string) map[string]int64 {
+	newDescendantGens := make(map[string]int64)
+	if len(descendants) > 0 {
+		var wg sync.WaitGroup
+		var muLock sync.Mutex
+		for _, rel := range descendants {
+			wg.Add(1)
+			go func(rel string) {
+				defer wg.Done()
+				oldDescendantPath := oldPath + "/" + rel
+				newDescendantPath := newPath + "/" + rel
+				oldGen := oldDescendantGens[rel]
+
+				newGen := max(oldGen, d.fs.maxTombstoneGen(ctx, newDescendantPath)) + 1
+				muLock.Lock()
+				newDescendantGens[rel] = newGen
+				muLock.Unlock()
+
+				d.fs.writeSidecars(ctx, newDescendantPath, vfs.Sidecar{DataGen: newGen, Writer: d.fs.NodeID}, successful)
+
+				tomb := vfs.Sidecar{DataGen: oldGen + 1, Writer: d.fs.NodeID, Deleted: true}
+				if n := d.fs.writeTombstones(ctx, oldDescendantPath, tomb, all); n < len(all) {
+					d.fs.pathLogger(ctx, oldDescendantPath).Warn(fmt.Sprintf("Tombstone for renamed descendant path reached only %d/%d backends", n, len(all)))
+				}
+			}(rel)
+		}
+		wg.Wait()
+	}
+
+	return newDescendantGens
+}
+
+func (d *Dir) acquireRenameLocks(ctx context.Context, firstPath, secondPath string) (*vfs.DistributedLock, *vfs.DistributedLock, error) {
+	firstLock, err := d.fs.acquireLock(ctx, firstPath)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	if firstPath != secondPath {
+		secondLock, err := d.fs.acquireLock(ctx, secondPath)
+		if err != nil {
+			if firstLock != nil {
+				firstLock.Release()
+			}
+
+			return nil, nil, err
+		}
+
+		return firstLock, secondLock, nil
+	}
+
+	return firstLock, nil, nil
 }
 
 // collectDescendantGenerations retrieves the current metadata generation for all descendant paths of a directory.

@@ -86,54 +86,15 @@ func run(cfg *config.Config, nodeID string, version string) error {
 	)
 
 	// Initialize backends
-	backends := map[string]backend.Backend{}
-	backendList := []backend.Backend{}
-	for _, bc := range cfg.Backends {
-		b, err := backend.Create(bc.Type, bc.Name, bc.ToOptions())
-		if err != nil {
-			slog.Error("Failed to create backend", slog.String("backend", bc.Name), slog.Any("error", err))
-
-			continue
-		}
-		if err := b.Connect(ctx); err != nil {
-			slog.Error("Failed to connect to backend", slog.String("backend", bc.Name), slog.Any("error", err))
-
-			continue
-		}
-		backends[bc.Name] = b
-		backendList = append(backendList, b)
-	}
-
-	if len(backends) == 0 {
-		slog.Error("No backends connected")
-
-		return errors.New("no backends connected")
+	backends, backendList, err := initBackends(ctx, cfg)
+	if err != nil {
+		return err
 	}
 
 	// Initialize P2P Lock Manager and Discovery
-	var lockMgr *cluster.LockManager
-	var disco *cluster.Discovery
-
-	if cfg.Cluster.ListenAddr != "" {
-		lockMgr = cluster.NewLockManager(nodeID)
-		lockMgr.ExpectedClusterSize = cfg.Cluster.ExpectedClusterSize
-		lockMgr.Secret = []byte(cfg.Cluster.Secret)
-		if _, err := lockMgr.Start(cfg.Cluster.ListenAddr); err != nil {
-			slog.Error("Failed to start lock manager", slog.Any("error", err))
-
-			return fmt.Errorf("failed to start lock manager: %w", err)
-		}
-
-		disco = cluster.NewDiscovery(nodeID, cfg.Cluster.AdvertiseAddr, backendList)
-		if err := disco.Start(ctx); err != nil {
-			slog.Error("Failed to start discovery", slog.Any("error", err))
-
-			return fmt.Errorf("failed to start discovery: %w", err)
-		}
-		slog.Info("P2P Cluster discovery started",
-			slog.String("node_id", nodeID),
-			slog.String("advertise_addr", cfg.Cluster.AdvertiseAddr),
-		)
+	lockMgr, disco, err := initCluster(ctx, cfg, nodeID, backendList)
+	if err != nil {
+		return err
 	}
 
 	// Initialize Health Monitor
@@ -234,17 +195,7 @@ func run(cfg *config.Config, nodeID string, version string) error {
 		writeLeaseBuffer = defaultWriteLeaseBuffer
 	}
 
-	var selector vfs.BackendSelector
-	switch cfg.Selector.Type {
-	case "smart":
-		selector = vfs.NewSmartSelector(backends, monitor, cfg.Selector.WriteAffinity)
-	case "first":
-		selector = vfs.NewFirstSelector(monitor)
-	case "random":
-		fallthrough
-	default:
-		selector = vfs.NewRandomSelector(monitor)
-	}
+	selector := initSelector(cfg, backends, monitor)
 
 	srv := fs.New(c, nil)
 	replFS := &rfuse.RepliFS{
@@ -261,47 +212,7 @@ func run(cfg *config.Config, nodeID string, version string) error {
 	}
 
 	// Initialize and start Repair Manager
-	repairInterval, err := time.ParseDuration(cfg.Repair.Interval)
-	if err != nil && cfg.Repair.Interval != "" {
-		slog.Warn("Invalid repair_interval, defaulting to 1h",
-			slog.String("interval", cfg.Repair.Interval),
-			slog.Any("error", err),
-		)
-		repairInterval = 1 * time.Hour
-	} else if cfg.Repair.Interval == "" {
-		repairInterval = 1 * time.Hour
-	}
-	repairGrace, err := time.ParseDuration(cfg.Repair.Grace)
-	if err != nil && cfg.Repair.Grace != "" {
-		slog.Warn("Invalid repair_grace, defaulting to 15m",
-			slog.String("grace", cfg.Repair.Grace),
-			slog.Any("error", err),
-		)
-		repairGrace = defaultRepairGrace
-	} else if cfg.Repair.Grace == "" {
-		repairGrace = defaultRepairGrace
-	}
-	// A grace shorter than the scrub interval has no effect: the scrub only
-	// re-evaluates replication every interval, so any positive grace below it
-	// collapses to "act on the next scrub". Raise it to the interval so the
-	// configured and effective values agree. A grace of 0 is the explicit
-	// "act immediately" opt-out and is left untouched.
-	if repairGrace > 0 && repairGrace < repairInterval {
-		slog.Warn("repair_grace is shorter than repair_interval; raising it to the interval",
-			slog.Duration("repair_grace", repairGrace),
-			slog.Duration("repair_interval", repairInterval),
-		)
-		repairGrace = repairInterval
-	}
-	repairManager := rfuse.NewRepairManager(replFS, repairInterval, repairGrace, cfg.Repair.Concurrency)
-	repairManager.Start(ctx)
-	if repairInterval > 0 {
-		slog.Info("Background repair manager started",
-			slog.Duration("interval", repairInterval),
-			slog.Duration("grace", repairGrace),
-			slog.Int("concurrency", cfg.Repair.Concurrency),
-		)
-	}
+	_ = initRepairManager(ctx, cfg, replFS)
 
 	// Handle signals for graceful unmount
 	sigChan := make(chan os.Signal, 1)
@@ -315,9 +226,6 @@ func run(cfg *config.Config, nodeID string, version string) error {
 		if lockMgr != nil {
 			lockMgr.Stop()
 		}
-		// Cancel before unmount so background scans/repairs stop racing the
-		// unmount, then release backend connections. os.Exit below skips
-		// deferred cleanup, so close the FUSE conn and backends explicitly.
 		cancel()
 
 		slog.Info("Saving metadata cache to disk before exit...")
@@ -345,6 +253,116 @@ func run(cfg *config.Config, nodeID string, version string) error {
 	}
 
 	return nil
+}
+
+func initBackends(ctx context.Context, cfg *config.Config) (map[string]backend.Backend, []backend.Backend, error) {
+	backends := map[string]backend.Backend{}
+	backendList := []backend.Backend{}
+	for _, bc := range cfg.Backends {
+		b, err := backend.Create(bc.Type, bc.Name, bc.ToOptions())
+		if err != nil {
+			slog.Error("Failed to create backend", slog.String("backend", bc.Name), slog.Any("error", err))
+
+			continue
+		}
+		if err := b.Connect(ctx); err != nil {
+			slog.Error("Failed to connect to backend", slog.String("backend", bc.Name), slog.Any("error", err))
+
+			continue
+		}
+		backends[bc.Name] = b
+		backendList = append(backendList, b)
+	}
+
+	if len(backends) == 0 {
+		return nil, nil, errors.New("no backends connected")
+	}
+
+	return backends, backendList, nil
+}
+
+func initCluster(ctx context.Context, cfg *config.Config, nodeID string, backendList []backend.Backend) (*cluster.LockManager, *cluster.Discovery, error) {
+	var lockMgr *cluster.LockManager
+	var disco *cluster.Discovery
+
+	if cfg.Cluster.ListenAddr != "" {
+		lockMgr = cluster.NewLockManager(nodeID)
+		lockMgr.ExpectedClusterSize = cfg.Cluster.ExpectedClusterSize
+		lockMgr.Secret = []byte(cfg.Cluster.Secret)
+		if _, err := lockMgr.Start(cfg.Cluster.ListenAddr); err != nil {
+			slog.Error("Failed to start lock manager", slog.Any("error", err))
+
+			return nil, nil, fmt.Errorf("failed to start lock manager: %w", err)
+		}
+
+		disco = cluster.NewDiscovery(nodeID, cfg.Cluster.AdvertiseAddr, backendList)
+		if err := disco.Start(ctx); err != nil {
+			slog.Error("Failed to start discovery", slog.Any("error", err))
+
+			return nil, nil, fmt.Errorf("failed to start discovery: %w", err)
+		}
+		slog.Info("P2P Cluster discovery started",
+			slog.String("node_id", nodeID),
+			slog.String("advertise_addr", cfg.Cluster.AdvertiseAddr),
+		)
+	}
+
+	return lockMgr, disco, nil
+}
+
+//nolint:ireturn // Factory helper returning BackendSelector interface
+func initSelector(cfg *config.Config, backends map[string]backend.Backend, monitor *backend.HealthMonitor) vfs.BackendSelector {
+	switch cfg.Selector.Type {
+	case "smart":
+		return vfs.NewSmartSelector(backends, monitor, cfg.Selector.WriteAffinity)
+	case "first":
+		return vfs.NewFirstSelector(monitor)
+	case "random":
+		fallthrough
+	default:
+		return vfs.NewRandomSelector(monitor)
+	}
+}
+
+func initRepairManager(ctx context.Context, cfg *config.Config, replFS *rfuse.RepliFS) *rfuse.RepairManager {
+	repairInterval, err := time.ParseDuration(cfg.Repair.Interval)
+	if err != nil && cfg.Repair.Interval != "" {
+		slog.Warn("Invalid repair_interval, defaulting to 1h",
+			slog.String("interval", cfg.Repair.Interval),
+			slog.Any("error", err),
+		)
+		repairInterval = 1 * time.Hour
+	} else if cfg.Repair.Interval == "" {
+		repairInterval = 1 * time.Hour
+	}
+	repairGrace, err := time.ParseDuration(cfg.Repair.Grace)
+	if err != nil && cfg.Repair.Grace != "" {
+		slog.Warn("Invalid repair_grace, defaulting to 15m",
+			slog.String("grace", cfg.Repair.Grace),
+			slog.Any("error", err),
+		)
+		repairGrace = defaultRepairGrace
+	} else if cfg.Repair.Grace == "" {
+		repairGrace = defaultRepairGrace
+	}
+	if repairGrace > 0 && repairGrace < repairInterval {
+		slog.Warn("repair_grace is shorter than repair_interval; raising it to the interval",
+			slog.Duration("repair_grace", repairGrace),
+			slog.Duration("repair_interval", repairInterval),
+		)
+		repairGrace = repairInterval
+	}
+	repairManager := rfuse.NewRepairManager(replFS, repairInterval, repairGrace, cfg.Repair.Concurrency)
+	repairManager.Start(ctx)
+	if repairInterval > 0 {
+		slog.Info("Background repair manager started",
+			slog.Duration("interval", repairInterval),
+			slog.Duration("grace", repairGrace),
+			slog.Int("concurrency", cfg.Repair.Concurrency),
+		)
+	}
+
+	return repairManager
 }
 
 func loadCacheFromDisk(stateDir, cacheFile string, cache *vfs.Cache, refreshInterval time.Duration) (bool, bool) {

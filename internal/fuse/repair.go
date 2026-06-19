@@ -450,132 +450,148 @@ func (m *RepairManager) repairNode(ctx context.Context, node *vfs.Node) error {
 		)
 	}
 
-	// For each target, open and copy
 	for _, targetName := range targets {
-		targetBackend := m.fs.Backends[targetName]
-
-		// Divergence detection (REVIEW.md C4): if the target already holds a
-		// replica at the same generation as the source but with a different
-		// non-empty content sum, the replicas have divergent content (crash
-		// artifact or bit rot). The source still wins, exactly as before —
-		// the checksum only makes the event visible.
-		if srcSCErr == nil && srcSC.FileHash != "" {
-			if _, statErr := targetBackend.Stat(ctx, path); statErr == nil {
-				if tsc, tErr := vfs.ReadSidecar(ctx, targetBackend, path); tErr == nil &&
-					tsc.DataGen == srcSC.DataGen && tsc.FileHash != "" && tsc.FileHash != srcSC.FileHash {
-					m.divergenceCount.Add(1)
-					m.logger(ctx).Error("Divergent replicas detected; overwriting target from source",
-						slog.String("path", path),
-						slog.Int64("data_gen", srcSC.DataGen),
-						slog.String("source", sourceName),
-						slog.String("source_file_hash", srcSC.FileHash),
-						slog.String("target", targetName),
-						slog.String("target_file_hash", tsc.FileHash),
-					)
-				}
-			}
-		}
-
-		activeKey := path + ":" + targetName
-		ar := &ActiveRepair{
-			Path:            path,
-			SourceBackend:   sourceName,
-			TargetBackend:   targetName,
-			ProgressPercent: 0.0,
-		}
-		m.activeRepairsMu.Lock()
-		m.activeRepairs[activeKey] = ar
-		m.activeRepairsMu.Unlock()
-
-		cleanupActive := func() {
-			m.activeRepairsMu.Lock()
-			delete(m.activeRepairs, activeKey)
-			m.activeRepairsMu.Unlock()
-		}
-
-		dstFile, err := targetBackend.OpenFile(ctx, path, os.O_CREATE|os.O_TRUNC|os.O_RDWR, node.Meta.Mode)
-		if err != nil {
-			cleanupActive()
+		if err := m.repairTarget(ctx, node, path, sourceBackend, sourceName, targetName, &srcSC, srcSCErr, srcFile, cachedModTime); err != nil {
 			m.logger(ctx).Warn("Repair failed on target",
 				slog.String("path", path),
 				slog.String("backend", targetName),
 				slog.Any("error", err),
 			)
-
-			continue
 		}
+	}
 
-		fileSize := node.Meta.Size
-		if fileSize <= 0 {
-			fileSize = 1
+	return nil
+}
+
+func (m *RepairManager) repairTarget(
+	ctx context.Context,
+	node *vfs.Node,
+	path string,
+	sourceBackend backend.Backend,
+	sourceName, targetName string,
+	srcSC *vfs.Sidecar,
+	srcSCErr error,
+	srcFile backend.File,
+	cachedModTime time.Time,
+) error {
+	targetBackend := m.fs.Backends[targetName]
+
+	// Divergence detection (REVIEW.md C4): if the target already holds a
+	// replica at the same generation as the source but with a different
+	// non-empty content sum, the replicas have divergent content (crash
+	// artifact or bit rot). The source still wins, exactly as before —
+	// the checksum only makes the event visible.
+	if srcSCErr == nil && srcSC.FileHash != "" {
+		if _, statErr := targetBackend.Stat(ctx, path); statErr == nil {
+			if tsc, tErr := vfs.ReadSidecar(ctx, targetBackend, path); tErr == nil &&
+				tsc.DataGen == srcSC.DataGen && tsc.FileHash != "" && tsc.FileHash != srcSC.FileHash {
+				m.divergenceCount.Add(1)
+				m.logger(ctx).Error("Divergent replicas detected; overwriting target from source",
+					slog.String("path", path),
+					slog.Int64("data_gen", srcSC.DataGen),
+					slog.String("source", sourceName),
+					slog.String("source_file_hash", srcSC.FileHash),
+					slog.String("target", targetName),
+					slog.String("target_file_hash", tsc.FileHash),
+				)
+			}
 		}
-		var copiedBytes int64
+	}
 
-		hasher := sha256.New()
-		pw := &progressWriter{
-			w: &offsetWriter{ctx: ctx, f: dstFile},
-			onProgress: func(n int) {
-				const maxPercentage = 100.0
-				copiedBytes += int64(n)
-				pct := (float64(copiedBytes) / float64(fileSize)) * maxPercentage
-				if pct > maxPercentage {
-					pct = maxPercentage
-				}
-				m.activeRepairsMu.Lock()
-				ar.ProgressPercent = pct
-				m.activeRepairsMu.Unlock()
-			},
-		}
+	activeKey := path + ":" + targetName
+	ar := &ActiveRepair{
+		Path:            path,
+		SourceBackend:   sourceName,
+		TargetBackend:   targetName,
+		ProgressPercent: 0.0,
+	}
+	m.activeRepairsMu.Lock()
+	m.activeRepairs[activeKey] = ar
+	m.activeRepairsMu.Unlock()
 
-		_, copyErr := io.Copy(pw, io.TeeReader(&offsetReader{ctx: ctx, f: srcFile}, hasher))
-		_ = dstFile.Close()
-		cleanupActive()
+	cleanupActive := func() {
+		m.activeRepairsMu.Lock()
+		delete(m.activeRepairs, activeKey)
+		m.activeRepairsMu.Unlock()
+	}
+	defer cleanupActive()
 
-		if copyErr != nil {
-			m.logger(ctx).Warn("Copy failed to target",
-				slog.String("path", path),
-				slog.String("backend", targetName),
-				slog.Any("error", copyErr),
-			)
+	node.Mu.Lock()
+	mode := node.Meta.Mode
+	fileSize := node.Meta.Size
+	node.Mu.Unlock()
 
-			continue
-		}
+	dstFile, err := targetBackend.OpenFile(ctx, path, os.O_CREATE|os.O_TRUNC|os.O_RDWR, mode)
+	if err != nil {
+		return err
+	}
+	defer dstFile.Close()
 
-		// Preserve the source replica's mtime on the destination so the two
-		// replicas compare as the same version (same mtime, same size) during
-		// reconciliation. Without this, the fresh copy looks newer than the
-		// source and anti-entropy never converges.
-		mtime := sourceModTime(ctx, sourceBackend, path, cachedModTime)
-		if err := targetBackend.Chtimes(ctx, path, mtime, mtime); err != nil {
-			m.logger(ctx).Warn("Failed to preserve mtime",
-				slog.String("path", path),
-				slog.String("backend", targetName),
-				slog.Any("error", err),
-			)
-		}
+	if fileSize <= 0 {
+		fileSize = 1
+	}
+	var copiedBytes int64
 
-		// Replicate the source's version sidecar so the new copy reports the
-		// same generation, stamping in the content sum just computed. A
-		// missing sidecar means a legacy (pre-versioning) file — nothing to
-		// copy and nowhere to record the sum. Sidecar failures don't fail the
-		// repair: the target just reports generation 0 until the next write.
-		if srcSCErr == nil {
-			sum := "sha256:" + hex.EncodeToString(hasher.Sum(nil))
-			m.copyRepairedSidecar(ctx, sourceBackend, targetBackend, path, sourceName, targetName, &srcSC, sum)
-		}
+	hasher := sha256.New()
+	pw := &progressWriter{
+		w: &offsetWriter{ctx: ctx, f: dstFile},
+		onProgress: func(n int) {
+			const maxPercentage = 100.0
+			copiedBytes += int64(n)
+			pct := (float64(copiedBytes) / float64(fileSize)) * maxPercentage
+			if pct > maxPercentage {
+				pct = maxPercentage
+			}
+			m.activeRepairsMu.Lock()
+			ar.ProgressPercent = pct
+			m.activeRepairsMu.Unlock()
+		},
+	}
 
-		// Update metadata
-		node.Mu.Lock()
-		found := slices.Contains(node.Meta.Backends, targetName)
-		if !found {
-			node.Meta.Backends = append(node.Meta.Backends, targetName)
-		}
-		node.Mu.Unlock()
-		m.logger(ctx).Info("Successfully repaired on backend",
+	_, copyErr := io.Copy(pw, io.TeeReader(&offsetReader{ctx: ctx, f: srcFile}, hasher))
+	if copyErr != nil {
+		return copyErr
+	}
+
+	if err := dstFile.Close(); err != nil {
+		return err
+	}
+
+	// Preserve the source replica's mtime on the destination so the two
+	// replicas compare as the same version (same mtime, same size) during
+	// reconciliation. Without this, the fresh copy looks newer than the
+	// source and anti-entropy never converges.
+	mtime := sourceModTime(ctx, sourceBackend, path, cachedModTime)
+	if err := targetBackend.Chtimes(ctx, path, mtime, mtime); err != nil {
+		m.logger(ctx).Warn("Failed to preserve mtime",
 			slog.String("path", path),
 			slog.String("backend", targetName),
+			slog.Any("error", err),
 		)
 	}
+
+	// Replicate the source's version sidecar so the new copy reports the
+	// same generation, stamping in the content sum just computed. A
+	// missing sidecar means a legacy (pre-versioning) file — nothing to
+	// copy and nowhere to record the sum. Sidecar failures don't fail the
+	// repair: the target just reports generation 0 until the next write.
+	if srcSCErr == nil {
+		sum := "sha256:" + hex.EncodeToString(hasher.Sum(nil))
+		m.copyRepairedSidecar(ctx, sourceBackend, targetBackend, path, sourceName, targetName, srcSC, sum)
+	}
+
+	// Update metadata
+	node.Mu.Lock()
+	found := slices.Contains(node.Meta.Backends, targetName)
+	if !found {
+		node.Meta.Backends = append(node.Meta.Backends, targetName)
+	}
+	node.Mu.Unlock()
+
+	m.logger(ctx).Info("Successfully repaired on backend",
+		slog.String("path", path),
+		slog.String("backend", targetName),
+	)
 
 	return nil
 }

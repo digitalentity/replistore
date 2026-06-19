@@ -1113,9 +1113,9 @@ func (c *Cache) walk(node *Node, fn func(*Node)) {
 }
 
 type serializedNode struct {
-	Meta         Metadata                   `json:"meta"`
-	FullyIndexed bool                       `json:"fully_indexed"`
-	LastUpdated  time.Time                  `json:"last_updated"`
+	Meta         Metadata  `json:"meta"`
+	FullyIndexed bool      `json:"fully_indexed"`
+	LastUpdated  time.Time `json:"last_updated"`
 	// DegradedSince / OverReplicatedSince persist the repair grace clock across
 	// restarts: a process restart must not reset how long a file has been
 	// under- or over-replicated, or every restart would re-arm the grace window

@@ -38,11 +38,11 @@ import (
 // (REVIEW.md C6): a tombstone records that the path was deleted at generation
 // DataGen, so any replica at DataGen or below is a zombie that must not be re-admitted.
 type Sidecar struct {
-	V       int    `json:"v"`       // format version, 1
-	Path    string `json:"path"`    // data path this document describes (the hash key is one-way)
+	V       int    `json:"v"`        // format version, 1
+	Path    string `json:"path"`     // data path this document describes (the hash key is one-way)
 	DataGen int64  `json:"data_gen"` // generation counter, bumped per write session under the path lock
-	Writer  string `json:"writer"`  // node that produced this generation (diagnostics only)
-	Deleted bool   `json:"deleted"` // tombstone marker (written by delete/rename)
+	Writer  string `json:"writer"`   // node that produced this generation (diagnostics only)
+	Deleted bool   `json:"deleted"`  // tombstone marker (written by delete/rename)
 
 	// FileHash is the content checksum of the replica, "sha256:<hex>" or "merkle:<hex>"; empty
 	// means the content hash is unknown. Writers blank it on every
