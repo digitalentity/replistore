@@ -29,10 +29,9 @@ type SMBBackend struct {
 	Tags     []string
 
 	mu sync.Mutex
-	// ctx is the backend lifecycle context captured at Connect. It governs work
-	// that runs outside any single request: reconnect dials in connectLocked and
-	// the RPC lifetime of open *smb2.File handles (see serviceCtx and OpenFile).
-	// It is not a per-request context. Guarded by mu.
+	// ctx is the backend lifecycle context captured at Connect. It governs the
+	// reconnect dials in connectLocked, which run outside any single request. It
+	// is not a per-request context. Guarded by mu.
 	//nolint:containedctx // by design: backend lifecycle ctx, not a request ctx.
 	ctx     context.Context
 	session *smb2.Session
@@ -126,19 +125,6 @@ func (b *SMBBackend) Connect(ctx context.Context) error {
 	b.ctx = ctx
 
 	return b.connectLocked()
-}
-
-// serviceCtx returns the lifecycle context captured at Connect, or
-// context.Background if Connect has not run. Safe for concurrent use; callers
-// must not already hold b.mu.
-func (b *SMBBackend) serviceCtx() context.Context {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	if b.ctx == nil {
-		return context.Background()
-	}
-
-	return b.ctx
 }
 
 //nolint:contextcheck // runs independently of request context
@@ -249,59 +235,4 @@ func isConnectionError(err error) bool {
 	return false
 }
 
-// resetConnLocked tears down the connection state without a graceful SMB
-// teardown. Closing the raw conn is enough to unblock any in-flight I/O; the
-// share and session handles are dropped rather than Umount/Logoff'd, as those
-// would attempt network round-trips on a connection we are abandoning, which
-// could itself hang on the very failure we are reacting to. Callers must hold
-// b.mu.
-func (b *SMBBackend) resetConnLocked() {
-	if b.conn != nil {
-		_ = b.conn.Close()
-	}
-	b.conn = nil
-	b.session = nil
-	b.share = nil
-}
-
-// watchdog force-closes the backend connection if ctx is cancelled before the
-// returned cancel func is called. It exists solely to unblock context-unaware
-// *smb2.File I/O, which the go-smb2 library cannot otherwise interrupt; share
-// operations are cancelled through Share.WithContext and must not use this.
-//
-// The connection is snapshotted at call time so a concurrent reconnect is never
-// torn down by a stale watchdog. Closing the shared conn unblocks every in-flight
-// op on it, not just this one, but that blast radius is inherent to a library
-// that multiplexes all requests over a single connection with no per-request
-// cancellation.
-func (b *SMBBackend) watchdog(ctx context.Context) func() {
-	b.mu.Lock()
-	conn := b.conn
-	b.mu.Unlock()
-
-	done := make(chan struct{})
-	go func() {
-		select {
-		case <-ctx.Done():
-			// If the op already finished, done is closed too and select picked
-			// this branch on a tie. Prefer done so a healthy conn is never torn
-			// down out from under a completed op.
-			select {
-			case <-done:
-				return
-			default:
-			}
-			b.mu.Lock()
-			if b.conn == conn {
-				b.resetConnLocked()
-			}
-			b.mu.Unlock()
-		case <-done:
-		}
-	}()
-
-	return func() {
-		close(done)
-	}
-}
 

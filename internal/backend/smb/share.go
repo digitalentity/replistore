@@ -19,7 +19,7 @@ func (b *SMBBackend) execute(ctx context.Context, op func(share *smb2.Share) err
 	}
 
 	// share is already bound to ctx via getShare's Share.WithContext, so the op
-	// honors cancellation directly. No watchdog needed here.
+	// honors cancellation directly.
 	err = op(share)
 	if err != nil && isConnectionError(err) {
 		_ = b.Close()
