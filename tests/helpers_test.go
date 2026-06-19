@@ -122,6 +122,11 @@ func startTestSMBServer(t *testing.T, shareName string) *TestSMBServer {
 	return s
 }
 
+// addrOf returns the host:port a client uses to reach the server.
+func addrOf(s *TestSMBServer) string {
+	return fmt.Sprintf("127.0.0.1:%d", s.Port)
+}
+
 func (s *TestSMBServer) Stop() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
