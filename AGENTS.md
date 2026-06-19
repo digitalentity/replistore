@@ -8,23 +8,25 @@ These instructions take precedence over general defaults.
 
 After any code modification, always perform the following validation steps:
 
-1. **Build Check:** Run the compiler to ensure it builds successfully:
+1. **Lint Check:** Run the linters to ensure code quality:
    ```bash
-   go build ./cmd/replistore/...
+   make lint
    ```
-2. **Test Suite:** Run the tests to verify correctness:
+2. **Build Check:** Run the compiler to ensure it builds successfully:
+   ```bash
+   make build
+   ```
+3. **Test Suite:** Run the tests to verify correctness:
    ```bash
    # Run all tests
-   go test ./...
-   go test -v ./...
-   go test -race ./...
+   make test
 
    # Run specific tests (examples)
    go test ./internal/fuse/ -run TestLookup
    go test ./internal/vfs/ -run TestDistributedLock
    ```
    *Note: RepliStore relies heavily on mock-based testing in `internal/test/` to verify distributed logic without actual NAS hardware.*
-3. **Documentation:** If a feature adds a configuration field or changes a flow, update the corresponding file in `docs/`.
+4. **Documentation:** If a feature adds a configuration field or changes a flow, update the corresponding file in `docs/`.
 
 ## Engineering Standards
 
