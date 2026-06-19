@@ -1,5 +1,5 @@
 # The local path where the RepliStore filesystem will be mounted.
-mount_point: "/tmp/replistore/mount"
+mount_point: "/mnt/replistore"
 
 # Replication settings
 replication:
@@ -17,7 +17,7 @@ cache:
   # How often to scan backends to sync the in-memory metadata cache.
   refresh_interval: "5m"
   # The local directory where state files (like the serialized cache) are stored.
-  state_dir: "/tmp/replistore/state"
+  state_dir: "/var/lib/replistore"
 
 # Background repair settings
 repair:
