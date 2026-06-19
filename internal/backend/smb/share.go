@@ -10,7 +10,7 @@ import (
 // retrying once if the operation fails with a connection error. It is the single
 // entry point for every share-level operation.
 func (b *SMBBackend) execute(ctx context.Context, op func(share *smb2.Share) error) error {
-	if err := b.ensureConnected(); err != nil {
+	if err := b.ensureConnected(ctx); err != nil {
 		return err
 	}
 	share, err := b.getShare(ctx)
@@ -26,7 +26,7 @@ func (b *SMBBackend) execute(ctx context.Context, op func(share *smb2.Share) err
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		if reconnectErr := b.ensureConnected(); reconnectErr != nil {
+		if reconnectErr := b.ensureConnected(ctx); reconnectErr != nil {
 			return err
 		}
 		share, err = b.getShare(ctx)

@@ -28,12 +28,7 @@ type SMBBackend struct {
 	Speed    int
 	Tags     []string
 
-	mu sync.Mutex
-	// ctx is the backend lifecycle context captured at Connect. It governs the
-	// reconnect dials in connectLocked, which run outside any single request. It
-	// is not a per-request context. Guarded by mu.
-	//nolint:containedctx // by design: backend lifecycle ctx, not a request ctx.
-	ctx     context.Context
+	mu      sync.Mutex
 	session *smb2.Session
 	share   *smb2.Share
 	conn    net.Conn
@@ -122,16 +117,21 @@ func (b *SMBBackend) closeLocked() {
 func (b *SMBBackend) Connect(ctx context.Context) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	b.ctx = ctx
 
-	return b.connectLocked()
+	return b.connectLocked(ctx)
 }
 
-//nolint:contextcheck // runs independently of request context
-func (b *SMBBackend) connectLocked() error {
+// connectLocked establishes a fresh connection, session and share, bounding the
+// whole handshake (TCP dial, SMB negotiate/session-setup and tree connect) by
+// ctx so a caller's deadline is honored instead of stalling for the dial
+// timeout. The resulting session and share are rebound to context.Background so
+// their lifetime — and later Umount/Logoff and per-call I/O — does not inherit a
+// caller deadline that has since expired. Callers must hold b.mu.
+//
+//nolint:contextcheck // the session/share rebind to Background is by design: the connection outlives the request ctx.
+func (b *SMBBackend) connectLocked(ctx context.Context) error {
 	b.closeLocked()
 
-	ctx := b.ctx
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -151,6 +151,8 @@ func (b *SMBBackend) connectLocked() error {
 		},
 	}
 
+	// DialConn honors ctx for the handshake but stores context.Background on the
+	// returned session, so the session outlives ctx.
 	s, err := d.DialConn(ctx, conn, b.Address)
 	if err != nil {
 		_ = conn.Close()
@@ -160,7 +162,11 @@ func (b *SMBBackend) connectLocked() error {
 	}
 	b.session = s
 
-	fs, err := s.Mount(b.Share)
+	// Mount uses one context for both the tree-connect RPC and the returned
+	// share's base context. Bind it to ctx so the RPC honors the deadline, then
+	// rebind the share to Background so later Umount and per-call ops are not
+	// tied to a caller deadline that has since expired.
+	fs, err := s.WithContext(ctx).Mount(b.Share)
 	if err != nil {
 		_ = s.Logoff()
 		b.session = nil
@@ -169,16 +175,16 @@ func (b *SMBBackend) connectLocked() error {
 
 		return fmt.Errorf("mount failed: %w", err)
 	}
-	b.share = fs
+	b.share = fs.WithContext(context.Background())
 
 	return nil
 }
 
-func (b *SMBBackend) ensureConnected() error {
+func (b *SMBBackend) ensureConnected(ctx context.Context) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if b.share == nil {
-		return b.connectLocked()
+		return b.connectLocked(ctx)
 	}
 
 	return nil
