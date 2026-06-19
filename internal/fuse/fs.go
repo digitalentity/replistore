@@ -154,7 +154,7 @@ func (f *RepliFS) writeSidecars(ctx context.Context, path string, sc vfs.Sidecar
 		go func(bName string, b backend.Backend) {
 			defer wg.Done()
 			if err := vfs.WriteSidecar(ctx, b, path, sc); err != nil {
-				f.pathLogger(ctx, path).Warn(fmt.Sprintf("Failed to write sidecar (gen %d) on backend %s: %v", sc.Gen, bName, err))
+				f.pathLogger(ctx, path).Warn(fmt.Sprintf("Failed to write sidecar (gen %d) on backend %s: %v", sc.DataGen, bName, err))
 			}
 		}(bName, b)
 	}
@@ -180,7 +180,7 @@ func (f *RepliFS) writeTombstones(ctx context.Context, path string, sc vfs.Sidec
 		go func(bName string, b backend.Backend) {
 			defer wg.Done()
 			if err := vfs.WriteTombstone(ctx, b, path, sc); err != nil {
-				f.pathLogger(ctx, path).Warn(fmt.Sprintf("Failed to write tombstone (gen %d) on backend %s: %v", sc.Gen, bName, err))
+				f.pathLogger(ctx, path).Warn(fmt.Sprintf("Failed to write tombstone (gen %d) on backend %s: %v", sc.DataGen, bName, err))
 
 				return
 			}
@@ -225,8 +225,8 @@ func (f *RepliFS) maxTombstoneGen(ctx context.Context, path string) int64 {
 				return
 			}
 			mu.Lock()
-			if sc.Gen > maxGen {
-				maxGen = sc.Gen
+			if sc.DataGen > maxGen {
+				maxGen = sc.DataGen
 			}
 			mu.Unlock()
 		}(bName, b)
@@ -584,7 +584,7 @@ func (d *Dir) Create(ctx context.Context, req *fuse.CreateRequest, resp *fuse.Cr
 	// loses the race, the orphaned sidecars are harmless and get superseded by
 	// the winner's writes or by tombstones.
 	newGen := d.fs.maxTombstoneGen(ctx, path) + 1
-	d.fs.writeSidecars(ctx, path, vfs.Sidecar{Gen: newGen, Writer: d.fs.NodeID}, successfulBackends)
+	d.fs.writeSidecars(ctx, path, vfs.Sidecar{DataGen: newGen, Writer: d.fs.NodeID}, successfulBackends)
 
 	// Re-acquire lock to update VFS
 	d.node.Mu.Lock()
@@ -620,7 +620,7 @@ func (d *Dir) Create(ctx context.Context, req *fuse.CreateRequest, resp *fuse.Cr
 		Path:     path,
 		Mode:     req.Mode,
 		Backends: successfulBackends,
-		Gen:      newGen,
+		DataGen:      newGen,
 	}
 
 	child := &vfs.Node{
@@ -727,7 +727,7 @@ func (d *Dir) Mkdir(ctx context.Context, req *fuse.MkdirRequest) (node fs.Node, 
 	}
 
 	newGen := d.fs.maxTombstoneGen(ctx, path) + 1
-	d.fs.writeSidecars(ctx, path, vfs.Sidecar{Gen: newGen, Writer: d.fs.NodeID}, satisfiedOn)
+	d.fs.writeSidecars(ctx, path, vfs.Sidecar{DataGen: newGen, Writer: d.fs.NodeID}, satisfiedOn)
 
 	d.node.Mu.Lock()
 	defer d.node.Mu.Unlock()
@@ -745,7 +745,7 @@ func (d *Dir) Mkdir(ctx context.Context, req *fuse.MkdirRequest) (node fs.Node, 
 		Mode:     req.Mode | os.ModeDir,
 		IsDir:    true,
 		Backends: satisfiedOn,
-		Gen:      newGen,
+		DataGen:      newGen,
 	}
 	child := &vfs.Node{
 		Meta:     meta,
@@ -775,7 +775,7 @@ func (d *Dir) Remove(ctx context.Context, req *fuse.RemoveRequest) (err error) {
 	child.Mu.Lock()
 	path := child.Meta.Path
 	isDir := child.Meta.IsDir
-	gen := child.Meta.Gen
+	gen := child.Meta.DataGen
 	backends := make([]string, len(child.Meta.Backends))
 	copy(backends, child.Meta.Backends)
 	child.Mu.Unlock()
@@ -824,7 +824,7 @@ func (d *Dir) Remove(ctx context.Context, req *fuse.RemoveRequest) (err error) {
 	// resurrect via background sync. Without a tombstone quorum the remove
 	// is refused and no data is touched.
 	tombGen := gen + 1
-	tomb := vfs.Sidecar{Gen: tombGen, Writer: d.fs.NodeID, Deleted: true}
+	tomb := vfs.Sidecar{DataGen: tombGen, Writer: d.fs.NodeID, Deleted: true}
 	d.fs.pathLogger(ctx, path).Info(fmt.Sprintf("Removing path: writing tombstone gen %d to all backends (quorum: %d)", tombGen, d.fs.WriteQuorum))
 	if successes := d.fs.writeTombstones(ctx, path, tomb, d.fs.allBackendNames()); successes < d.fs.WriteQuorum {
 		d.fs.pathLogger(ctx, path).Error(fmt.Sprintf("Failed to remove: tombstone write quorum not met (%d/%d)", successes, d.fs.WriteQuorum))
@@ -888,7 +888,7 @@ func (d *Dir) clearRenameTarget(ctx context.Context, targetDir *Dir, name, newPa
 
 	target.Mu.RLock()
 	targetIsDir := target.Meta.IsDir
-	targetGen := target.Meta.Gen
+	targetGen := target.Meta.DataGen
 	target.Mu.RUnlock()
 
 	switch {
@@ -914,7 +914,7 @@ func (d *Dir) clearRenameTarget(ctx context.Context, targetDir *Dir, name, newPa
 	// any data. The new lineage's generation is lifted above this tombstone by
 	// the maxTombstoneGen(newPath) term in Rename.
 	all := d.fs.allBackendNames()
-	tomb := vfs.Sidecar{Gen: targetGen + 1, Writer: d.fs.NodeID, Deleted: true}
+	tomb := vfs.Sidecar{DataGen: targetGen + 1, Writer: d.fs.NodeID, Deleted: true}
 	if n := d.fs.writeTombstones(ctx, newPath, tomb, all); n < d.fs.WriteQuorum {
 		return fmt.Errorf("could not reach tombstone quorum to replace rename target %s: %d/%d", newPath, n, d.fs.WriteQuorum)
 	}
@@ -1021,7 +1021,7 @@ func (d *Dir) Rename(ctx context.Context, req *fuse.RenameRequest, newDir fs.Nod
 	sourceNode.Mu.RLock()
 	oldPath := sourceNode.Meta.Path
 	isDir := sourceNode.Meta.IsDir
-	gen := sourceNode.Meta.Gen
+	gen := sourceNode.Meta.DataGen
 	backends := make([]string, len(sourceNode.Meta.Backends))
 	copy(backends, sourceNode.Meta.Backends)
 	sourceNode.Mu.RUnlock()
@@ -1171,7 +1171,7 @@ func (d *Dir) Rename(ctx context.Context, req *fuse.RenameRequest, newDir fs.Nod
 	// replicas' generation (gen), so it is gen+1 specifically — not the
 	// possibly-larger new-path generation computed below.
 	oldTombGen := gen + 1
-	tomb := vfs.Sidecar{Gen: oldTombGen, Writer: d.fs.NodeID, Deleted: true}
+	tomb := vfs.Sidecar{DataGen: oldTombGen, Writer: d.fs.NodeID, Deleted: true}
 	all := d.fs.allBackendNames()
 	if n := d.fs.writeTombstones(ctx, oldPath, tomb, all); n < len(all) {
 		d.fs.pathLogger(ctx, oldPath).Warn(fmt.Sprintf("Tombstone for renamed path reached only %d/%d backends", n, len(all)))
@@ -1188,7 +1188,7 @@ func (d *Dir) Rename(ctx context.Context, req *fuse.RenameRequest, newDir fs.Nod
 	// the rename succeeded on (best-effort, like all sidecar writes). The old
 	// path's document is NOT removed: the tombstone written above now occupies
 	// it, and removing it would erase the deletion record (see Dir.Remove).
-	d.fs.writeSidecars(ctx, newPath, vfs.Sidecar{Gen: newGen, Writer: d.fs.NodeID}, successful)
+	d.fs.writeSidecars(ctx, newPath, vfs.Sidecar{DataGen: newGen, Writer: d.fs.NodeID}, successful)
 
 	// Re-key descendants' metadata documents: write sidecars at the new paths
 	// and tombstones at the old paths (REVIEW.md C6-dirs).
@@ -1209,9 +1209,9 @@ func (d *Dir) Rename(ctx context.Context, req *fuse.RenameRequest, newDir fs.Nod
 				newDescendantGens[rel] = newGen
 				muLock.Unlock()
 
-				d.fs.writeSidecars(ctx, newDescendantPath, vfs.Sidecar{Gen: newGen, Writer: d.fs.NodeID}, successful)
+				d.fs.writeSidecars(ctx, newDescendantPath, vfs.Sidecar{DataGen: newGen, Writer: d.fs.NodeID}, successful)
 
-				tomb := vfs.Sidecar{Gen: oldGen + 1, Writer: d.fs.NodeID, Deleted: true}
+				tomb := vfs.Sidecar{DataGen: oldGen + 1, Writer: d.fs.NodeID, Deleted: true}
 				if n := d.fs.writeTombstones(ctx, oldDescendantPath, tomb, all); n < len(all) {
 					d.fs.pathLogger(ctx, oldDescendantPath).Warn(fmt.Sprintf("Tombstone for renamed descendant path reached only %d/%d backends", n, len(all)))
 				}
@@ -1231,14 +1231,14 @@ func (d *Dir) Rename(ctx context.Context, req *fuse.RenameRequest, newDir fs.Nod
 		newDescendantPath := newPath + "/" + rel
 		if node, ok := d.fs.Cache.Get(newDescendantPath); ok {
 			node.Mu.Lock()
-			node.Meta.Gen = newGen
+			node.Meta.DataGen = newGen
 			node.Mu.Unlock()
 		}
 	}
 
 	// The new path carries the bumped generation written above.
 	sourceNode.Mu.Lock()
-	sourceNode.Meta.Gen = newGen
+	sourceNode.Meta.DataGen = newGen
 	sourceNode.Mu.Unlock()
 
 	if isDir {
@@ -1301,12 +1301,12 @@ func (d *Dir) collectDescendantGenerations(ctx context.Context, oldPath string, 
 // getDescendantGen retrieves the generation of a descendant path from cache or backends.
 func (d *Dir) getDescendantGen(ctx context.Context, path string, backends []string) int64 {
 	if node, ok := d.fs.Cache.Get(path); ok {
-		return node.Meta.Gen
+		return node.Meta.DataGen
 	}
 	for _, bName := range backends {
 		if b, ok := d.fs.Backends[bName]; ok {
 			if sc, err := vfs.ReadSidecar(ctx, b, path); err == nil {
-				return sc.Gen
+				return sc.DataGen
 			}
 		}
 	}
@@ -1524,13 +1524,13 @@ func (f *File) Setattr(ctx context.Context, req *fuse.SetattrRequest, resp *fuse
 	f.node.Meta.ModTime = time.Now()
 	// Truncate is a content mutation: bump the generation once, under the
 	// path/distributed lock held above.
-	newGen := f.node.Meta.Gen + 1
-	f.node.Meta.Gen = newGen
+	newGen := f.node.Meta.DataGen + 1
+	f.node.Meta.DataGen = newGen
 	surviving := make([]string, len(f.node.Meta.Backends))
 	copy(surviving, f.node.Meta.Backends)
 	f.node.Mu.Unlock()
 
-	f.fs.writeSidecars(ctx, path, vfs.Sidecar{Gen: newGen, Writer: f.fs.NodeID}, surviving)
+	f.fs.writeSidecars(ctx, path, vfs.Sidecar{DataGen: newGen, Writer: f.fs.NodeID}, surviving)
 
 	for _, bName := range failures {
 		f.fs.removeStaleReplica(path, bName)
@@ -1601,10 +1601,10 @@ func (f *File) Open(ctx context.Context, req *fuse.OpenRequest, resp *fuse.OpenR
 		// (including freshly healed targets), so the heal loop needs no
 		// per-target sidecar copy of its own.
 		f.node.Mu.Lock()
-		newGen := f.node.Meta.Gen + 1
-		f.node.Meta.Gen = newGen
+		newGen := f.node.Meta.DataGen + 1
+		f.node.Meta.DataGen = newGen
 		f.node.Mu.Unlock()
-		f.fs.writeSidecars(ctx, path, vfs.Sidecar{Gen: newGen, Writer: f.fs.NodeID}, backends)
+		f.fs.writeSidecars(ctx, path, vfs.Sidecar{DataGen: newGen, Writer: f.fs.NodeID}, backends)
 	}
 
 	// Unlock I/O: Open outside of lock (already done since we RUnlocked above)
@@ -1762,7 +1762,7 @@ func (f *File) healCopy(ctx context.Context, path, sourceName, targetName string
 
 	// Content checksums are deliberately not computed here (unlike
 	// RepairManager.repairNode): the post-heal generation bump in Open blanks
-	// Sidecar.Sum anyway, since the write session is about to mutate content.
+	// Sidecar.FileHash anyway, since the write session is about to mutate content.
 	reader := &offsetReader{ctx: ctx, f: srcFile}
 	writer := &offsetWriter{ctx: ctx, f: dstFile}
 	if _, err := io.Copy(writer, reader); err != nil {

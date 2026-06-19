@@ -331,8 +331,8 @@ func TestDir_Rename_DescendantReKeying(t *testing.T) {
 	b1 := &bmock.MockBackend{NameVal: "b1"}
 
 	cache := vfs.NewCache()
-	cache.Upsert("olddir", vfs.Metadata{Name: "olddir", Path: "olddir", IsDir: true, Mode: os.ModeDir | 0755, Backends: []string{"b1"}, Gen: 2}, "b1")
-	cache.Upsert("olddir/file.txt", vfs.Metadata{Name: "file.txt", Path: "olddir/file.txt", Backends: []string{"b1"}, Gen: 5}, "b1")
+	cache.Upsert("olddir", vfs.Metadata{Name: "olddir", Path: "olddir", IsDir: true, Mode: os.ModeDir | 0755, Backends: []string{"b1"}, DataGen: 2}, "b1")
+	cache.Upsert("olddir/file.txt", vfs.Metadata{Name: "file.txt", Path: "olddir/file.txt", Backends: []string{"b1"}, DataGen: 5}, "b1")
 
 	fs := &RepliFS{
 		Cache:             cache,
@@ -370,25 +370,25 @@ func TestDir_Rename_DescendantReKeying(t *testing.T) {
 	// Verify old path tombstoned
 	wDirOld, nDirOld := tcDirOld.get()
 	assert.Equal(t, 1, nDirOld)
-	assert.Equal(t, int64(3), wDirOld.Gen)
+	assert.Equal(t, int64(3), wDirOld.DataGen)
 	assert.True(t, wDirOld.Deleted)
 
 	// Verify new path sidecar written
 	wDirNew, nDirNew := scDirNew.get()
 	assert.Equal(t, 1, nDirNew)
-	assert.Equal(t, int64(3), wDirNew.Gen)
+	assert.Equal(t, int64(3), wDirNew.DataGen)
 	assert.False(t, wDirNew.Deleted)
 
 	// Verify descendant old path tombstoned
 	wFileOld, nFileOld := tcFileOld.get()
 	assert.Equal(t, 1, nFileOld)
-	assert.Equal(t, int64(6), wFileOld.Gen)
+	assert.Equal(t, int64(6), wFileOld.DataGen)
 	assert.True(t, wFileOld.Deleted)
 
 	// Verify descendant new path sidecar written
 	wFileNew, nFileNew := scFileNew.get()
 	assert.Equal(t, 1, nFileNew)
-	assert.Equal(t, int64(6), wFileNew.Gen)
+	assert.Equal(t, int64(6), wFileNew.DataGen)
 	assert.False(t, wFileNew.Deleted)
 
 	// Verify cache updates
@@ -399,11 +399,11 @@ func TestDir_Rename_DescendantReKeying(t *testing.T) {
 
 	dirNode, ok := cache.Get("newdir")
 	assert.True(t, ok)
-	assert.Equal(t, int64(3), dirNode.Meta.Gen)
+	assert.Equal(t, int64(3), dirNode.Meta.DataGen)
 
 	fileNode, ok := cache.Get("newdir/file.txt")
 	assert.True(t, ok)
-	assert.Equal(t, int64(6), fileNode.Meta.Gen)
+	assert.Equal(t, int64(6), fileNode.Meta.DataGen)
 
 	b1.AssertExpectations(t)
 }

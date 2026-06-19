@@ -239,7 +239,7 @@ func (m *RepairManager) enforceTombstone(ctx context.Context, path string, tombG
 
 		gen := int64(0) // missing sidecar = legacy replica at generation 0
 		if sc, scErr := vfs.ReadSidecar(ctx, b, path); scErr == nil {
-			gen = sc.Gen
+			gen = sc.DataGen
 		} else if !errors.Is(scErr, os.ErrNotExist) && !os.IsNotExist(scErr) {
 			m.logger(ctx).Debug("Tombstone enforcement: sidecar read failed",
 				slog.String("path", path),
@@ -261,7 +261,7 @@ func (m *RepairManager) enforceTombstone(ctx context.Context, path string, tombG
 		// Zombie replica of the deleted version: remove data and meta sidecar.
 		m.logger(ctx).Info("Tombstone enforcement: removing zombie replica",
 			slog.String("path", path),
-			slog.Int64("gen", gen),
+			slog.Int64("data_gen", gen),
 			slog.Int64("tomb_gen", tombGen),
 			slog.String("backend", name),
 		)
@@ -459,18 +459,18 @@ func (m *RepairManager) repairNode(ctx context.Context, node *vfs.Node) error {
 		// non-empty content sum, the replicas have divergent content (crash
 		// artifact or bit rot). The source still wins, exactly as before —
 		// the checksum only makes the event visible.
-		if srcSCErr == nil && srcSC.Sum != "" {
+		if srcSCErr == nil && srcSC.FileHash != "" {
 			if _, statErr := targetBackend.Stat(ctx, path); statErr == nil {
 				if tsc, tErr := vfs.ReadSidecar(ctx, targetBackend, path); tErr == nil &&
-					tsc.Gen == srcSC.Gen && tsc.Sum != "" && tsc.Sum != srcSC.Sum {
+					tsc.DataGen == srcSC.DataGen && tsc.FileHash != "" && tsc.FileHash != srcSC.FileHash {
 					m.divergenceCount.Add(1)
 					m.logger(ctx).Error("Divergent replicas detected; overwriting target from source",
 						slog.String("path", path),
-						slog.Int64("gen", srcSC.Gen),
+						slog.Int64("data_gen", srcSC.DataGen),
 						slog.String("source", sourceName),
-						slog.String("source_sum", srcSC.Sum),
+						slog.String("source_file_hash", srcSC.FileHash),
 						slog.String("target", targetName),
-						slog.String("target_sum", tsc.Sum),
+						slog.String("target_file_hash", tsc.FileHash),
 					)
 				}
 			}
@@ -586,7 +586,7 @@ func (m *RepairManager) repairNode(ctx context.Context, node *vfs.Node) error {
 // failures are non-fatal: the target reports generation 0 until the next write.
 func (m *RepairManager) copyRepairedSidecar(ctx context.Context, sourceBackend, targetBackend backend.Backend, path, sourceName, targetName string, srcSC *vfs.Sidecar, sum string) {
 	sc := *srcSC
-	sc.Sum = sum
+	sc.FileHash = sum
 	if err := vfs.WriteSidecar(ctx, targetBackend, path, sc); err != nil {
 		m.logger(ctx).Warn("Failed to copy sidecar",
 			slog.String("path", path),
@@ -597,7 +597,7 @@ func (m *RepairManager) copyRepairedSidecar(ctx context.Context, sourceBackend, 
 
 	// The source content was just read in full, so record what we saw on the
 	// source too if its sum was unknown or stale. Non-fatal.
-	if srcSC.Sum == sum {
+	if srcSC.FileHash == sum {
 		return
 	}
 	if err := vfs.WriteSidecar(ctx, sourceBackend, path, sc); err != nil {
@@ -609,7 +609,7 @@ func (m *RepairManager) copyRepairedSidecar(ctx context.Context, sourceBackend, 
 
 		return
 	}
-	srcSC.Sum = sum
+	srcSC.FileHash = sum
 }
 
 func (m *RepairManager) pruneNode(ctx context.Context, node *vfs.Node) error {

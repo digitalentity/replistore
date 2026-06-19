@@ -63,6 +63,6 @@ func TestIntegration_BasicReplication(t *testing.T) {
 		sidecar, err := vfs.ReadMeta(ctx, replFS.Backends[fmt.Sprintf("b%d", i+1)], "test.txt")
 		require.NoError(t, err)
 		assert.False(t, sidecar.Deleted)
-		assert.Equal(t, int64(1), sidecar.Gen)
+		assert.Equal(t, int64(1), sidecar.DataGen)
 	}
 }

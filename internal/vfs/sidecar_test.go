@@ -52,7 +52,7 @@ func TestSidecar_WriteReadRoundTrip(t *testing.T) {
 	}).Return(0, nil)
 	wf.On("Close").Return(nil)
 
-	err := WriteSidecar(context.Background(), b, "dir/f.txt", Sidecar{Gen: 42, Writer: "node-a"})
+	err := WriteSidecar(context.Background(), b, "dir/f.txt", Sidecar{DataGen: 42, Writer: "node-a"})
 	require.NoError(t, err)
 	assert.NotEmpty(t, written)
 
@@ -72,7 +72,7 @@ func TestSidecar_WriteReadRoundTrip(t *testing.T) {
 
 	sc, err := ReadMeta(context.Background(), b, "dir/f.txt")
 	require.NoError(t, err)
-	assert.Equal(t, int64(42), sc.Gen)
+	assert.Equal(t, int64(42), sc.DataGen)
 	assert.Equal(t, "node-a", sc.Writer)
 	assert.Equal(t, "dir/f.txt", sc.Path)
 	assert.Equal(t, 1, sc.V)
@@ -98,7 +98,7 @@ func TestReadMeta_BadVersionRejected(t *testing.T) {
 	b := &bmock.MockBackend{NameVal: "b1"}
 	rf := &bmock.MockFile{}
 
-	payload := []byte(`{"v":2,"gen":5,"writer":"x","deleted":false}`)
+	payload := []byte(`{"v":2,"data_gen":5,"writer":"x","deleted":false}`)
 	b.On("OpenFile", mock.Anything, MetaPath("f.txt"), os.O_RDONLY, os.FileMode(0)).Return(rf, nil)
 	rf.On("ReadAt", mock.Anything, mock.Anything, int64(0)).Run(func(args mock.Arguments) {
 		copy(args.Get(1).([]byte), payload)
@@ -148,7 +148,7 @@ func TestTombstone_SharesKeyWithSidecar(t *testing.T) {
 	wf.On("Close").Return(nil)
 
 	// Deleted is deliberately left false: WriteTombstone must force it true.
-	err := WriteTombstone(context.Background(), b, "dir/f.txt", Sidecar{Gen: 7, Writer: "node-a"})
+	err := WriteTombstone(context.Background(), b, "dir/f.txt", Sidecar{DataGen: 7, Writer: "node-a"})
 	assert.NoError(t, err)
 
 	var raw map[string]any
@@ -176,7 +176,7 @@ func TestWriteSidecar_ClearsDeleted(t *testing.T) {
 	}).Return(0, nil)
 	wf.On("Close").Return(nil)
 
-	err := WriteSidecar(context.Background(), b, "f.txt", Sidecar{Gen: 9, Deleted: true})
+	err := WriteSidecar(context.Background(), b, "f.txt", Sidecar{DataGen: 9, Deleted: true})
 	assert.NoError(t, err)
 
 	var raw map[string]any

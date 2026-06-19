@@ -78,7 +78,7 @@ func expectNoTombstone(b *bmock.MockBackend, dataPath string) {
 // expectTombstoneGen makes b serve a tombstone document at the given generation
 // for dataPath (used by the Create/Rename tombstone-generation reads).
 func expectTombstoneGen(b *bmock.MockBackend, dataPath string, gen int64) {
-	payload := fmt.Appendf(nil, `{"v":1,"path":%q,"gen":%d,"writer":"w","deleted":true}`, dataPath, gen)
+	payload := fmt.Appendf(nil, `{"v":1,"path":%q,"data_gen":%d,"writer":"w","deleted":true}`, dataPath, gen)
 	f := &bmock.MockFile{}
 	f.On("ReadAt", mock.Anything, mock.Anything, int64(0)).Run(func(args mock.Arguments) {
 		copy(args.Get(1).([]byte), payload)
@@ -155,12 +155,12 @@ func TestDir_Create(t *testing.T) {
 	// Create must stamp generation 1 on the new replica and in the cache.
 	written, count := sc.get()
 	assert.Equal(t, 1, count)
-	assert.Equal(t, int64(1), written.Gen)
+	assert.Equal(t, int64(1), written.DataGen)
 	assert.Equal(t, "node-test", written.Writer)
 
 	file := node.(*File)
 	file.node.Mu.RLock()
-	assert.Equal(t, int64(1), file.node.Meta.Gen)
+	assert.Equal(t, int64(1), file.node.Meta.DataGen)
 	file.node.Mu.RUnlock()
 
 	b1.AssertExpectations(t)
@@ -211,12 +211,12 @@ func TestDir_Create_AboveTombstoneGen(t *testing.T) {
 	w2, n2 := sc2.get()
 	assert.Equal(t, 1, n1)
 	assert.Equal(t, 1, n2)
-	assert.Equal(t, int64(4), w1.Gen)
-	assert.Equal(t, int64(4), w2.Gen)
+	assert.Equal(t, int64(4), w1.DataGen)
+	assert.Equal(t, int64(4), w2.DataGen)
 
 	file := node.(*File)
 	file.node.Mu.RLock()
-	assert.Equal(t, int64(4), file.node.Meta.Gen)
+	assert.Equal(t, int64(4), file.node.Meta.DataGen)
 	file.node.Mu.RUnlock()
 
 	b1.AssertExpectations(t)
@@ -1067,7 +1067,7 @@ func TestFile_Open_HealDegraded(t *testing.T) {
 	// Verify that the file's VFS cache node now lists ["b1", "b2"] as backends
 	file.node.Mu.RLock()
 	assert.ElementsMatch(t, []string{"b1", "b2"}, file.node.Meta.Backends)
-	assert.Equal(t, int64(1), file.node.Meta.Gen)
+	assert.Equal(t, int64(1), file.node.Meta.DataGen)
 	file.node.Mu.RUnlock()
 
 	// One generation bump, stamped on every replica including the healed one.
@@ -1075,8 +1075,8 @@ func TestFile_Open_HealDegraded(t *testing.T) {
 	w2, n2 := sc2.get()
 	assert.Equal(t, 1, n1)
 	assert.Equal(t, 1, n2)
-	assert.Equal(t, int64(1), w1.Gen)
-	assert.Equal(t, int64(1), w2.Gen)
+	assert.Equal(t, int64(1), w1.DataGen)
+	assert.Equal(t, int64(1), w2.DataGen)
 
 	b1.AssertExpectations(t)
 	b2.AssertExpectations(t)
@@ -1231,7 +1231,7 @@ func TestFile_Setattr_Truncate(t *testing.T) {
 	file.node.Mu.RLock()
 	assert.Equal(t, int64(10), file.node.Meta.Size)
 	assert.ElementsMatch(t, []string{"b1", "b2"}, file.node.Meta.Backends)
-	assert.Equal(t, int64(1), file.node.Meta.Gen)
+	assert.Equal(t, int64(1), file.node.Meta.DataGen)
 	file.node.Mu.RUnlock()
 
 	// Truncate bumps the generation on every surviving replica.
@@ -1239,8 +1239,8 @@ func TestFile_Setattr_Truncate(t *testing.T) {
 	w2, n2 := sc2.get()
 	assert.Equal(t, 1, n1)
 	assert.Equal(t, 1, n2)
-	assert.Equal(t, int64(1), w1.Gen)
-	assert.Equal(t, int64(1), w2.Gen)
+	assert.Equal(t, int64(1), w1.DataGen)
+	assert.Equal(t, int64(1), w2.DataGen)
 
 	b1.AssertExpectations(t)
 	b2.AssertExpectations(t)
@@ -1468,8 +1468,8 @@ func TestFile_Open_WriteBumpsGeneration(t *testing.T) {
 	mockFile2 := &bmock.MockFile{}
 
 	cache := vfs.NewCache()
-	cache.Upsert("gen.txt", vfs.Metadata{Name: "gen.txt", Path: "gen.txt", Backends: []string{"b1", "b2"}, Gen: 3}, "b1")
-	cache.Upsert("gen.txt", vfs.Metadata{Name: "gen.txt", Path: "gen.txt", Backends: []string{"b1", "b2"}, Gen: 3}, "b2")
+	cache.Upsert("gen.txt", vfs.Metadata{Name: "gen.txt", Path: "gen.txt", Backends: []string{"b1", "b2"}, DataGen: 3}, "b1")
+	cache.Upsert("gen.txt", vfs.Metadata{Name: "gen.txt", Path: "gen.txt", Backends: []string{"b1", "b2"}, DataGen: 3}, "b2")
 
 	fs := &RepliFS{
 		Cache:             cache,
@@ -1487,7 +1487,7 @@ func TestFile_Open_WriteBumpsGeneration(t *testing.T) {
 
 	// Seed the cached generation; Upsert merge semantics are out of scope.
 	file.node.Mu.Lock()
-	file.node.Meta.Gen = 3
+	file.node.Meta.DataGen = 3
 	file.node.Mu.Unlock()
 
 	b1.On("OpenFile", mock.Anything, "gen.txt", mock.Anything, mock.Anything).Return(mockFile1, nil)
@@ -1504,12 +1504,12 @@ func TestFile_Open_WriteBumpsGeneration(t *testing.T) {
 	w2, n2 := sc2.get()
 	assert.Equal(t, 1, n1)
 	assert.Equal(t, 1, n2)
-	assert.Equal(t, int64(4), w1.Gen)
-	assert.Equal(t, int64(4), w2.Gen)
+	assert.Equal(t, int64(4), w1.DataGen)
+	assert.Equal(t, int64(4), w2.DataGen)
 	assert.Equal(t, "node-test", w1.Writer)
 
 	file.node.Mu.RLock()
-	assert.Equal(t, int64(4), file.node.Meta.Gen)
+	assert.Equal(t, int64(4), file.node.Meta.DataGen)
 	file.node.Mu.RUnlock()
 }
 
@@ -1520,10 +1520,10 @@ func TestRemove_WritesTombstonesToAllBackends(t *testing.T) {
 	cache := vfs.NewCache()
 	// The file's replicas live only on b1, but the tombstone must reach ALL
 	// configured backends so the deletion sticks everywhere.
-	cache.Upsert("kill.txt", vfs.Metadata{Name: "kill.txt", Path: "kill.txt", Backends: []string{"b1"}, Gen: 3}, "b1")
+	cache.Upsert("kill.txt", vfs.Metadata{Name: "kill.txt", Path: "kill.txt", Backends: []string{"b1"}, DataGen: 3}, "b1")
 	node, _ := cache.Get("kill.txt")
 	node.Mu.Lock()
-	node.Meta.Gen = 3
+	node.Meta.DataGen = 3
 	node.Mu.Unlock()
 
 	fs := &RepliFS{
@@ -1550,8 +1550,8 @@ func TestRemove_WritesTombstonesToAllBackends(t *testing.T) {
 	w2, n2 := tc2.get()
 	assert.Equal(t, 1, n1)
 	assert.Equal(t, 1, n2)
-	assert.Equal(t, int64(4), w1.Gen)
-	assert.Equal(t, int64(4), w2.Gen)
+	assert.Equal(t, int64(4), w1.DataGen)
+	assert.Equal(t, int64(4), w2.DataGen)
 	assert.True(t, w1.Deleted)
 	assert.True(t, w2.Deleted)
 	assert.Equal(t, "node-test", w1.Writer)
@@ -1607,10 +1607,10 @@ func TestRename_TombstonesOldPathAndWritesFreshSidecar(t *testing.T) {
 	b2 := &bmock.MockBackend{NameVal: "b2"}
 
 	cache := vfs.NewCache()
-	cache.Upsert("old.txt", vfs.Metadata{Name: "old.txt", Path: "old.txt", Backends: []string{"b1"}, Gen: 3}, "b1")
+	cache.Upsert("old.txt", vfs.Metadata{Name: "old.txt", Path: "old.txt", Backends: []string{"b1"}, DataGen: 3}, "b1")
 	node, _ := cache.Get("old.txt")
 	node.Mu.Lock()
-	node.Meta.Gen = 3
+	node.Meta.DataGen = 3
 	node.Mu.Unlock()
 
 	fs := &RepliFS{
@@ -1646,15 +1646,15 @@ func TestRename_TombstonesOldPathAndWritesFreshSidecar(t *testing.T) {
 	w2, n2 := tc2.get()
 	assert.Equal(t, 1, n1)
 	assert.Equal(t, 1, n2)
-	assert.Equal(t, int64(4), w1.Gen)
-	assert.Equal(t, int64(4), w2.Gen)
+	assert.Equal(t, int64(4), w1.DataGen)
+	assert.Equal(t, int64(4), w2.DataGen)
 	assert.True(t, w1.Deleted)
 	assert.True(t, w2.Deleted)
 
 	// Fresh sidecar at the new path starts the new lineage at gen + 1.
 	ws, ns := sc1.get()
 	assert.Equal(t, 1, ns)
-	assert.Equal(t, int64(4), ws.Gen)
+	assert.Equal(t, int64(4), ws.DataGen)
 	assert.False(t, ws.Deleted)
 	assert.Equal(t, "node-test", ws.Writer)
 
@@ -1667,7 +1667,7 @@ func TestRename_TombstonesOldPathAndWritesFreshSidecar(t *testing.T) {
 	renamed, ok := cache.Get("new.txt")
 	assert.True(t, ok)
 	renamed.Mu.RLock()
-	assert.Equal(t, int64(4), renamed.Meta.Gen)
+	assert.Equal(t, int64(4), renamed.Meta.DataGen)
 	renamed.Mu.RUnlock()
 
 	b1.AssertExpectations(t)
@@ -1686,7 +1686,7 @@ func TestRename_OntoTombstonedTargetStartsAboveTombstone(t *testing.T) {
 	cache.Upsert("old.txt", vfs.Metadata{Name: "old.txt", Path: "old.txt", Backends: []string{"b1"}}, "b1")
 	node, _ := cache.Get("old.txt")
 	node.Mu.Lock()
-	node.Meta.Gen = 2 // source lineage at gen 2
+	node.Meta.DataGen = 2 // source lineage at gen 2
 	node.Mu.Unlock()
 
 	fs := &RepliFS{
@@ -1720,22 +1720,22 @@ func TestRename_OntoTombstonedTargetStartsAboveTombstone(t *testing.T) {
 	w2, n2 := tc2.get()
 	assert.Equal(t, 1, n1)
 	assert.Equal(t, 1, n2)
-	assert.Equal(t, int64(3), w1.Gen)
-	assert.Equal(t, int64(3), w2.Gen)
+	assert.Equal(t, int64(3), w1.DataGen)
+	assert.Equal(t, int64(3), w2.DataGen)
 	assert.True(t, w1.Deleted)
 	assert.True(t, w2.Deleted)
 
 	// New-path sidecar starts above the target tombstone: max(2, 5) + 1 = 6.
 	ws, ns := sc1.get()
 	assert.Equal(t, 1, ns)
-	assert.Equal(t, int64(6), ws.Gen)
+	assert.Equal(t, int64(6), ws.DataGen)
 	assert.False(t, ws.Deleted)
 
 	// The cache node carries the new-path generation.
 	renamed, ok := cache.Get("new.txt")
 	assert.True(t, ok)
 	renamed.Mu.RLock()
-	assert.Equal(t, int64(6), renamed.Meta.Gen)
+	assert.Equal(t, int64(6), renamed.Meta.DataGen)
 	renamed.Mu.RUnlock()
 
 	b1.AssertExpectations(t)

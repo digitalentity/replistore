@@ -61,7 +61,7 @@ func TestRepairManager_RepairNode(t *testing.T) {
 
 	// The source's sidecar (gen 7) must be replicated to the target.
 	srcSidecar := &bmock.MockFile{}
-	scPayload := []byte(`{"v":1,"gen":7,"writer":"node-x","deleted":false}`)
+	scPayload := []byte(`{"v":1,"data_gen":7,"writer":"node-x","deleted":false}`)
 	b1.On("OpenFile", mock.Anything, vfs.MetaPath("repair.txt"), os.O_RDONLY, os.FileMode(0)).Return(srcSidecar, nil)
 	srcSidecar.On("ReadAt", mock.Anything, mock.Anything, int64(0)).Run(func(args mock.Arguments) {
 		copy(args.Get(1).([]byte), scPayload)
@@ -82,18 +82,18 @@ func TestRepairManager_RepairNode(t *testing.T) {
 
 	// The target received the source's generation, not a new one, plus the
 	// content sum of the copied bytes.
-	wantSum := "sha256:" + fmt.Sprintf("%x", sha256.Sum256(data))
+	wantFileHash := "sha256:" + fmt.Sprintf("%x", sha256.Sum256(data))
 	written, count := scTarget.get()
 	assert.Equal(t, 1, count)
-	assert.Equal(t, int64(7), written.Gen)
+	assert.Equal(t, int64(7), written.DataGen)
 	assert.Equal(t, "node-x", written.Writer)
-	assert.Equal(t, wantSum, written.Sum)
+	assert.Equal(t, wantFileHash, written.FileHash)
 
 	// The source's sidecar was updated with the same sum (it was empty).
 	srcWritten, srcCount := scSource.get()
 	assert.Equal(t, 1, srcCount)
-	assert.Equal(t, int64(7), srcWritten.Gen)
-	assert.Equal(t, wantSum, srcWritten.Sum)
+	assert.Equal(t, int64(7), srcWritten.DataGen)
+	assert.Equal(t, wantFileHash, srcWritten.FileHash)
 
 	b1.AssertExpectations(t)
 	b2.AssertExpectations(t)
@@ -255,8 +255,8 @@ func TestRepairManager_RepairNode_DetectsDivergentReplicas(t *testing.T) {
 	node, _ := cache.Get("repair.txt")
 
 	data := []byte("repair data")
-	srcSum := "sha256:" + fmt.Sprintf("%x", sha256.Sum256(data))
-	divergentSum := "sha256:" + fmt.Sprintf("%x", sha256.Sum256([]byte("different content")))
+	srcFileHash := "sha256:" + fmt.Sprintf("%x", sha256.Sum256(data))
+	divergentFileHash := "sha256:" + fmt.Sprintf("%x", sha256.Sum256([]byte("different content")))
 
 	b1.On("OpenFile", mock.Anything, "repair.txt", os.O_RDONLY, mock.Anything).Return(mockFile1, nil)
 	mockFile1.On("ReadAt", mock.Anything, mock.Anything, int64(0)).Run(func(args mock.Arguments) {
@@ -266,7 +266,7 @@ func TestRepairManager_RepairNode_DetectsDivergentReplicas(t *testing.T) {
 
 	// Source sidecar: gen 7 with the (matching) content sum.
 	srcSidecar := &bmock.MockFile{}
-	srcPayload := fmt.Appendf(nil, `{"v":1,"gen":7,"writer":"node-x","deleted":false,"sum":"%s"}`, srcSum)
+	srcPayload := fmt.Appendf(nil, `{"v":1,"data_gen":7,"writer":"node-x","deleted":false,"file_hash":"%s"}`, srcFileHash)
 	b1.On("OpenFile", mock.Anything, vfs.MetaPath("repair.txt"), os.O_RDONLY, os.FileMode(0)).Return(srcSidecar, nil)
 	srcSidecar.On("ReadAt", mock.Anything, mock.Anything, int64(0)).Run(func(args mock.Arguments) {
 		copy(args.Get(1).([]byte), srcPayload)
@@ -277,7 +277,7 @@ func TestRepairManager_RepairNode_DetectsDivergentReplicas(t *testing.T) {
 	// non-empty sum: divergence must be detected before the overwrite.
 	b2.On("Stat", mock.Anything, "repair.txt").Return(backend.FileInfo{Name: "repair.txt", Size: 17}, nil)
 	tgtSidecar := &bmock.MockFile{}
-	tgtPayload := fmt.Appendf(nil, `{"v":1,"gen":7,"writer":"node-y","deleted":false,"sum":"%s"}`, divergentSum)
+	tgtPayload := fmt.Appendf(nil, `{"v":1,"data_gen":7,"writer":"node-y","deleted":false,"file_hash":"%s"}`, divergentFileHash)
 	b2.On("OpenFile", mock.Anything, vfs.MetaPath("repair.txt"), os.O_RDONLY, os.FileMode(0)).Return(tgtSidecar, nil)
 	tgtSidecar.On("ReadAt", mock.Anything, mock.Anything, int64(0)).Run(func(args mock.Arguments) {
 		copy(args.Get(1).([]byte), tgtPayload)
@@ -308,8 +308,8 @@ func TestRepairManager_RepairNode_DetectsDivergentReplicas(t *testing.T) {
 	// The target's sidecar now carries the source's generation and sum.
 	written, count := scTarget.get()
 	assert.Equal(t, 1, count)
-	assert.Equal(t, int64(7), written.Gen)
-	assert.Equal(t, srcSum, written.Sum)
+	assert.Equal(t, int64(7), written.DataGen)
+	assert.Equal(t, srcFileHash, written.FileHash)
 
 	// The source's sum already matched what was read, so it is not rewritten.
 	b1.AssertNotCalled(t, "OpenFile", mock.Anything, vfs.MetaPath("repair.txt"), os.O_CREATE|os.O_TRUNC|os.O_RDWR, os.FileMode(0644))
@@ -383,7 +383,7 @@ func mockTombstoneTree(b *bmock.MockBackend, tombs map[string]int64) {
 		}
 	}).Return(nil)
 	for path, gen := range tombs {
-		payload := fmt.Appendf(nil, `{"v":1,"path":%q,"gen":%d,"writer":"w","deleted":true}`, path, gen)
+		payload := fmt.Appendf(nil, `{"v":1,"path":%q,"data_gen":%d,"writer":"w","deleted":true}`, path, gen)
 		f := &bmock.MockFile{}
 		f.On("ReadAt", mock.Anything, mock.Anything, int64(0)).Run(func(args mock.Arguments) {
 			copy(args.Get(1).([]byte), payload)
@@ -395,7 +395,7 @@ func mockTombstoneTree(b *bmock.MockBackend, tombs map[string]int64) {
 
 // mockSidecarGen makes b serve a sidecar with the given generation for path.
 func mockSidecarGen(b *bmock.MockBackend, path string, gen int64) {
-	payload := fmt.Appendf(nil, `{"v":1,"gen":%d,"writer":"w","deleted":false}`, gen)
+	payload := fmt.Appendf(nil, `{"v":1,"data_gen":%d,"writer":"w","deleted":false}`, gen)
 	f := &bmock.MockFile{}
 	f.On("ReadAt", mock.Anything, mock.Anything, int64(0)).Run(func(args mock.Arguments) {
 		copy(args.Get(1).([]byte), payload)

@@ -43,7 +43,7 @@ type Metadata struct {
 	ModTime  time.Time
 	IsDir    bool
 	Backends []string // Names of backends containing this file
-	Gen      int64    // version generation from the sidecar; 0 = legacy/unknown
+	DataGen  int64    // version generation from the sidecar; 0 = legacy/unknown
 }
 
 type Node struct {
@@ -167,21 +167,21 @@ func mergeMeta(existing *Metadata, incoming Metadata, incomingBackends []string)
 		return
 	}
 
-	maxGen := max(incoming.Gen, existing.Gen)
+	maxGen := max(incoming.DataGen, existing.DataGen)
 
 	// Generations are comparable only when both sides have one (or neither
-	// does); a lone Gen 0 just means "observed without sidecar knowledge".
-	if (existing.Gen > 0) == (incoming.Gen > 0) {
+	// does); a lone DataGen 0 just means "observed without sidecar knowledge".
+	if (existing.DataGen > 0) == (incoming.DataGen > 0) {
 		switch {
-		case incoming.Gen > existing.Gen:
+		case incoming.DataGen > existing.DataGen:
 			// Rule 1: higher generation wins outright.
 			existing.Size = incoming.Size
 			existing.ModTime = incoming.ModTime
-			existing.Gen = incoming.Gen
+			existing.DataGen = incoming.DataGen
 			existing.Backends = append([]string(nil), incomingBackends...)
 
 			return
-		case incoming.Gen < existing.Gen:
+		case incoming.DataGen < existing.DataGen:
 			// Rule 1: lower generation is ignored.
 			return
 		case incoming.Size == existing.Size:
@@ -214,7 +214,7 @@ func mergeMeta(existing *Metadata, incoming Metadata, incomingBackends []string)
 		// Stale version: ignored.
 	}
 	// Never downgrade the node's stored generation (mixed-knowledge rule).
-	existing.Gen = maxGen
+	existing.DataGen = maxGen
 }
 
 // unionBackends returns the deduplicated union of two backend name lists,
@@ -375,7 +375,7 @@ func listTombstones(ctx context.Context, b backend.Backend) map[string]int64 {
 			return nil
 		}
 		if sc.Deleted && sc.Path != "" {
-			res[sc.Path] = sc.Gen
+			res[sc.Path] = sc.DataGen
 		}
 
 		return nil
@@ -530,7 +530,7 @@ func resolveGlobalState(ctx context.Context, perBackend map[string]map[string]Me
 func dropZombies(cands []Metadata, tombGen int64) []Metadata {
 	live := cands[:0]
 	for _, m := range cands {
-		if m.Gen > tombGen {
+		if m.DataGen > tombGen {
 			live = append(live, m)
 		}
 	}
@@ -573,7 +573,7 @@ func loadGenerations(ctx context.Context, path string, cands []Metadata, byName 
 		wg.Add(1)
 		go func(m *Metadata) {
 			defer wg.Done()
-			m.Gen = sidecarGen(ctx, b, path)
+			m.DataGen = sidecarDataGen(ctx, b, path)
 		}(&cands[i])
 	}
 	wg.Wait()
@@ -838,12 +838,12 @@ func (c *Cache) FetchEntry(ctx context.Context, path string, backends []backend.
 			// admitted (REVIEW.md C6).
 			switch sc, scErr := ReadMeta(gCtx, b, path); {
 			case scErr == nil:
-				meta.Gen = sc.Gen
+				meta.DataGen = sc.DataGen
 				if sc.Deleted {
 					stateMu.Lock()
-					if !tombFound || sc.Gen > maxTombGen {
+					if !tombFound || sc.DataGen > maxTombGen {
 						tombFound = true
-						maxTombGen = sc.Gen
+						maxTombGen = sc.DataGen
 					}
 					stateMu.Unlock()
 				}
@@ -883,7 +883,7 @@ func (c *Cache) FetchEntry(ctx context.Context, path string, backends []backend.
 		return nil, ErrUnavailable
 	}
 
-	if tombFound && maxTombGen >= bestMeta.Gen {
+	if tombFound && maxTombGen >= bestMeta.DataGen {
 		// The winning replica is a zombie of a deleted version: the recorded
 		// deletion generation is at least as new as anything found.
 		return nil, os.ErrNotExist

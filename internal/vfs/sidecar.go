@@ -36,21 +36,21 @@ import (
 // Sidecar is the per-path version metadata stored under metaDir, keyed by the
 // hash of the data path. With Deleted set it doubles as the deletion tombstone
 // (REVIEW.md C6): a tombstone records that the path was deleted at generation
-// Gen, so any replica at Gen or below is a zombie that must not be re-admitted.
+// DataGen, so any replica at DataGen or below is a zombie that must not be re-admitted.
 type Sidecar struct {
 	V       int    `json:"v"`       // format version, 1
 	Path    string `json:"path"`    // data path this document describes (the hash key is one-way)
-	Gen     int64  `json:"gen"`     // generation counter, bumped per write session under the path lock
+	DataGen int64  `json:"data_gen"` // generation counter, bumped per write session under the path lock
 	Writer  string `json:"writer"`  // node that produced this generation (diagnostics only)
 	Deleted bool   `json:"deleted"` // tombstone marker (written by delete/rename)
 
-	// Sum is the content checksum of the replica, "sha256:<hex>"; empty
+	// FileHash is the content checksum of the replica, "sha256:<hex>" or "merkle:<hex>"; empty
 	// means the content hash is unknown. Writers blank it on every
 	// generation bump (random-access FUSE writes make continuous hashing
 	// infeasible); repair fills it in while copying the stream. Two
 	// same-generation replicas with different non-empty sums hold divergent
 	// content (crash artifacts or bit rot).
-	Sum string `json:"sum,omitempty"`
+	FileHash string `json:"file_hash,omitempty"`
 }
 
 // sidecarFormatVersion is the only sidecar format version this build
@@ -115,12 +115,12 @@ func readMetaDoc(ctx context.Context, b backend.Backend, scPath string) (Sidecar
 	return sc, nil
 }
 
-// sidecarGen returns the generation recorded in path's metadata document on
+// sidecarDataGen returns the generation recorded in path's metadata document on
 // backend b. A missing document means a legacy (pre-versioning) replica and
 // reports generation 0; any other error also degrades to generation 0 (with a
 // debug log) so reconciliation can proceed without that backend's version
 // knowledge.
-func sidecarGen(ctx context.Context, b backend.Backend, path string) int64 {
+func sidecarDataGen(ctx context.Context, b backend.Backend, path string) int64 {
 	sc, err := ReadMeta(ctx, b, path)
 	if err != nil {
 		if !errors.Is(err, os.ErrNotExist) && !os.IsNotExist(err) {
@@ -134,7 +134,7 @@ func sidecarGen(ctx context.Context, b backend.Backend, path string) int64 {
 		return 0
 	}
 
-	return sc.Gen
+	return sc.DataGen
 }
 
 // WriteSidecar encodes sc as path's live metadata document on backend b,

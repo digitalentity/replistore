@@ -25,7 +25,7 @@ func TestMergeMeta_FileGenRules(t *testing.T) {
 	newer := now.Add(time.Hour)
 
 	file := func(gen int64, size int64, mtime time.Time, backends ...string) Metadata {
-		return Metadata{Name: "f", Path: "f", Size: size, ModTime: mtime, Gen: gen, Backends: backends}
+		return Metadata{Name: "f", Path: "f", Size: size, ModTime: mtime, DataGen: gen, Backends: backends}
 	}
 
 	cases := []struct {
@@ -135,7 +135,7 @@ func TestMergeMeta_FileGenRules(t *testing.T) {
 
 			assert.Equal(t, tc.want.Size, got.Size, "size")
 			assert.Equal(t, tc.want.ModTime, got.ModTime, "mtime")
-			assert.Equal(t, tc.want.Gen, got.Gen, "gen")
+			assert.Equal(t, tc.want.DataGen, got.DataGen, "gen")
 			assert.ElementsMatch(t, tc.want.Backends, got.Backends, "backends")
 			assert.False(t, got.IsDir)
 		})
@@ -147,7 +147,7 @@ func TestMergeMeta_DirRulesUnchanged(t *testing.T) {
 
 	t.Run("dirs union regardless of mtime and gen", func(t *testing.T) {
 		existing := Metadata{Name: "d", IsDir: true, Mode: os.ModeDir | 0755, ModTime: now, Backends: []string{"b1"}}
-		incoming := Metadata{Name: "d", IsDir: true, Mode: os.ModeDir | 0755, ModTime: now.Add(-time.Hour), Gen: 7}
+		incoming := Metadata{Name: "d", IsDir: true, Mode: os.ModeDir | 0755, ModTime: now.Add(-time.Hour), DataGen: 7}
 		mergeMeta(&existing, incoming, []string{"b2"})
 		assert.True(t, existing.IsDir)
 		assert.ElementsMatch(t, []string{"b1", "b2"}, existing.Backends)
@@ -156,7 +156,7 @@ func TestMergeMeta_DirRulesUnchanged(t *testing.T) {
 
 	t.Run("dir wins type conflict over higher-gen file", func(t *testing.T) {
 		existing := Metadata{Name: "x", IsDir: true, Mode: os.ModeDir | 0755, ModTime: now, Backends: []string{"b1"}}
-		incoming := Metadata{Name: "x", Size: 10, ModTime: now.Add(time.Hour), Gen: 9}
+		incoming := Metadata{Name: "x", Size: 10, ModTime: now.Add(time.Hour), DataGen: 9}
 		mergeMeta(&existing, incoming, []string{"b2"})
 		assert.True(t, existing.IsDir)
 		assert.ElementsMatch(t, []string{"b1", "b2"}, existing.Backends)
@@ -176,7 +176,7 @@ func mockWalk(b *bmock.MockBackend, entries map[string]backend.FileInfo) {
 // mockMetaRead makes b serve a metadata document for path at its hashed key,
 // with the given generation and deletion marker.
 func mockMetaRead(b *bmock.MockBackend, path string, gen int64, deleted bool) {
-	payload := fmt.Appendf(nil, `{"v":1,"path":%q,"gen":%d,"writer":"w","deleted":%t}`, path, gen, deleted)
+	payload := fmt.Appendf(nil, `{"v":1,"path":%q,"data_gen":%d,"writer":"w","deleted":%t}`, path, gen, deleted)
 	f := &bmock.MockFile{}
 	f.On("ReadAt", mock.Anything, mock.Anything, int64(0)).Run(func(args mock.Arguments) {
 		copy(args.Get(1).([]byte), payload)
@@ -246,7 +246,7 @@ func TestSyncAll_SizeConflictResolvedByGenerations(t *testing.T) {
 	assert.Equal(t, []string{"b2"}, node.Meta.Backends)
 	assert.Equal(t, int64(200), node.Meta.Size)
 	assert.Equal(t, now, node.Meta.ModTime)
-	assert.Equal(t, int64(5), node.Meta.Gen)
+	assert.Equal(t, int64(5), node.Meta.DataGen)
 	b1.AssertExpectations(t)
 	b2.AssertExpectations(t)
 }
@@ -277,7 +277,7 @@ func TestSyncAll_SameSizeMergesWithoutSidecarReads(t *testing.T) {
 	assert.ElementsMatch(t, []string{"b1", "b2"}, node.Meta.Backends)
 	assert.Equal(t, int64(100), node.Meta.Size)
 	assert.Equal(t, now.Add(time.Hour), node.Meta.ModTime)
-	assert.Equal(t, int64(0), node.Meta.Gen)
+	assert.Equal(t, int64(0), node.Meta.DataGen)
 	b1.AssertNotCalled(t, "OpenFile", mock.Anything, mock.Anything, mock.Anything, mock.Anything)
 	b2.AssertNotCalled(t, "OpenFile", mock.Anything, mock.Anything, mock.Anything, mock.Anything)
 }
@@ -326,7 +326,7 @@ func TestFetchEntry_PopulatesGenFromSidecar(t *testing.T) {
 
 	node, err := c.FetchEntry(ctx, path, []backend.Backend{b1, b2})
 	require.NoError(t, err)
-	assert.Equal(t, int64(7), node.Meta.Gen)
+	assert.Equal(t, int64(7), node.Meta.DataGen)
 	assert.Equal(t, int64(100), node.Meta.Size)
 	assert.Equal(t, []string{"b1"}, node.Meta.Backends)
 }
@@ -344,7 +344,7 @@ func TestFetchEntry_MissingSidecarMeansGenZero(t *testing.T) {
 
 	node, err := c.FetchEntry(ctx, path, []backend.Backend{b1})
 	require.NoError(t, err)
-	assert.Equal(t, int64(0), node.Meta.Gen)
+	assert.Equal(t, int64(0), node.Meta.DataGen)
 	assert.Equal(t, []string{"b1"}, node.Meta.Backends)
 }
 
@@ -401,7 +401,7 @@ func TestSyncAll_TombstoneSurvivorAdmitted(t *testing.T) {
 
 	node, ok := c.Get("f.txt")
 	assert.True(t, ok)
-	assert.Equal(t, int64(4), node.Meta.Gen)
+	assert.Equal(t, int64(4), node.Meta.DataGen)
 	assert.Equal(t, []string{"b1"}, node.Meta.Backends)
 	b1.AssertExpectations(t)
 	b2.AssertExpectations(t)
@@ -443,6 +443,6 @@ func TestFetchEntry_NewerReplicaBeatsTombstone(t *testing.T) {
 
 	node, err := c.FetchEntry(ctx, path, []backend.Backend{b1})
 	require.NoError(t, err)
-	assert.Equal(t, int64(4), node.Meta.Gen)
+	assert.Equal(t, int64(4), node.Meta.DataGen)
 	assert.Equal(t, []string{"b1"}, node.Meta.Backends)
 }
