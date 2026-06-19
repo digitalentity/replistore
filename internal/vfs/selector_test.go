@@ -11,7 +11,7 @@ import (
 	"github.com/stretchr/testify/mock"
 )
 
-func TestSpaceAwareSelector_SelectForRead(t *testing.T) {
+func TestSmartSelector_SelectForRead(t *testing.T) {
 	b1 := &bmock.MockBackend{NameVal: "b1", SpeedVal: 10}
 	b2 := &bmock.MockBackend{NameVal: "b2", SpeedVal: 5}
 	b3 := &bmock.MockBackend{NameVal: "b3", SpeedVal: 10}
@@ -23,7 +23,7 @@ func TestSpaceAwareSelector_SelectForRead(t *testing.T) {
 	}
 
 	monitor := backend.NewHealthMonitor(backends)
-	selector := vfs.NewSpaceAwareSelector(backends, monitor, nil)
+	selector := vfs.NewSmartSelector(backends, monitor, nil)
 
 	meta := vfs.Metadata{
 		Backends: []string{"b1", "b2", "b3"},
@@ -57,7 +57,7 @@ func TestSpaceAwareSelector_SelectForRead(t *testing.T) {
 	}
 }
 
-func TestSpaceAwareSelector_SelectForWrite(t *testing.T) {
+func TestSmartSelector_SelectForWrite(t *testing.T) {
 	b1 := &bmock.MockBackend{NameVal: "b1", SpeedVal: 10, TagsVal: []string{"hot"}}
 	b2 := &bmock.MockBackend{NameVal: "b2", SpeedVal: 5, TagsVal: []string{"hot"}}
 	b3 := &bmock.MockBackend{NameVal: "b3", SpeedVal: 1, TagsVal: []string{"cold"}}
@@ -77,7 +77,7 @@ func TestSpaceAwareSelector_SelectForWrite(t *testing.T) {
 	b4.On("GetFreeSpace").Return(uint64(20), nil)
 
 	// Selector with write affinity to "cold"
-	selector := vfs.NewSpaceAwareSelector(backends, nil, []string{"cold"})
+	selector := vfs.NewSmartSelector(backends, nil, []string{"cold"})
 
 	allBackends := []string{"b1", "b2", "b3", "b4"}
 
@@ -110,7 +110,7 @@ func TestSpaceAwareSelector_SelectForWrite(t *testing.T) {
 	assert.Len(t, res5, 4)
 }
 
-func TestSpaceAwareSelector_SelectForWrite_NoAffinity(t *testing.T) {
+func TestSmartSelector_SelectForWrite_NoAffinity(t *testing.T) {
 	b1 := &bmock.MockBackend{NameVal: "b1", SpeedVal: 10, TagsVal: []string{"hot"}}
 	b2 := &bmock.MockBackend{NameVal: "b2", SpeedVal: 5, TagsVal: []string{"hot"}}
 	b3 := &bmock.MockBackend{NameVal: "b3", SpeedVal: 1, TagsVal: []string{"cold"}}
@@ -126,7 +126,7 @@ func TestSpaceAwareSelector_SelectForWrite_NoAffinity(t *testing.T) {
 	b3.On("GetFreeSpace").Return(uint64(80), nil)
 
 	// No affinity tags configured
-	selector := vfs.NewSpaceAwareSelector(backends, nil, nil)
+	selector := vfs.NewSmartSelector(backends, nil, nil)
 
 	allBackends := []string{"b1", "b2", "b3"}
 

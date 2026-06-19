@@ -45,7 +45,7 @@ max_io_duration: "1s"                 # minimum lease buffer duration required t
 
 # Selector configuration (optional)
 selector:
-  type: "space-aware"                 # "random", "first", or "space-aware" (default "random")
+  type: "smart"                       # "random", "first", or "smart" (default "random")
   write_affinity: ["cold-storage"]    # tags indicating cold-storage/backup targets for write affinity
 
 # List of backends. Supports multiple backend types (e.g., "smb", "local").
@@ -120,8 +120,8 @@ Determines how backends are selected for reads and writes.
 - `type` (string): Selector algorithm to use. Options are:
   - `random` (default): Selects randomly among healthy backends.
   - `first`: Deterministically selects the first healthy backend in the list.
-  - `space-aware`: Performs speed-based read tie-breaking and space-based write load balancing.
-- `write_affinity` (list of strings): Tags indicating which backends are preferred as backup targets (e.g., cold-storage shares). Under the `space-aware` selector, at least one write replica is placed on a healthy backend possessing one of these tags, selecting the one with the most free space.
+  - `smart`: Performs speed-based read tie-breaking and space-based write load balancing.
+- `write_affinity` (list of strings): Tags indicating which backends are preferred as backup targets (e.g., cold-storage shares). Under the `smart` selector, at least one write replica is placed on a healthy backend possessing one of these tags, selecting the one with the most free space.
 
 ### `backends` (list)
 A list of backend configurations. Each backend must have a unique `name`.
@@ -136,7 +136,7 @@ A list of backend configurations. Each backend must have a unique `name`.
   - `domain`: (Optional) The SMB/NTLM domain.
 - **For `local` type backends:**
   - `path`: The absolute path to a local directory to act as the backend storage.
-- `speed` (int): A performance rating for read selection (default `10`). Slower backends (e.g. cold storage/HDDs) should be given lower values. Under `space-aware` reads, RepliStore will tie-break and only read from the fastest available replica.
+- `speed` (int): A performance rating for read selection (default `10`). Slower backends (e.g. cold storage/HDDs) should be given lower values. Under `smart` reads, RepliStore will tie-break and only read from the fastest available replica.
 - `tags` (list of strings): A list of tags associated with this backend, used for write affinity matching (default `[]`).
 - `options`: (Optional) Map of custom string/interface options for future backend extensions.
 

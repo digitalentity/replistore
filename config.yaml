@@ -36,9 +36,9 @@ repair_concurrency: 2
 # type can be:
 #   - "random" (default): randomly distributes files.
 #   - "first": always selects the first healthy backend.
-#   - "space-aware": speed-based read tie-breaking and space-based write load balancing.
+#   - "smart": speed-based read tie-breaking and space-based write load balancing.
 # selector:
-#   type: "space-aware"
+#   type: "smart"
 #   write_affinity: ["cold-storage"]    # tags of backends preferred for backup replication
 
 backends:

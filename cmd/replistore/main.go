@@ -214,8 +214,8 @@ func run(cfg *config.Config, nodeID string) error {
 
 	var selector vfs.BackendSelector
 	switch cfg.Selector.Type {
-	case "space-aware":
-		selector = vfs.NewSpaceAwareSelector(backends, monitor, cfg.Selector.WriteAffinity)
+	case "smart":
+		selector = vfs.NewSmartSelector(backends, monitor, cfg.Selector.WriteAffinity)
 	case "first":
 		selector = vfs.NewFirstSelector(monitor)
 	case "random":

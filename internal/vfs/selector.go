@@ -102,15 +102,15 @@ func (s *RandomSelector) SelectForWrite(count int, allBackends []string) []strin
 	return res
 }
 
-type SpaceAwareSelector struct {
+type SmartSelector struct {
 	r             *rand.Rand
 	monitor       *backend.HealthMonitor
 	backends      map[string]backend.Backend
 	writeAffinity []string
 }
 
-func NewSpaceAwareSelector(backends map[string]backend.Backend, monitor *backend.HealthMonitor, writeAffinity []string) *SpaceAwareSelector {
-	return &SpaceAwareSelector{
+func NewSmartSelector(backends map[string]backend.Backend, monitor *backend.HealthMonitor, writeAffinity []string) *SmartSelector {
+	return &SmartSelector{
 		r:             rand.New(rand.NewSource(time.Now().UnixNano())), //nolint:gosec // weak random ok for selecting replica
 		monitor:       monitor,
 		backends:      backends,
@@ -118,7 +118,7 @@ func NewSpaceAwareSelector(backends map[string]backend.Backend, monitor *backend
 	}
 }
 
-func (s *SpaceAwareSelector) hasAffinityTag(b backend.Backend) bool {
+func (s *SmartSelector) hasAffinityTag(b backend.Backend) bool {
 	if b == nil {
 		return false
 	}
@@ -132,7 +132,7 @@ func (s *SpaceAwareSelector) hasAffinityTag(b backend.Backend) bool {
 	return false
 }
 
-func (s *SpaceAwareSelector) getFreeSpace(name string) uint64 {
+func (s *SmartSelector) getFreeSpace(name string) uint64 {
 	b, ok := s.backends[name]
 	if !ok {
 		return 0
@@ -145,7 +145,7 @@ func (s *SpaceAwareSelector) getFreeSpace(name string) uint64 {
 	return space
 }
 
-func (s *SpaceAwareSelector) SelectForRead(meta Metadata) string {
+func (s *SmartSelector) SelectForRead(meta Metadata) string {
 	var candidates []string
 	for _, b := range meta.Backends {
 		if s.monitor == nil || s.monitor.IsHealthy(b) {
@@ -186,7 +186,7 @@ func (s *SpaceAwareSelector) SelectForRead(meta Metadata) string {
 	return fastest[s.r.Intn(len(fastest))]
 }
 
-func (s *SpaceAwareSelector) SelectForWrite(count int, allBackends []string) []string {
+func (s *SmartSelector) SelectForWrite(count int, allBackends []string) []string {
 	if count <= 0 || len(allBackends) == 0 {
 		return nil
 	}

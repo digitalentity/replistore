@@ -11,7 +11,7 @@ Read failover is reactive today: the open-time and read-time loops try replicas 
 
 ### 2.1. Smart Backend Selection
 `RandomSelector` does not consider backend state beyond binary health.
-- **Space-Aware:** Query backend free space and prioritize shares with more capacity for new file creations.
+- **Smart:** Query backend free space and prioritize shares with more capacity for new file creations.
 - **Latency-Aware:** Track the response time of each backend and prioritize the fastest one for read operations.
 
 ## 3. Data Integrity & Correctness
