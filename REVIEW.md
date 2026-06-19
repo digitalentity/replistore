@@ -42,7 +42,7 @@ RequestLock is first-come-first-served per peer; `LamportTime` only updates the 
 
 ### H7. Repair and inline healing race with active writers when the DLM is disabled (and on the same node even when enabled, per C2)
 
-> **Status: PARTIALLY FIXED** in `2497fb1` — residual gap: in-flight writes on open handles
+> **Status: FIXED** — the in-process per-path lock (`2497fb1`) is now complemented by an active-writer check: `repairNode` and `pruneNode` consult `handleRegistry.hasOpenWriteHandle(node)` under the path lock and skip a file with an open write handle, deferring to a later scrub. Writers register their handle under the same path lock during `Open` and deregister on `Release`, so a handle visible to repair means a write session is genuinely in flight — closing the residual window where repair could copy (or prune) a partially written file into a torn replica that then participates in LWW. Covered by `TestRepairManager_RepairNode_SkipsActiveWriteHandle` and `TestRepairManager_PruneNode_SkipsActiveWriteHandle`.
 
 With `listen_addr` unset, `acquireLock` returns `(nil, nil)` and `RepairManager.repairNode` / the inline heal in `File.Open` proceed with no coordination at all. A repair copy of a file being actively written produces a torn replica that then participates in LWW (and per C4 may even win). bazil/FUSE dispatches operations concurrently, so single-node deployment does not imply serialization.
 

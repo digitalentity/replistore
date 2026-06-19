@@ -100,6 +100,79 @@ func TestRepairManager_RepairNode(t *testing.T) {
 	srcSidecar.AssertExpectations(t)
 }
 
+// TestRepairManager_RepairNode_SkipsActiveWriteHandle covers H7: a degraded
+// file with an open write handle must not be repaired, since copying the source
+// mid-write would replicate a torn replica. No backend expectations are set, so
+// any backend I/O fails the test.
+func TestRepairManager_RepairNode_SkipsActiveWriteHandle(t *testing.T) {
+	b1 := &bmock.MockBackend{NameVal: "b1"}
+	b2 := &bmock.MockBackend{NameVal: "b2"}
+
+	cache := vfs.NewCache()
+	// Degraded: only on b1, RF=2.
+	cache.Upsert("writing.txt", vfs.Metadata{Name: "writing.txt", Path: "writing.txt", Backends: []string{"b1"}, Mode: 0644}, "b1")
+
+	fs := &RepliFS{
+		Cache:             cache,
+		Backends:          map[string]backend.Backend{"b1": b1, "b2": b2},
+		ReplicationFactor: 2,
+		Selector:          vfs.NewFirstSelector(nil),
+	}
+	mgr := NewRepairManager(fs, time.Hour, 0, 1)
+
+	node, _ := cache.Get("writing.txt")
+	fs.handles.register(node, &FileHandle{}) // a write session is in flight
+
+	err := mgr.repairNode(context.Background(), node)
+	require.NoError(t, err)
+
+	// Still degraded: repair was deferred, not performed.
+	node.Mu.RLock()
+	assert.Equal(t, []string{"b1"}, node.Meta.Backends)
+	node.Mu.RUnlock()
+
+	b1.AssertExpectations(t)
+	b2.AssertExpectations(t)
+}
+
+// TestRepairManager_PruneNode_SkipsActiveWriteHandle is the prune-side twin:
+// an over-replicated file with an open write handle must not have a replica
+// pruned out from under the writer.
+func TestRepairManager_PruneNode_SkipsActiveWriteHandle(t *testing.T) {
+	b1 := &bmock.MockBackend{NameVal: "b1"}
+	b2 := &bmock.MockBackend{NameVal: "b2"}
+	b3 := &bmock.MockBackend{NameVal: "b3"}
+
+	cache := vfs.NewCache()
+	// Over-replicated: on all three, RF=2.
+	for _, name := range []string{"b1", "b2", "b3"} {
+		cache.Upsert("writing.txt", vfs.Metadata{Name: "writing.txt", Path: "writing.txt", Mode: 0644}, name)
+	}
+
+	fs := &RepliFS{
+		Cache:             cache,
+		Backends:          map[string]backend.Backend{"b1": b1, "b2": b2, "b3": b3},
+		ReplicationFactor: 2,
+		Selector:          vfs.NewFirstSelector(nil),
+	}
+	mgr := NewRepairManager(fs, time.Hour, 0, 1)
+
+	node, _ := cache.Get("writing.txt")
+	fs.handles.register(node, &FileHandle{})
+
+	err := mgr.pruneNode(context.Background(), node)
+	require.NoError(t, err)
+
+	// Still over-replicated: prune was deferred, not performed.
+	node.Mu.RLock()
+	assert.ElementsMatch(t, []string{"b1", "b2", "b3"}, node.Meta.Backends)
+	node.Mu.RUnlock()
+
+	b1.AssertExpectations(t)
+	b2.AssertExpectations(t)
+	b3.AssertExpectations(t)
+}
+
 func TestRepairManager_RepairNode_ChtimesErrorStillSucceeds(t *testing.T) {
 	b1 := &bmock.MockBackend{NameVal: "b1"}
 	b2 := &bmock.MockBackend{NameVal: "b2"}

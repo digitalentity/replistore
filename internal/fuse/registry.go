@@ -51,6 +51,15 @@ func (r *handleRegistry) deregister(node *vfs.Node, h *FileHandle) {
 	}
 }
 
+// hasOpenWriteHandle reports whether any write handle is currently open for
+// node. Cheaper than forNode: no snapshot is allocated.
+func (r *handleRegistry) hasOpenWriteHandle(node *vfs.Node) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	return len(r.handles[node]) > 0
+}
+
 // forNode returns a snapshot of the write handles currently open for node.
 func (r *handleRegistry) forNode(node *vfs.Node) []*FileHandle {
 	r.mu.Lock()
