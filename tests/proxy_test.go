@@ -111,6 +111,19 @@ func (p *pausableProxy) gate() {
 	}
 }
 
+// Cut drops every live connection but leaves the listener accepting, modeling a
+// transient network blip that the backend must recover from by reconnecting.
+func (p *pausableProxy) Cut() {
+	p.mu.Lock()
+	conns := p.conns
+	p.conns = nil
+	p.mu.Unlock()
+
+	for _, c := range conns {
+		_ = c.Close()
+	}
+}
+
 func (p *pausableProxy) Pause() {
 	p.mu.Lock()
 	p.paused = true

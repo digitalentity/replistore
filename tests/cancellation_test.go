@@ -13,11 +13,11 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// connectBackendVia dials a backend at addr (typically a proxy in front of the
-// real server) and registers cleanup.
-func connectBackendVia(t *testing.T, ctx context.Context, addr, share string) *smb.SMBBackend {
+// connectBackendVia dials a single backend at addr (typically a proxy in front
+// of the real server) against the "share" share and registers cleanup.
+func connectBackendVia(t *testing.T, ctx context.Context, addr string) *smb.SMBBackend {
 	t.Helper()
-	b := smb.NewSMBBackend("c", addr, share, testUser, testPass, "", 10, nil)
+	b := smb.NewSMBBackend("c", addr, "share", testUser, testPass, "", 10, nil)
 	require.NoError(t, b.Connect(ctx))
 	t.Cleanup(func() { _ = b.Close() })
 
@@ -44,7 +44,7 @@ func TestSMB_ReadAtHonorsContextCancel(t *testing.T) {
 
 	setupCtx := t.Context()
 
-	b := connectBackendVia(t, setupCtx, proxy.Addr(), "share")
+	b := connectBackendVia(t, setupCtx, proxy.Addr())
 	writeBackendFile(t, setupCtx, b, "blocked.txt", []byte("payload"))
 
 	f, err := b.OpenFile(setupCtx, "blocked.txt", os.O_RDONLY, 0)
@@ -89,7 +89,7 @@ func TestSMB_ReadAtHonorsDeadline(t *testing.T) {
 
 	setupCtx := t.Context()
 
-	b := connectBackendVia(t, setupCtx, proxy.Addr(), "share")
+	b := connectBackendVia(t, setupCtx, proxy.Addr())
 	writeBackendFile(t, setupCtx, b, "slow.txt", []byte("payload"))
 
 	f, err := b.OpenFile(setupCtx, "slow.txt", os.O_RDONLY, 0)
@@ -121,7 +121,7 @@ func TestSMB_CancelledOpDoesNotPoisonBackend(t *testing.T) {
 
 	setupCtx := t.Context()
 
-	b := connectBackendVia(t, setupCtx, fmt.Sprintf("127.0.0.1:%d", s.Port), "share")
+	b := connectBackendVia(t, setupCtx, fmt.Sprintf("127.0.0.1:%d", s.Port))
 	content := []byte("survives cancellation")
 	writeBackendFile(t, setupCtx, b, "live.txt", content)
 
