@@ -86,7 +86,7 @@ func Init(levelStr, formatStr, nodeID string) error {
 	if strings.ToLower(formatStr) == "json" {
 		baseHandler = slog.NewJSONHandler(os.Stdout, opts)
 	} else {
-		baseHandler = slog.NewTextHandler(os.Stdout, opts)
+		baseHandler = newConsoleHandler(os.Stdout, opts)
 	}
 
 	// Use slogmulti to compose handlers as per requirements
