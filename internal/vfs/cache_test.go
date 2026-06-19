@@ -601,7 +601,7 @@ func TestIsReservedPath(t *testing.T) {
 
 func TestCache_SaveAndLoad(t *testing.T) {
 	cache := vfs.NewCache()
-	now := time.Now().Round(time.Second)
+	now := time.Now().UTC().Round(time.Second)
 	cache.Upsert("dir1/file1.txt", vfs.Metadata{
 		Name:    "file1.txt",
 		Size:    100,
@@ -627,7 +627,7 @@ func TestCache_SaveAndLoad(t *testing.T) {
 	assert.Equal(t, origNode.Meta.Name, loadedNode.Meta.Name)
 	assert.Equal(t, origNode.Meta.Size, loadedNode.Meta.Size)
 	assert.Equal(t, origNode.Meta.Backends, loadedNode.Meta.Backends)
-	assert.Equal(t, cache.LastReconciled, loadedCache.LastReconciled)
+	assert.True(t, cache.LastReconciled.Equal(loadedCache.LastReconciled))
 }
 
 // TestCache_GraceClockPersistsAcrossSaveLoad verifies the repair grace clock
@@ -637,7 +637,7 @@ func TestCache_GraceClockPersistsAcrossSaveLoad(t *testing.T) {
 	cache := vfs.NewCache()
 	cache.Upsert("d.txt", vfs.Metadata{Name: "d.txt"}, "b1") // 1 of 3 -> degraded
 
-	base := time.Now().Round(time.Second)
+	base := time.Now().UTC().Round(time.Second)
 	grace := time.Hour
 
 	// First scan stamps DegradedSince at base; the grace has not elapsed.
