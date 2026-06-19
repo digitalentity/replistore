@@ -18,6 +18,7 @@ const (
 	minClusterSize           = 2
 	minClusterSecretLength   = 16
 	defaultRepairConcurrency = 2
+	defaultReplicationFactor = 2
 )
 
 var validate = validator.New()
@@ -120,16 +121,16 @@ type ReplicationConfig struct {
 }
 
 type Config struct {
-	MountPoint    string            `mapstructure:"mount_point"     yaml:"mount_point"`
-	Replication   ReplicationConfig `mapstructure:"replication"     yaml:"replication"`
-	MaxIODuration string            `mapstructure:"max_io_duration" validate:"omitempty,duration" yaml:"max_io_duration"`
-	Cache         CacheConfig       `mapstructure:"cache"           yaml:"cache"`
-	Repair        RepairConfig      `mapstructure:"repair"          yaml:"repair"`
-	Cluster       ClusterConfig     `mapstructure:"cluster"         yaml:"cluster"`
-	API           APIConfig         `mapstructure:"api"             yaml:"api"`
-	Selector      SelectorConfig    `mapstructure:"selector"        yaml:"selector"`
-	Logging       LoggingConfig     `mapstructure:"logging"         yaml:"logging"`
-	Backends      []BackendConfig   `mapstructure:"backends"        validate:"dive"               yaml:"backends"`
+	MountPoint       string            `mapstructure:"mount_point"        yaml:"mount_point"`
+	Replication      ReplicationConfig `mapstructure:"replication"        yaml:"replication"`
+	WriteLeaseBuffer string            `mapstructure:"write_lease_buffer" validate:"omitempty,duration" yaml:"write_lease_buffer"`
+	Cache            CacheConfig       `mapstructure:"cache"              yaml:"cache"`
+	Repair           RepairConfig      `mapstructure:"repair"             yaml:"repair"`
+	Cluster          ClusterConfig     `mapstructure:"cluster"            yaml:"cluster"`
+	API              APIConfig         `mapstructure:"api"                yaml:"api"`
+	Selector         SelectorConfig    `mapstructure:"selector"           yaml:"selector"`
+	Logging          LoggingConfig     `mapstructure:"logging"            yaml:"logging"`
+	Backends         []BackendConfig   `mapstructure:"backends"           validate:"dive"               yaml:"backends"`
 }
 
 func LoadConfig(path string) (*Config, error) {
@@ -146,14 +147,14 @@ func LoadConfig(path string) (*Config, error) {
 	v.SetDefault("logging.level", "info")
 	v.SetDefault("logging.format", "text")
 	v.SetDefault("selector.type", "random")
-	v.SetDefault("replication.factor", 1)
+	v.SetDefault("replication.factor", defaultReplicationFactor)
 	v.SetDefault("replication.write_quorum", 0)
 	v.SetDefault("repair.concurrency", defaultRepairConcurrency)
 	v.SetDefault("cache.refresh_interval", "5m")
 	v.SetDefault("repair.interval", "1h")
-	v.SetDefault("repair.grace", "1h")
-	v.SetDefault("max_io_duration", "1s")
-	v.SetDefault("cache.state_dir", "state")
+	v.SetDefault("repair.grace", "4h")
+	v.SetDefault("write_lease_buffer", "2s")
+	v.SetDefault("cache.state_dir", "/var/lib/replistore")
 
 	if err := v.ReadConfig(bytes.NewBufferString(expandedData)); err != nil {
 		return nil, err

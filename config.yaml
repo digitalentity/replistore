@@ -9,8 +9,8 @@ replication:
   # Defaults to replication.factor if not specified.
   write_quorum: 1
 
-# The maximum write/IO duration budget
-max_io_duration: "1s"
+# Minimum remaining lease headroom required before starting a write (must be < 5s lease TTL).
+write_lease_buffer: "2s"
 
 # Metadata cache settings
 cache:
@@ -26,7 +26,7 @@ repair:
   # How long a file must stay under/over-replicated before repair acts on it,
   # so a brief backend reboot does not cause replication churn. Should be
   # >= repair_interval (a shorter grace is raised to it). 0 acts at once.
-  grace: "1h"
+  grace: "4h"
   # The maximum number of concurrent repair operations.
   concurrency: 2
 

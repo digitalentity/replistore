@@ -16,15 +16,15 @@ replication:
   # Defaults to replication.factor if not specified.
   write_quorum: 1
 
-# The maximum write/IO duration budget
-max_io_duration: "1s"
+# Minimum remaining lease headroom required before starting a write.
+write_lease_buffer: "2s"
 
 # Metadata cache settings
 cache:
   # How often to re-scan the backends to detect external changes.
   refresh_interval: "5m"
   # The local directory where state files (like the serialized cache) are stored.
-  state_dir: "state"
+  state_dir: "/var/lib/replistore"
 
 # Background repair settings
 repair:
@@ -33,8 +33,8 @@ repair:
   interval: "1h"
   # How long a file must stay under/over-replicated before repair acts, so a
   # brief backend reboot does not trigger churn. Should be >= repair_interval
-  # (a shorter grace is raised to the interval). Defaults to 1h; 0 acts at once.
-  grace: "1h"
+  # (a shorter grace is raised to the interval). Defaults to 4h; 0 acts at once.
+  grace: "4h"
   # Maximum number of concurrent repair operations.
   # Defaults to 2.
   concurrency: 2
@@ -85,7 +85,7 @@ The absolute path on your local system where the RepliStore virtual filesystem w
 
 ### `replication` (object)
 Replication and write quorum settings.
-- `factor` (int): The number of backends a new file should be written to. If the number of available backends is less than this value, RepliStore will use all available backends.
+- `factor` (int): The number of backends a new file should be written to. If the number of available backends is less than this value, RepliStore will use all available backends. Default is `2`.
 - `write_quorum` (int): The number of backends that must acknowledge a successful write or create operation.
   - **Default:** If omitted — or set outside the valid range — `write_quorum` falls back to `factor`.
   - **Constraint:** Must be greater than 0 and less than or equal to `factor`.
@@ -94,12 +94,12 @@ Replication and write quorum settings.
 ### `cache` (object)
 Metadata cache settings.
 - `refresh_interval` (duration string): The interval between periodic scans of the backends. For example: `10s`, `5m`, `1h`.
-- `state_dir` (string): The local directory path where cache-specific state files are stored (such as the serialized metadata cache file). Default is "state" (relative to process working directory).
+- `state_dir` (string): The local directory path where cache-specific state files are stored (such as the serialized metadata cache file). Default is `/var/lib/replistore`.
 
 ### `repair` (object)
 Background repair settings.
 - `interval` (duration string): How often the background repair worker scans for degraded files (files with fewer than `replication_factor` replicas) and attempts to restore them.
-- `grace` (duration string): How long a file must remain under- or over-replicated before the repair worker acts on it. A file that recovers within this window is never repaired or pruned, preventing replication churn. Defaults to `1h`; set to `0` to act on the next scan.
+- `grace` (duration string): How long a file must remain under- or over-replicated before the repair worker acts on it. A file that recovers within this window is never repaired or pruned, preventing replication churn. Defaults to `4h`; set to `0` to act on the next scan.
 - `concurrency` (int): Maximum number of files being repaired simultaneously (default `2`).
 
 ### `cluster` (object, optional)
@@ -115,9 +115,9 @@ HTTP Control and Observability API configuration.
 - `api_token` (string): Bearer token for accessing control API endpoints.
 - `metrics_token` (string): Bearer token for accessing metrics/streamz endpoints.
 
-### `max_io_duration` (duration string)
-The minimum remaining lease duration buffer required to start a write. If the write handle's lease has less than this time remaining before expiry, new write operations are rejected early to prevent out-of-lease backend writes.
-- **Default:** `1s`.
+### `write_lease_buffer` (duration string)
+The minimum remaining lease duration required to start a write. If the write handle's lease has less than this time remaining before expiry, new write operations are rejected early to prevent out-of-lease backend writes. Must be less than the cluster lease TTL (5s).
+- **Default:** `2s`.
 
 ### `selector` (object)
 Determines how backends are selected for reads and writes.

@@ -30,7 +30,8 @@ const (
 	defaultMonitorInterval      = 10 * time.Second
 	defaultCacheRefreshInterval = 5 * time.Minute
 	periodicCacheSaveInterval   = 30 * time.Second
-	defaultRepairGrace          = 1 * time.Hour
+	defaultRepairGrace          = 4 * time.Hour
+	defaultWriteLeaseBuffer     = 2 * time.Second
 	apiShutdownTimeout          = 5 * time.Second
 )
 
@@ -224,13 +225,13 @@ func run(cfg *config.Config, nodeID string, version string) error {
 	}
 	defer c.Close()
 
-	maxIODuration, err := time.ParseDuration(cfg.MaxIODuration)
+	writeLeaseBuffer, err := time.ParseDuration(cfg.WriteLeaseBuffer)
 	if err != nil {
-		slog.Warn("Invalid max_io_duration, defaulting to 1s",
-			slog.String("duration", cfg.MaxIODuration),
+		slog.Warn("Invalid write_lease_buffer, defaulting to 2s",
+			slog.String("duration", cfg.WriteLeaseBuffer),
 			slog.Any("error", err),
 		)
-		maxIODuration = 1 * time.Second
+		writeLeaseBuffer = defaultWriteLeaseBuffer
 	}
 
 	var selector vfs.BackendSelector
@@ -255,7 +256,7 @@ func run(cfg *config.Config, nodeID string, version string) error {
 		LockManager:       lockMgr,
 		Discovery:         disco,
 		NodeID:            nodeID,
-		MaxIODuration:     maxIODuration,
+		WriteLeaseBuffer:  writeLeaseBuffer,
 		CacheTTL:          refreshInterval,
 	}
 

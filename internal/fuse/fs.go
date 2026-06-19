@@ -20,10 +20,10 @@ import (
 	"bazil.org/fuse/fs"
 	"github.com/digitalentity/replistore/internal/backend"
 	"github.com/digitalentity/replistore/internal/cluster"
-	"github.com/digitalentity/replistore/internal/vfs"
-	"log/slog"
 	"github.com/digitalentity/replistore/internal/observability"
+	"github.com/digitalentity/replistore/internal/vfs"
 	"golang.org/x/sync/errgroup"
+	"log/slog"
 )
 
 const (
@@ -45,8 +45,8 @@ type RepliFS struct {
 	// clustering is off — sidecar correctness depends only on Gen.
 	NodeID string
 
-	MaxIODuration time.Duration
-	CacheTTL      time.Duration
+	WriteLeaseBuffer time.Duration
+	CacheTTL         time.Duration
 
 	// pathLocks serializes same-path mutations within this process. The
 	// distributed lock manager (when enabled) only arbitrates between nodes
@@ -620,7 +620,7 @@ func (d *Dir) Create(ctx context.Context, req *fuse.CreateRequest, resp *fuse.Cr
 		Path:     path,
 		Mode:     req.Mode,
 		Backends: successfulBackends,
-		DataGen:      newGen,
+		DataGen:  newGen,
 	}
 
 	child := &vfs.Node{
@@ -745,7 +745,7 @@ func (d *Dir) Mkdir(ctx context.Context, req *fuse.MkdirRequest) (node fs.Node, 
 		Mode:     req.Mode | os.ModeDir,
 		IsDir:    true,
 		Backends: satisfiedOn,
-		DataGen:      newGen,
+		DataGen:  newGen,
 	}
 	child := &vfs.Node{
 		Meta:     meta,
@@ -1940,7 +1940,7 @@ func (h *FileHandle) Write(ctx context.Context, req *fuse.WriteRequest, resp *fu
 		observability.RecordFSOp("write", start)
 		err = TranslateError(err)
 	}()
-	if h.lock != nil && !h.lock.IsValidWithBuffer(h.file.fs.MaxIODuration) {
+	if h.lock != nil && !h.lock.IsValidWithBuffer(h.file.fs.WriteLeaseBuffer) {
 		return syscall.EIO // Lock lost or too close to expiry
 	}
 
@@ -2058,7 +2058,7 @@ func (h *FileHandle) Flush(ctx context.Context, req *fuse.FlushRequest) (err err
 }
 
 func (h *FileHandle) syncBackends(ctx context.Context) error {
-	if h.lock != nil && !h.lock.IsValidWithBuffer(h.file.fs.MaxIODuration) {
+	if h.lock != nil && !h.lock.IsValidWithBuffer(h.file.fs.WriteLeaseBuffer) {
 		return syscall.EIO // Lock lost or too close to expiry
 	}
 

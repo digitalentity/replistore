@@ -204,7 +204,7 @@ func setupRepliFS(t *testing.T, ctx context.Context, cancel context.CancelFunc, 
 		WriteQuorum:       writeQuorum,
 		Selector:          vfs.NewFirstSelector(monitor),
 		NodeID:            "node-test",
-		MaxIODuration:     2 * time.Second,
+		WriteLeaseBuffer:  2 * time.Second,
 		CacheTTL:          5 * time.Minute,
 	}
 

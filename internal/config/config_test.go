@@ -48,7 +48,7 @@ mount_point: "/tmp/test"
 
 	cfg, err := config.LoadConfig(tmpFile.Name())
 	require.NoError(t, err)
-	assert.Equal(t, 1, cfg.Replication.Factor) // Default
+	assert.Equal(t, 2, cfg.Replication.Factor) // Default
 }
 
 func TestLoadConfig_ExpectedClusterSize(t *testing.T) {
