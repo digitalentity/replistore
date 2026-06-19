@@ -9,7 +9,7 @@ require (
 	github.com/bwmarrin/snowflake v0.3.0
 	github.com/samber/slog-multi v1.8.0
 	github.com/stretchr/testify v1.11.1
-	go.kvsh.ch/smb2 v0.0.1
+	go.kvsh.ch/smb2 v0.0.2
 	golang.org/x/sync v0.21.0
 	gopkg.in/yaml.v3 v3.0.1
 )
