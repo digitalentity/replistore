@@ -1,5 +1,10 @@
 # RepliStore
 
+[![CI Status](https://github.com/digitalentity/replistore/actions/workflows/ci.yml/badge.svg)](https://github.com/digitalentity/replistore/actions/workflows/ci.yml)
+[![Go Report Card](https://goreportcard.com/badge/github.com/digitalentity/replistore)](https://goreportcard.com/report/github.com/digitalentity/replistore)
+[![Go Version](https://img.shields.io/github/go-mod/go-version/digitalentity/replistore)](https://github.com/digitalentity/replistore)
+[![License](https://img.shields.io/github/license/digitalentity/replistore)](LICENSE)
+
 RepliStore is a distributed, FUSE-based replicated storage system written in Go. It aggregates multiple SMB2/SMB3 network shares into a single unified mount point, providing file-level replication and high-performance metadata access.
 
 ## Features
