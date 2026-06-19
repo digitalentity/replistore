@@ -76,6 +76,7 @@ type Config struct {
 	WriteQuorum          int             `yaml:"write_quorum"`
 	CacheRefreshInterval string          `yaml:"cache_refresh_interval"`
 	RepairInterval       string          `yaml:"repair_interval"`
+	RepairGrace          string          `yaml:"repair_grace"`
 	RepairConcurrency    int             `yaml:"repair_concurrency"`
 	ListenAddr           string          `yaml:"listen_addr"`
 	AdvertiseAddr        string          `yaml:"advertise_addr"`
@@ -141,6 +142,10 @@ func LoadConfig(path string) (*Config, error) {
 
 	if cfg.RepairInterval == "" {
 		cfg.RepairInterval = "1h"
+	}
+
+	if cfg.RepairGrace == "" {
+		cfg.RepairGrace = "1h"
 	}
 
 	if cfg.MaxIODuration == "" {

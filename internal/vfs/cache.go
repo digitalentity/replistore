@@ -53,6 +53,15 @@ type Node struct {
 	Mu           sync.RWMutex
 	OpenHandles  int32     // atomic count of open file handles (read or write)
 	LastUpdated  time.Time // timestamp when this cache entry was last created or updated
+
+	// DegradedSince / OverReplicatedSince record when the node was first
+	// observed under- or over-replicated, and are cleared the moment it returns
+	// to the replication factor. Repair acts only once one of these has held
+	// past the grace window, so a brief backend reboot that resolves quickly
+	// never triggers a repair or prune. Guarded by Mu; persisted with the cache
+	// (see serializedNode) so a restart does not reset the grace clock.
+	DegradedSince       time.Time
+	OverReplicatedSince time.Time
 }
 
 type Cache struct {
@@ -1041,29 +1050,51 @@ func (c *Cache) markAllIndexed(node *Node) {
 	node.Mu.Unlock()
 }
 
-// FindDegraded returns all file nodes that have fewer backends than the required replication factor.
-func (c *Cache) FindDegraded(rf int) []*Node {
+// FindDegraded returns file nodes that have fewer backends than the replication
+// factor and have stayed that way for at least grace. It also maintains each
+// node's DegradedSince: set when the node first looks degraded, cleared once it
+// recovers. The grace gate means a transient dip (e.g. a backend reboot) that
+// resolves before grace elapses never surfaces as degraded, so no repair churn.
+// now is passed in for deterministic testing; a grace of 0 acts immediately.
+func (c *Cache) FindDegraded(rf int, grace time.Duration, now time.Time) []*Node {
 	var degraded []*Node
 	c.walk(c.Root, func(n *Node) {
-		n.Mu.RLock()
+		n.Mu.Lock()
 		if !n.Meta.IsDir && len(n.Meta.Backends) > 0 && len(n.Meta.Backends) < rf {
-			degraded = append(degraded, n)
+			if n.DegradedSince.IsZero() {
+				n.DegradedSince = now
+			}
+			if now.Sub(n.DegradedSince) >= grace {
+				degraded = append(degraded, n)
+			}
+		} else {
+			n.DegradedSince = time.Time{}
 		}
-		n.Mu.RUnlock()
+		n.Mu.Unlock()
 	})
 
 	return degraded
 }
 
-// FindOverReplicated returns all file nodes that have more backends than the required replication factor.
-func (c *Cache) FindOverReplicated(rf int) []*Node {
+// FindOverReplicated returns file nodes that have more backends than the
+// replication factor and have stayed that way for at least grace. It maintains
+// each node's OverReplicatedSince the same way FindDegraded maintains
+// DegradedSince, so a transient over-count never triggers a prune.
+func (c *Cache) FindOverReplicated(rf int, grace time.Duration, now time.Time) []*Node {
 	var overReplicated []*Node
 	c.walk(c.Root, func(n *Node) {
-		n.Mu.RLock()
+		n.Mu.Lock()
 		if !n.Meta.IsDir && len(n.Meta.Backends) > rf {
-			overReplicated = append(overReplicated, n)
+			if n.OverReplicatedSince.IsZero() {
+				n.OverReplicatedSince = now
+			}
+			if now.Sub(n.OverReplicatedSince) >= grace {
+				overReplicated = append(overReplicated, n)
+			}
+		} else {
+			n.OverReplicatedSince = time.Time{}
 		}
-		n.Mu.RUnlock()
+		n.Mu.Unlock()
 	})
 
 	return overReplicated
@@ -1082,7 +1113,13 @@ type serializedNode struct {
 	Meta         Metadata                   `json:"meta"`
 	FullyIndexed bool                       `json:"fully_indexed"`
 	LastUpdated  time.Time                  `json:"last_updated"`
-	Children     map[string]*serializedNode `json:"children,omitempty"`
+	// DegradedSince / OverReplicatedSince persist the repair grace clock across
+	// restarts: a process restart must not reset how long a file has been
+	// under- or over-replicated, or every restart would re-arm the grace window
+	// and delay legitimate repair.
+	DegradedSince       time.Time                  `json:"degraded_since,omitzero"`
+	OverReplicatedSince time.Time                  `json:"over_replicated_since,omitzero"`
+	Children            map[string]*serializedNode `json:"children,omitempty"`
 }
 
 func (n *Node) toSerialized() *serializedNode {
@@ -1090,10 +1127,12 @@ func (n *Node) toSerialized() *serializedNode {
 	defer n.Mu.RUnlock()
 
 	sn := &serializedNode{
-		Meta:         n.Meta,
-		FullyIndexed: n.FullyIndexed,
-		LastUpdated:  n.LastUpdated,
-		Children:     make(map[string]*serializedNode),
+		Meta:                n.Meta,
+		FullyIndexed:        n.FullyIndexed,
+		LastUpdated:         n.LastUpdated,
+		DegradedSince:       n.DegradedSince,
+		OverReplicatedSince: n.OverReplicatedSince,
+		Children:            make(map[string]*serializedNode),
 	}
 
 	for k, child := range n.Children {
@@ -1105,10 +1144,12 @@ func (n *Node) toSerialized() *serializedNode {
 
 func (sn *serializedNode) toNode() *Node {
 	n := &Node{
-		Meta:         sn.Meta,
-		FullyIndexed: sn.FullyIndexed,
-		LastUpdated:  sn.LastUpdated,
-		Children:     make(map[string]*Node),
+		Meta:                sn.Meta,
+		FullyIndexed:        sn.FullyIndexed,
+		LastUpdated:         sn.LastUpdated,
+		DegradedSince:       sn.DegradedSince,
+		OverReplicatedSince: sn.OverReplicatedSince,
+		Children:            make(map[string]*Node),
 	}
 
 	for k, child := range sn.Children {

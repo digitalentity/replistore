@@ -29,6 +29,7 @@ type ActiveRepair struct {
 type RepairManager struct {
 	fs          *RepliFS
 	interval    time.Duration
+	grace       time.Duration
 	concurrency int
 
 	// divergenceCount counts same-generation replica pairs observed with
@@ -46,10 +47,14 @@ type RepairManager struct {
 	activeRepairs   map[string]*ActiveRepair
 }
 
-func NewRepairManager(fs *RepliFS, interval time.Duration, concurrency int) *RepairManager {
+// NewRepairManager builds a repair manager. grace is the minimum time a file
+// must remain under- or over-replicated before repair acts on it, which absorbs
+// transient backend outages; pass 0 to act immediately.
+func NewRepairManager(fs *RepliFS, interval, grace time.Duration, concurrency int) *RepairManager {
 	return &RepairManager{
 		fs:            fs,
 		interval:      interval,
+		grace:         grace,
 		concurrency:   concurrency,
 		activeRepairs: make(map[string]*ActiveRepair),
 	}
@@ -131,9 +136,10 @@ func (m *RepairManager) performScrub(ctx context.Context) {
 	m.enforceTombstones(ctx)
 
 	m.logger(ctx).Info("Starting background repair scrub...")
-	degraded := m.fs.Cache.FindDegraded(m.fs.ReplicationFactor)
+	now := time.Now()
+	degraded := m.fs.Cache.FindDegraded(m.fs.ReplicationFactor, m.grace, now)
 	m.degradedFilesCount.Store(int64(len(degraded)))
-	overReplicated := m.fs.Cache.FindOverReplicated(m.fs.ReplicationFactor)
+	overReplicated := m.fs.Cache.FindOverReplicated(m.fs.ReplicationFactor, m.grace, now)
 
 	if len(degraded) == 0 && len(overReplicated) == 0 {
 		m.logger(ctx).Info("No degraded or over-replicated files found")

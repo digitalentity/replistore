@@ -28,6 +28,7 @@ const (
 	defaultMonitorInterval      = 10 * time.Second
 	defaultCacheRefreshInterval = 5 * time.Minute
 	periodicCacheSaveInterval   = 30 * time.Second
+	defaultRepairGrace          = 1 * time.Hour
 )
 
 func main() {
@@ -238,11 +239,34 @@ func run(cfg *config.Config, nodeID string) error {
 	} else if cfg.RepairInterval == "" {
 		repairInterval = 1 * time.Hour
 	}
-	repairManager := rfuse.NewRepairManager(replFS, repairInterval, cfg.RepairConcurrency)
+	repairGrace, err := time.ParseDuration(cfg.RepairGrace)
+	if err != nil && cfg.RepairGrace != "" {
+		slog.Warn("Invalid repair_grace, defaulting to 15m",
+			slog.String("grace", cfg.RepairGrace),
+			slog.Any("error", err),
+		)
+		repairGrace = defaultRepairGrace
+	} else if cfg.RepairGrace == "" {
+		repairGrace = defaultRepairGrace
+	}
+	// A grace shorter than the scrub interval has no effect: the scrub only
+	// re-evaluates replication every interval, so any positive grace below it
+	// collapses to "act on the next scrub". Raise it to the interval so the
+	// configured and effective values agree. A grace of 0 is the explicit
+	// "act immediately" opt-out and is left untouched.
+	if repairGrace > 0 && repairGrace < repairInterval {
+		slog.Warn("repair_grace is shorter than repair_interval; raising it to the interval",
+			slog.Duration("repair_grace", repairGrace),
+			slog.Duration("repair_interval", repairInterval),
+		)
+		repairGrace = repairInterval
+	}
+	repairManager := rfuse.NewRepairManager(replFS, repairInterval, repairGrace, cfg.RepairConcurrency)
 	repairManager.Start(ctx)
 	if repairInterval > 0 {
 		slog.Info("Background repair manager started",
 			slog.Duration("interval", repairInterval),
+			slog.Duration("grace", repairGrace),
 			slog.Int("concurrency", cfg.RepairConcurrency),
 		)
 	}

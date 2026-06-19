@@ -25,6 +25,11 @@ cache_refresh_interval: "5m"
 # Defaults to 1h.
 repair_interval: "1h"
 
+# How long a file must stay under/over-replicated before repair acts, so a
+# brief backend reboot does not trigger churn. Should be >= repair_interval
+# (a shorter grace is raised to the interval). Defaults to 1h; 0 acts at once.
+repair_grace: "1h"
+
 # Maximum number of concurrent repair operations.
 # Defaults to 2.
 repair_concurrency: 2
@@ -85,6 +90,9 @@ The interval between periodic scans of the backends. For example: `10s`, `5m`, `
 
 ### `repair_interval` (duration string)
 How often the background repair worker scans for degraded files (files with fewer than `replication_factor` replicas) and attempts to restore them.
+
+### `repair_grace` (duration string)
+How long a file must remain under- or over-replicated before the repair worker acts on it. A file that recovers within this window (for example, while a backend briefly reboots) is never repaired or pruned, preventing replication churn. Defaults to `1h`; set to `0` to act on the next scan. The grace clock is persisted with the metadata cache, so a process restart does not reset how long a file has been degraded. Because the scrub only re-evaluates every `repair_interval`, a grace shorter than the interval has no effect and is raised to the interval at startup.
 
 ### `repair_concurrency` (int)
 Maximum number of files being repaired simultaneously.

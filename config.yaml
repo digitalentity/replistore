@@ -17,6 +17,11 @@ cache_refresh_interval: "5m"
 # How often to search for and re-replicate degraded files.
 repair_interval: "1h"
 
+# How long a file must stay under/over-replicated before repair acts on it,
+# so a brief backend reboot does not cause replication churn. Should be
+# >= repair_interval (a shorter grace is raised to it). 0 acts at once.
+repair_grace: "1h"
+
 # The maximum number of concurrent repair operations.
 repair_concurrency: 2
 

@@ -35,7 +35,7 @@ func TestRepairManager_RepairNode(t *testing.T) {
 		Selector:          vfs.NewFirstSelector(nil),
 	}
 
-	mgr := NewRepairManager(fs, time.Hour, 1)
+	mgr := NewRepairManager(fs, time.Hour, 0, 1)
 
 	node, _ := cache.Get("repair.txt")
 
@@ -117,7 +117,7 @@ func TestRepairManager_RepairNode_ChtimesErrorStillSucceeds(t *testing.T) {
 		Selector:          vfs.NewFirstSelector(nil),
 	}
 
-	mgr := NewRepairManager(fs, time.Hour, 1)
+	mgr := NewRepairManager(fs, time.Hour, 0, 1)
 
 	node, _ := cache.Get("repair.txt")
 
@@ -177,7 +177,7 @@ func TestRepairManager_RepairNode_DetectsDivergentReplicas(t *testing.T) {
 		Selector:          vfs.NewFirstSelector(nil),
 	}
 
-	mgr := NewRepairManager(fs, time.Hour, 1)
+	mgr := NewRepairManager(fs, time.Hour, 0, 1)
 
 	node, _ := cache.Get("repair.txt")
 
@@ -340,7 +340,7 @@ func newTombstoneTestManager(b1, b2 *bmock.MockBackend) *RepairManager {
 		Selector:          vfs.NewFirstSelector(nil),
 	}
 
-	return NewRepairManager(fs, time.Hour, 1)
+	return NewRepairManager(fs, time.Hour, 0, 1)
 }
 
 func TestEnforceTombstones_DeletesZombie(t *testing.T) {
@@ -459,7 +459,7 @@ func TestRepairManager_PruneNode(t *testing.T) {
 		Selector:          vfs.NewFirstSelector(nil),
 	}
 
-	mgr := NewRepairManager(fs, time.Hour, 1)
+	mgr := NewRepairManager(fs, time.Hour, 0, 1)
 
 	node, _ := cache.Get("prune.txt")
 
@@ -500,7 +500,7 @@ func TestRepairManager_PruneNode_FailureKeepsMetadata(t *testing.T) {
 		Selector:          vfs.NewFirstSelector(nil),
 	}
 
-	mgr := NewRepairManager(fs, time.Hour, 1)
+	mgr := NewRepairManager(fs, time.Hour, 0, 1)
 
 	node, _ := cache.Get("prune.txt")
 

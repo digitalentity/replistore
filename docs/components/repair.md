@@ -45,6 +45,7 @@ Even when holding the global repair lock, the manager acquires a **Distributed L
 
 The Repair Manager is controlled by the following configuration parameters:
 - `repair_interval`: How often the background scrub runs (e.g., `"1h"`).
+- `repair_grace`: How long a file must stay under- or over-replicated before the scrub acts on it (e.g., `"1h"`). A file that recovers within the window — for example while a backend briefly reboots — is never repaired or pruned, which prevents replication churn. `FindDegraded`/`FindOverReplicated` stamp each node's `DegradedSince`/`OverReplicatedSince` on first sight and clear it on recovery; the scrub acts only once the state has held past the grace. The stamp is persisted with the metadata cache, so a restart does not reset the clock. Since the scrub only re-evaluates every `repair_interval`, a grace shorter than the interval has no effect and is raised to the interval at startup.
 - `repair_concurrency`: How many files can be repaired or pruned simultaneously (implemented via `errgroup.SetLimit`).
 
 ## Limitations

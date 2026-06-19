@@ -48,7 +48,7 @@ func TestIntegration_Repair(t *testing.T) {
 	}, 3*time.Second, 50*time.Millisecond)
 
 	// 5. Start RepairManager with a very short interval
-	repairManager := rfuse.NewRepairManager(replFS, 50*time.Millisecond, 2)
+	repairManager := rfuse.NewRepairManager(replFS, 50*time.Millisecond, 0, 2)
 	repairManager.Start(ctx)
 
 	// 6. Wait for file to be repaired onto s3

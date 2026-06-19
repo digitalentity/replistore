@@ -349,7 +349,7 @@ func TestCache_FindDegraded(t *testing.T) {
 	// 3. Directory -> should not be reported as degraded
 	cache.Upsert("dir", vfs.Metadata{Name: "dir", IsDir: true}, "b1")
 
-	degraded := cache.FindDegraded(3)
+	degraded := cache.FindDegraded(3, 0, time.Now())
 	assert.Len(t, degraded, 1)
 	assert.Equal(t, "degraded.txt", degraded[0].Meta.Name)
 }
@@ -374,9 +374,52 @@ func TestCache_FindOverReplicated(t *testing.T) {
 	cache.Upsert("dir", vfs.Metadata{Name: "dir", IsDir: true}, "b3")
 	cache.Upsert("dir", vfs.Metadata{Name: "dir", IsDir: true}, "b4")
 
-	overReplicated := cache.FindOverReplicated(3)
+	overReplicated := cache.FindOverReplicated(3, 0, time.Now())
 	assert.Len(t, overReplicated, 1)
 	assert.Equal(t, "over.txt", overReplicated[0].Meta.Name)
+}
+
+// TestCache_FindDegraded_GraceWindow verifies the grace gate: a file is not
+// reported degraded until it has stayed degraded for the grace duration, and
+// returning to full replication clears the clock.
+func TestCache_FindDegraded_GraceWindow(t *testing.T) {
+	cache := vfs.NewCache()
+	cache.Upsert("d.txt", vfs.Metadata{Name: "d.txt"}, "b1") // 1 of 3 backends -> degraded
+
+	base := time.Now()
+	grace := 15 * time.Minute
+
+	// First observation records the clock but the grace has not elapsed.
+	require.Empty(t, cache.FindDegraded(3, grace, base))
+	// Still inside the grace window.
+	require.Empty(t, cache.FindDegraded(3, grace, base.Add(14*time.Minute)))
+	// Past the grace window it surfaces.
+	got := cache.FindDegraded(3, grace, base.Add(grace))
+	require.Len(t, got, 1)
+	assert.Equal(t, "d.txt", got[0].Meta.Name)
+
+	// Recovering to the replication factor clears the clock, so it is no longer
+	// reported even past the original grace deadline.
+	cache.Upsert("d.txt", vfs.Metadata{Name: "d.txt"}, "b2")
+	cache.Upsert("d.txt", vfs.Metadata{Name: "d.txt"}, "b3") // 3 of 3 -> healthy
+	require.Empty(t, cache.FindDegraded(3, grace, base.Add(2*grace)))
+}
+
+// TestCache_FindOverReplicated_GraceWindow verifies the same grace gate for the
+// over-replicated path.
+func TestCache_FindOverReplicated_GraceWindow(t *testing.T) {
+	cache := vfs.NewCache()
+	for _, b := range []string{"b1", "b2", "b3", "b4"} {
+		cache.Upsert("o.txt", vfs.Metadata{Name: "o.txt"}, b) // 4 of 3 -> over-replicated
+	}
+
+	base := time.Now()
+	grace := 15 * time.Minute
+
+	require.Empty(t, cache.FindOverReplicated(3, grace, base))
+	got := cache.FindOverReplicated(3, grace, base.Add(grace))
+	require.Len(t, got, 1)
+	assert.Equal(t, "o.txt", got[0].Meta.Name)
 }
 
 func TestCache_UpsertDirUnionsBackends(t *testing.T) {
@@ -585,4 +628,31 @@ func TestCache_SaveAndLoad(t *testing.T) {
 	assert.Equal(t, origNode.Meta.Size, loadedNode.Meta.Size)
 	assert.Equal(t, origNode.Meta.Backends, loadedNode.Meta.Backends)
 	assert.Equal(t, cache.LastReconciled, loadedCache.LastReconciled)
+}
+
+// TestCache_GraceClockPersistsAcrossSaveLoad verifies the repair grace clock
+// survives a save/load cycle: a restart must not reset how long a file has been
+// degraded, or every restart would re-arm the grace window.
+func TestCache_GraceClockPersistsAcrossSaveLoad(t *testing.T) {
+	cache := vfs.NewCache()
+	cache.Upsert("d.txt", vfs.Metadata{Name: "d.txt"}, "b1") // 1 of 3 -> degraded
+
+	base := time.Now().Round(time.Second)
+	grace := time.Hour
+
+	// First scan stamps DegradedSince at base; the grace has not elapsed.
+	require.Empty(t, cache.FindDegraded(3, grace, base))
+
+	cachePath := t.TempDir() + "/cache.json"
+	require.NoError(t, cache.SaveToFile(cachePath))
+
+	loaded := vfs.NewCache()
+	require.NoError(t, loaded.LoadFromFile(cachePath))
+
+	// A scan one grace period after the original stamp must surface the file.
+	// Had the reload reset DegradedSince to the reload moment, the elapsed time
+	// would be zero and the file would be withheld.
+	got := loaded.FindDegraded(3, grace, base.Add(grace))
+	require.Len(t, got, 1)
+	assert.Equal(t, "d.txt", got[0].Meta.Name)
 }
