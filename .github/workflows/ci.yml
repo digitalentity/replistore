@@ -23,10 +23,14 @@ jobs:
           go-version: '1.26.x'
           cache: true
 
-      - name: Run golangci-lint
+      - name: Install golangci-lint
         uses: golangci/golangci-lint-action@v7
         with:
           version: v2.12.2
+          install-only: true
+
+      - name: Run lint
+        run: make lint
 
   test:
     name: Test and Build
@@ -42,7 +46,7 @@ jobs:
           cache: true
 
       - name: Run tests
-        run: go test -v -race ./...
+        run: make test
 
       - name: Build binary
-        run: go build ./cmd/replistore/...
+        run: make build
