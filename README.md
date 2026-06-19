@@ -3,7 +3,7 @@
 [![CI Status](https://github.com/digitalentity/replistore/actions/workflows/ci.yml/badge.svg)](https://github.com/digitalentity/replistore/actions/workflows/ci.yml)
 [![Go Report Card](https://goreportcard.com/badge/github.com/digitalentity/replistore)](https://goreportcard.com/report/github.com/digitalentity/replistore)
 [![Go Version](https://img.shields.io/github/go-mod/go-version/digitalentity/replistore)](https://github.com/digitalentity/replistore)
-[![License](https://img.shields.io/github/license/digitalentity/replistore)](LICENSE)
+[![License](https://img.shields.io/badge/license-MPL--2.0-blue.svg)](LICENSE)
 
 RepliStore is a distributed, FUSE-based replicated storage system written in Go. It aggregates multiple SMB2/SMB3 network shares into a single unified mount point, providing file-level replication and high-performance metadata access.
 
@@ -120,4 +120,4 @@ The tests use a mock-based approach to verify VFS logic, FUSE interactions, and 
 
 ## License
 
-[MIT License](LICENSE)
+[Mozilla Public License 2.0](LICENSE)
