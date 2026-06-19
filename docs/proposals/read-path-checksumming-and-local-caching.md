@@ -7,9 +7,9 @@ This proposal describes the architectural design for bringing end-to-end checksu
 ## 1. Motivation
 
 RepliStore maintains data consistency across multiple SMB shares by relying on versioned sidecars (generations). Today, data integrity verification is only half-implemented:
-* During background sync or repair, the [RepairManager](file:///home/ksharlaimov/dev/replistore/internal/fuse/repair.go) computes a full-file SHA-256 checksum and saves it to the path's [Sidecar](file:///home/ksharlaimov/dev/replistore/internal/vfs/sidecar.go#L40) file.
+* During background sync or repair, the [RepairManager](../../internal/fuse/repair.go) computes a full-file SHA-256 checksum and saves it to the path's [Sidecar](../../internal/vfs/sidecar.go#L40) file.
 * On live writes, the checksum is cleared (blanked) because random-access writes make continuous full-file hashing infeasible.
-* **The Gap**: The read path ([FileHandle.Read](file:///home/ksharlaimov/dev/replistore/internal/fuse/fs.go#L1844)) performs no checksum validation whatsoever.
+* **The Gap**: The read path ([FileHandle.Read](../../internal/fuse/fs.go#L1844)) performs no checksum validation whatsoever.
 
 To detect bit rot or crash artifacts transparently, the read path must check the stored sums. However, reading an entire multi-gigabyte file from a remote SMB share to verify a small, partial FUSE read (e.g., a $128\text{ KB}$ block) would introduce **prohibitive latency**.
 
@@ -24,7 +24,7 @@ We propose a **local block-level (chunk-based) read-through cache** coupled with
 
 ## 2. Local Cache Directory Organization
 
-To avoid the complexity and overhead of managing an external database (e.g., SQLite or BoltDB), the local cache uses a filesystem-native directory layout. We hash the file path to generate a unique **Cache ID** that aligns directly with the existing [MetaPath](file:///home/ksharlaimov/dev/replistore/internal/vfs/sidecar.go#L69) scheme:
+To avoid the complexity and overhead of managing an external database (e.g., SQLite or BoltDB), the local cache uses a filesystem-native directory layout. We hash the file path to generate a unique **Cache ID** that aligns directly with the existing [MetaPath](../../internal/vfs/sidecar.go#L69) scheme:
 
 ```
 cache_root/
