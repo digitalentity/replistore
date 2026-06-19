@@ -6,11 +6,15 @@ RepliStore provides a REST/HTTP API to inspect and manage the internal state of 
 
 ## Authentication
 
-All endpoints require authentication using a static API token configured on the server.
-Clients must provide this token via the HTTP standard header:
+HTTP endpoints require authentication using static bearer tokens configured on the server:
+
+- **`/api/*` endpoints** use `api_token` configured in `config.yaml`.
+- **`/streamz` endpoints** use `metrics_token` configured in `config.yaml`.
+
+Clients must provide the corresponding token via the HTTP standard header:
 
 ```http
-Authorization: Bearer <API_TOKEN>
+Authorization: Bearer <TOKEN>
 ```
 
 ---
@@ -19,7 +23,7 @@ Authorization: Bearer <API_TOKEN>
 
 These endpoints provide visibility into the state of the local node and its backends.
 
-### `GET /health`
+### `GET /api/health`
 Returns the operational status of the local instance.
 - **Response:**
   ```json
@@ -30,7 +34,7 @@ Returns the operational status of the local instance.
   }
   ```
 
-### `GET /backends`
+### `GET /api/backends`
 Exposes the status, latency, and free space of each configured SMB backend.
 - **Response:**
   ```json
@@ -61,7 +65,7 @@ Exposes the status, latency, and free space of each configured SMB backend.
 
 Endpoints to inspect peer discovery and active distributed lock table leases.
 
-### `GET /cluster/peers`
+### `GET /api/cluster/peers`
 Lists all discovered peers in the RepliStore cluster, their heartbeats, and sequence numbers.
 - **Response:**
   ```json
@@ -79,7 +83,7 @@ Lists all discovered peers in the RepliStore cluster, their heartbeats, and sequ
   }
   ```
 
-### `GET /cluster/locks`
+### `GET /api/cluster/locks`
 Lists active locks currently held by the cluster, showing the path and the owning node ID.
 - **Response:**
   ```json
@@ -99,7 +103,7 @@ Lists active locks currently held by the cluster, showing the path and the ownin
 
 Allows monitoring and manual invalidation/triggering of the in-memory metadata tree.
 
-### `GET /cache/stats`
+### `GET /api/cache/stats`
 Retrieves cache usage statistics, hit/miss ratios, and lazy-indexing progress.
 - **Response:**
   ```json
@@ -111,7 +115,7 @@ Retrieves cache usage statistics, hit/miss ratios, and lazy-indexing progress.
   }
   ```
 
-### `POST /cache/refresh`
+### `POST /api/cache/refresh`
 Triggers a manual refresh of the cache for a specific path, or a full background rescan if no path is provided.
 - **Request:**
   ```json
@@ -133,7 +137,7 @@ Triggers a manual refresh of the cache for a specific path, or a full background
 
 Inspects the background scrubbing worker and repair operations.
 
-### `GET /repair/status`
+### `GET /api/repair/status`
 Returns stats on degraded files, active healing copy tasks, and replica divergence count.
 - **Response:**
   ```json
@@ -159,7 +163,7 @@ Returns stats on degraded files, active healing copy tasks, and replica divergen
 
 Provides direct file upload, download, and deletion capability via the API. This enables clients to interface with the cluster storage without running a FUSE mount. Operations utilize VFS replication and quorum write flows underneath.
 
-### `GET /meta/*path`
+### `GET /api/meta/*path`
 Retrieves metadata for the file or directory at the specified path.
 - **Headers:**
   - `Accept: application/json`
@@ -194,7 +198,7 @@ Retrieves metadata for the file or directory at the specified path.
 - **Error Response:**
   - `404 Not Found` if path does not exist.
 
-### `GET /data/*path`
+### `GET /api/data/*path`
 Downloads the raw file data at the specified path.
 - **If the path is a file:**
   - **Headers:**
@@ -207,7 +211,7 @@ Downloads the raw file data at the specified path.
 - **Error Response:**
   - `404 Not Found` if path does not exist.
 
-### `PUT /data/*path`
+### `PUT /api/data/*path`
 Uploads or overwrites the file at the specified path. Intermediate directories on the way are automatically created.
 - **Headers:**
   - `Content-Type: application/octet-stream`
@@ -223,7 +227,7 @@ Uploads or overwrites the file at the specified path. Intermediate directories o
 - **Error Response:**
   - `400 Bad Request` if path is an existing directory.
 
-### `DELETE /data/*path`
+### `DELETE /api/data/*path`
 Deletes the file or directory by writing a tombstone.
 - **Response:**
   ```json
@@ -239,7 +243,7 @@ Deletes the file or directory by writing a tombstone.
 
 Administrative controls to dynamically reload configuration without unmounting FUSE.
 
-### `POST /config/reload`
+### `POST /api/config/reload`
 Triggers a reload of `config.yaml` to dynamically adjust replication factor, write quorum, or backend definitions.
 - **Response:**
   ```json
@@ -250,7 +254,7 @@ Triggers a reload of `config.yaml` to dynamically adjust replication factor, wri
   }
   ```
 
-### `POST /shutdown`
+### `POST /api/shutdown`
 Triggers a clean, graceful shutdown of the node (releases locks, updates peer registry, unmounts FUSE, and closes SMB connections).
 - **Response:**
   ```json

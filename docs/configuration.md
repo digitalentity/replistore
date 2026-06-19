@@ -8,40 +8,51 @@ RepliStore uses a YAML-based configuration file. Environment variables are expan
 # The local path where RepliStore will be mounted.
 mount_point: "/mnt/replistore"
 
-# The local directory where state files (like the serialized cache) are stored.
-state_dir: "state"
-
 # Number of copies for each file.
-replication_factor: 2
+replication:
+  # The number of backend replicas to write for each file.
+  factor: 2
+  # Number of backends that must acknowledge a write for it to be considered successful.
+  # Defaults to replication.factor if not specified.
+  write_quorum: 1
 
-# Number of backends that must acknowledge a write for it to be considered successful.
-# Defaults to replication_factor if not specified.
-write_quorum: 1
+# The maximum write/IO duration budget
+max_io_duration: "1s"
 
-# How often to re-scan the backends to detect external changes.
-cache_refresh_interval: "5m"
+# Metadata cache settings
+cache:
+  # How often to re-scan the backends to detect external changes.
+  refresh_interval: "5m"
+  # The local directory where state files (like the serialized cache) are stored.
+  state_dir: "state"
 
-# How often to check for degraded files and repair them.
-# Defaults to 1h.
-repair_interval: "1h"
-
-# How long a file must stay under/over-replicated before repair acts, so a
-# brief backend reboot does not trigger churn. Should be >= repair_interval
-# (a shorter grace is raised to the interval). Defaults to 1h; 0 acts at once.
-repair_grace: "1h"
-
-# Maximum number of concurrent repair operations.
-# Defaults to 2.
-repair_concurrency: 2
+# Background repair settings
+repair:
+  # How often to check for degraded files and repair them.
+  # Defaults to 1h.
+  interval: "1h"
+  # How long a file must stay under/over-replicated before repair acts, so a
+  # brief backend reboot does not trigger churn. Should be >= repair_interval
+  # (a shorter grace is raised to the interval). Defaults to 1h; 0 acts at once.
+  grace: "1h"
+  # Maximum number of concurrent repair operations.
+  # Defaults to 2.
+  concurrency: 2
 
 # P2P Cluster configuration (optional)
 # Enables distributed locking across multiple RepliStore instances.
-# When listen_addr is set, the other three fields become mandatory.
-listen_addr: ":5050"                  # UDP port for the lock server
-advertise_addr: "192.168.1.50:5050"   # host:port peers use to reach this node
-cluster_secret: "change-me-16chars+"  # shared HMAC secret, same on all nodes (min 16 chars)
-expected_cluster_size: 2              # total nodes in the cluster (>= 2)
-max_io_duration: "1s"                 # minimum lease buffer duration required to start a write (default 1s)
+# When listen_addr is set, the other fields become mandatory.
+# cluster:
+#   listen_addr: ":5050"                  # UDP port for the lock server
+#   advertise_addr: "192.168.1.50:5050"   # host:port peers use to reach this node
+#   secret: "change-me-16chars+"          # shared HMAC secret, same on all nodes (min 16 chars)
+#   expected_cluster_size: 2              # total nodes in the cluster (>= 2)
+
+# HTTP Control & Observability API Configuration (optional)
+# api:
+#   addr: ":8080"
+#   api_token: "api-secret-token"
+#   metrics_token: "metrics-secret-token"
 
 # Selector configuration (optional)
 selector:
@@ -72,44 +83,37 @@ backends:
 ### `mount_point` (string)
 The absolute path on your local system where the RepliStore virtual filesystem will be available.
 
-### `state_dir` (string)
-The local directory path where cluster and node-specific state files are stored (such as the serialized metadata cache file).
-- **Default:** "state" (relative to process working directory).
+### `replication` (object)
+Replication and write quorum settings.
+- `factor` (int): The number of backends a new file should be written to. If the number of available backends is less than this value, RepliStore will use all available backends.
+- `write_quorum` (int): The number of backends that must acknowledge a successful write or create operation.
+  - **Default:** If omitted — or set outside the valid range — `write_quorum` falls back to `factor`.
+  - **Constraint:** Must be greater than 0 and less than or equal to `factor`.
+  - **Use Case:** A value lower than `factor` (e.g., $WQ=2, RF=3$) allows writes to succeed even if some backends are temporarily down or slow.
 
-### `replication_factor` (int)
-The number of backends a new file should be written to. If the number of available backends is less than this value, RepliStore will use all available backends.
+### `cache` (object)
+Metadata cache settings.
+- `refresh_interval` (duration string): The interval between periodic scans of the backends. For example: `10s`, `5m`, `1h`.
+- `state_dir` (string): The local directory path where cache-specific state files are stored (such as the serialized metadata cache file). Default is "state" (relative to process working directory).
 
-### `write_quorum` (int)
-The number of backends that must acknowledge a successful write or create operation.
-- **Default:** If omitted — or set outside the valid range — `write_quorum` falls back to `replication_factor`.
-- **Constraint:** Must be greater than 0 and less than or equal to `replication_factor`.
-- **Use Case:** A value lower than `replication_factor` (e.g., $WQ=2, RF=3$) allows writes to succeed even if some backends are temporarily down or slow.
+### `repair` (object)
+Background repair settings.
+- `interval` (duration string): How often the background repair worker scans for degraded files (files with fewer than `replication_factor` replicas) and attempts to restore them.
+- `grace` (duration string): How long a file must remain under- or over-replicated before the repair worker acts on it. A file that recovers within this window is never repaired or pruned, preventing replication churn. Defaults to `1h`; set to `0` to act on the next scan.
+- `concurrency` (int): Maximum number of files being repaired simultaneously (default `2`).
 
-### `cache_refresh_interval` (duration string)
-The interval between periodic scans of the backends. For example: `10s`, `5m`, `1h`.
+### `cluster` (object, optional)
+P2P clustering settings for distributed locking. All fields inside `cluster` become mandatory if `listen_addr` is set.
+- `listen_addr` (string): The address where the internal UDP lock server will listen (e.g., `:5050` or `127.0.0.1:5050`).
+- `advertise_addr` (string): The `host:port` address other nodes use to reach this node's lock server.
+- `secret` (string): A shared HMAC-SHA256 secret, identical on all nodes, used to sign lock datagrams. Must be at least 16 characters.
+- `expected_cluster_size` (int): The total number of nodes in the cluster (at least 2).
 
-### `repair_interval` (duration string)
-How often the background repair worker scans for degraded files (files with fewer than `replication_factor` replicas) and attempts to restore them.
-
-### `repair_grace` (duration string)
-How long a file must remain under- or over-replicated before the repair worker acts on it. A file that recovers within this window (for example, while a backend briefly reboots) is never repaired or pruned, preventing replication churn. Defaults to `1h`; set to `0` to act on the next scan. The grace clock is persisted with the metadata cache, so a process restart does not reset how long a file has been degraded. Because the scrub only re-evaluates every `repair_interval`, a grace shorter than the interval has no effect and is raised to the interval at startup.
-
-### `repair_concurrency` (int)
-Maximum number of files being repaired simultaneously.
-
-### `listen_addr` (string, optional)
-Enables the P2P Distributed Lock Manager (DLM) by specifying the address where the internal UDP lock server will listen (e.g., `:5050` or `127.0.0.1:5050`). If omitted, P2P features are disabled and the remaining cluster fields are ignored.
-
-**Validation:** when `listen_addr` is set, `advertise_addr`, `cluster_secret`, and `expected_cluster_size` all become mandatory; the process refuses to start otherwise.
-
-### `advertise_addr` (string, required when `listen_addr` is set)
-The `host:port` address other nodes use to reach this node's lock server. It is published to peers through the backend-based peer registry (`.replistore/peers/<nodeID>.json` on every backend). Setting it explicitly avoids any interface-selection guesswork on multi-homed hosts; it must parse as a valid `host:port` with a non-empty host.
-
-### `cluster_secret` (string, required when `listen_addr` is set)
-A shared secret, identical on all nodes, used to HMAC-SHA256-sign every lock datagram (JWS compact serialization). Datagrams with bad signatures are dropped silently. Must be at least 16 characters long.
-
-### `expected_cluster_size` (int, required when `listen_addr` is set)
-The total number of nodes in the cluster. Lock quorum is derived from this value (`expected_cluster_size/2 + 1`), never from the live peer list, so a stale peer registry can only hurt availability, not consistency. Must be at least 2 when clustering is enabled; without `listen_addr` the value is unused.
+### `api` (object, optional)
+HTTP Control and Observability API configuration.
+- `addr` (string): The listen address for the HTTP server (e.g., `:8080`).
+- `api_token` (string): Bearer token for accessing control API endpoints.
+- `metrics_token` (string): Bearer token for accessing metrics/streamz endpoints.
 
 ### `max_io_duration` (duration string)
 The minimum remaining lease duration buffer required to start a write. If the write handle's lease has less than this time remaining before expiry, new write operations are rejected early to prevent out-of-lease backend writes.

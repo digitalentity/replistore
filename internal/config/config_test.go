@@ -12,7 +12,8 @@ import (
 func TestLoadConfig(t *testing.T) {
 	content := `
 mount_point: "/tmp/test"
-replication_factor: 2
+replication:
+  factor: 2
 backends:
   - name: "b1"
     address: "1.2.3.4"
@@ -28,7 +29,7 @@ backends:
 	cfg, err := config.LoadConfig(tmpFile.Name())
 	require.NoError(t, err)
 	assert.Equal(t, "/tmp/test", cfg.MountPoint)
-	assert.Equal(t, 2, cfg.ReplicationFactor)
+	assert.Equal(t, 2, cfg.Replication.Factor)
 	assert.Len(t, cfg.Backends, 1)
 	assert.Equal(t, "b1", cfg.Backends[0].Name)
 }
@@ -47,7 +48,7 @@ mount_point: "/tmp/test"
 
 	cfg, err := config.LoadConfig(tmpFile.Name())
 	require.NoError(t, err)
-	assert.Equal(t, 1, cfg.ReplicationFactor) // Default
+	assert.Equal(t, 1, cfg.Replication.Factor) // Default
 }
 
 func TestLoadConfig_ExpectedClusterSize(t *testing.T) {
@@ -67,7 +68,8 @@ func TestLoadConfig_ExpectedClusterSize(t *testing.T) {
 	t.Run("listen_addr set without expected_cluster_size returns error", func(t *testing.T) {
 		path := writeConfig(t, `
 mount_point: "/tmp/test"
-listen_addr: "0.0.0.0:7000"
+cluster:
+  listen_addr: "0.0.0.0:7000"
 `)
 		_, err := config.LoadConfig(path)
 		require.Error(t, err)
@@ -77,14 +79,15 @@ listen_addr: "0.0.0.0:7000"
 	t.Run("listen_addr set with expected_cluster_size of 2 is ok", func(t *testing.T) {
 		path := writeConfig(t, `
 mount_point: "/tmp/test"
-listen_addr: "0.0.0.0:7000"
-advertise_addr: "192.168.1.50:7000"
-cluster_secret: "a-valid-shared-secret"
-expected_cluster_size: 2
+cluster:
+  listen_addr: "0.0.0.0:7000"
+  advertise_addr: "192.168.1.50:7000"
+  secret: "a-valid-shared-secret"
+  expected_cluster_size: 2
 `)
 		cfg, err := config.LoadConfig(path)
 		require.NoError(t, err)
-		assert.Equal(t, 2, cfg.ExpectedClusterSize)
+		assert.Equal(t, 2, cfg.Cluster.ExpectedClusterSize)
 	})
 
 	t.Run("no listen_addr defaults expected_cluster_size to 1", func(t *testing.T) {
@@ -93,7 +96,7 @@ mount_point: "/tmp/test"
 `)
 		cfg, err := config.LoadConfig(path)
 		require.NoError(t, err)
-		assert.Equal(t, 1, cfg.ExpectedClusterSize)
+		assert.Equal(t, 1, cfg.Cluster.ExpectedClusterSize)
 	})
 }
 
@@ -114,8 +117,9 @@ func TestLoadConfig_AdvertiseAddr(t *testing.T) {
 	t.Run("listen_addr set without advertise_addr returns error", func(t *testing.T) {
 		path := writeConfig(t, `
 mount_point: "/tmp/test"
-listen_addr: "0.0.0.0:7000"
-expected_cluster_size: 2
+cluster:
+  listen_addr: "0.0.0.0:7000"
+  expected_cluster_size: 2
 `)
 		_, err := config.LoadConfig(path)
 		require.Error(t, err)
@@ -125,9 +129,10 @@ expected_cluster_size: 2
 	t.Run("advertise_addr without port returns error", func(t *testing.T) {
 		path := writeConfig(t, `
 mount_point: "/tmp/test"
-listen_addr: "0.0.0.0:7000"
-advertise_addr: "192.168.1.50"
-expected_cluster_size: 2
+cluster:
+  listen_addr: "0.0.0.0:7000"
+  advertise_addr: "192.168.1.50"
+  expected_cluster_size: 2
 `)
 		_, err := config.LoadConfig(path)
 		require.Error(t, err)
@@ -137,9 +142,10 @@ expected_cluster_size: 2
 	t.Run("advertise_addr with empty host returns error", func(t *testing.T) {
 		path := writeConfig(t, `
 mount_point: "/tmp/test"
-listen_addr: "0.0.0.0:7000"
-advertise_addr: ":7000"
-expected_cluster_size: 2
+cluster:
+  listen_addr: "0.0.0.0:7000"
+  advertise_addr: ":7000"
+  expected_cluster_size: 2
 `)
 		_, err := config.LoadConfig(path)
 		require.Error(t, err)
@@ -149,14 +155,15 @@ expected_cluster_size: 2
 	t.Run("valid advertise_addr is ok", func(t *testing.T) {
 		path := writeConfig(t, `
 mount_point: "/tmp/test"
-listen_addr: "0.0.0.0:7000"
-advertise_addr: "192.168.1.50:7000"
-cluster_secret: "a-valid-shared-secret"
-expected_cluster_size: 2
+cluster:
+  listen_addr: "0.0.0.0:7000"
+  advertise_addr: "192.168.1.50:7000"
+  secret: "a-valid-shared-secret"
+  expected_cluster_size: 2
 `)
 		cfg, err := config.LoadConfig(path)
 		require.NoError(t, err)
-		assert.Equal(t, "192.168.1.50:7000", cfg.AdvertiseAddr)
+		assert.Equal(t, "192.168.1.50:7000", cfg.Cluster.AdvertiseAddr)
 	})
 
 	t.Run("no listen_addr does not require advertise_addr", func(t *testing.T) {
@@ -185,9 +192,10 @@ func TestLoadConfig_ClusterSecret(t *testing.T) {
 	t.Run("listen_addr set without cluster_secret returns error", func(t *testing.T) {
 		path := writeConfig(t, `
 mount_point: "/tmp/test"
-listen_addr: "0.0.0.0:7000"
-advertise_addr: "192.168.1.50:7000"
-expected_cluster_size: 2
+cluster:
+  listen_addr: "0.0.0.0:7000"
+  advertise_addr: "192.168.1.50:7000"
+  expected_cluster_size: 2
 `)
 		_, err := config.LoadConfig(path)
 		require.Error(t, err)
@@ -197,10 +205,11 @@ expected_cluster_size: 2
 	t.Run("cluster_secret shorter than 16 characters returns error", func(t *testing.T) {
 		path := writeConfig(t, `
 mount_point: "/tmp/test"
-listen_addr: "0.0.0.0:7000"
-advertise_addr: "192.168.1.50:7000"
-cluster_secret: "too-short"
-expected_cluster_size: 2
+cluster:
+  listen_addr: "0.0.0.0:7000"
+  advertise_addr: "192.168.1.50:7000"
+  secret: "too-short"
+  expected_cluster_size: 2
 `)
 		_, err := config.LoadConfig(path)
 		require.Error(t, err)
@@ -210,14 +219,15 @@ expected_cluster_size: 2
 	t.Run("valid cluster_secret is ok", func(t *testing.T) {
 		path := writeConfig(t, `
 mount_point: "/tmp/test"
-listen_addr: "0.0.0.0:7000"
-advertise_addr: "192.168.1.50:7000"
-cluster_secret: "a-valid-shared-secret"
-expected_cluster_size: 2
+cluster:
+  listen_addr: "0.0.0.0:7000"
+  advertise_addr: "192.168.1.50:7000"
+  secret: "a-valid-shared-secret"
+  expected_cluster_size: 2
 `)
 		cfg, err := config.LoadConfig(path)
 		require.NoError(t, err)
-		assert.Equal(t, "a-valid-shared-secret", cfg.ClusterSecret)
+		assert.Equal(t, "a-valid-shared-secret", cfg.Cluster.Secret)
 	})
 
 	t.Run("no listen_addr does not require cluster_secret", func(t *testing.T) {

@@ -1,9 +1,9 @@
-package main
+// Package mount implements the mount CLI subcommand using the Cobra framework.
+package mount
 
 import (
 	"context"
 	"errors"
-	"flag"
 	"fmt"
 	"log/slog"
 	"os"
@@ -14,70 +14,74 @@ import (
 
 	"bazil.org/fuse"
 	"bazil.org/fuse/fs"
+	"github.com/digitalentity/replistore/internal/api"
 	"github.com/digitalentity/replistore/internal/backend"
-	_ "github.com/digitalentity/replistore/internal/backend/local"
-	_ "github.com/digitalentity/replistore/internal/backend/smb"
+	_ "github.com/digitalentity/replistore/internal/backend/local" // local backend driver
+	_ "github.com/digitalentity/replistore/internal/backend/smb"   // smb backend driver
 	"github.com/digitalentity/replistore/internal/cluster"
 	"github.com/digitalentity/replistore/internal/config"
 	rfuse "github.com/digitalentity/replistore/internal/fuse"
 	"github.com/digitalentity/replistore/internal/observability"
 	"github.com/digitalentity/replistore/internal/vfs"
+	"github.com/spf13/cobra"
 )
-
-// Version is the build version of RepliStore, injected at compilation.
-var Version = "v0.0.0-unknown"
 
 const (
 	defaultMonitorInterval      = 10 * time.Second
 	defaultCacheRefreshInterval = 5 * time.Minute
 	periodicCacheSaveInterval   = 30 * time.Second
 	defaultRepairGrace          = 1 * time.Hour
+	apiShutdownTimeout          = 5 * time.Second
 )
 
-func main() {
-	versionFlag := flag.Bool("version", false, "print version and exit")
-	configPath := flag.String("config", "config.yaml", "path to config file")
-	flag.Parse()
+// NewMountCmd creates and returns the mount subcommand.
+func NewMountCmd(version string) *cobra.Command {
+	var configPath string
 
-	if *versionFlag {
-		fmt.Println(Version)
-		os.Exit(0)
+	cmd := &cobra.Command{
+		Use:   "mount",
+		Short: "Mount a RepliStore filesystem",
+		Run: func(cmd *cobra.Command, args []string) {
+			cfg, err := config.LoadConfig(configPath)
+			if err != nil {
+				slog.Error("Failed to load config", slog.Any("error", err))
+				os.Exit(1)
+			}
+
+			// Node identity: cluster node ID when clustering is enabled, and the
+			// writer identity recorded in version sidecars either way.
+			nodeID, _ := os.Hostname()
+			if nodeID == "" {
+				nodeID = "replistore-" + time.Now().Format("150405")
+			}
+
+			// Initialize Observability (slog + Snowflake)
+			if err := observability.Init(cfg.Logging.Level, cfg.Logging.Format, nodeID); err != nil {
+				slog.Error("Failed to initialize observability", slog.Any("error", err))
+				os.Exit(1)
+			}
+
+			if err := run(cfg, nodeID, version); err != nil {
+				slog.Error("RepliStore failed", slog.Any("error", err))
+				os.Exit(1)
+			}
+		},
 	}
 
-	cfg, err := config.LoadConfig(*configPath)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to load config: %v\n", err)
-		os.Exit(1)
-	}
+	cmd.Flags().StringVarP(&configPath, "config", "c", "config.yaml", "Path to the configuration file")
 
-	// Node identity: cluster node ID when clustering is enabled, and the
-	// writer identity recorded in version sidecars either way.
-	nodeID, _ := os.Hostname()
-	if nodeID == "" {
-		nodeID = "replistore-" + time.Now().Format("150405")
-	}
-
-	// Initialize Observability (slog + Snowflake)
-	if err := observability.Init(cfg.Logging.Level, cfg.Logging.Format, nodeID); err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to initialize observability: %v\n", err)
-		os.Exit(1)
-	}
-
-	if err := run(cfg, nodeID); err != nil {
-		slog.Error("RepliStore failed", slog.Any("error", err))
-		os.Exit(1)
-	}
+	return cmd
 }
 
-func run(cfg *config.Config, nodeID string) error {
+func run(cfg *config.Config, nodeID string, version string) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	slog.Info("Starting RepliStore",
-		slog.String("version", Version),
+		slog.String("version", version),
 		slog.Int("backend_count", len(cfg.Backends)),
-		slog.Int("replication_factor", cfg.ReplicationFactor),
-		slog.Int("write_quorum", cfg.WriteQuorum),
+		slog.Int("replication_factor", cfg.Replication.Factor),
+		slog.Int("write_quorum", cfg.Replication.WriteQuorum),
 	)
 
 	// Initialize backends
@@ -109,17 +113,17 @@ func run(cfg *config.Config, nodeID string) error {
 	var lockMgr *cluster.LockManager
 	var disco *cluster.Discovery
 
-	if cfg.ListenAddr != "" {
+	if cfg.Cluster.ListenAddr != "" {
 		lockMgr = cluster.NewLockManager(nodeID)
-		lockMgr.ExpectedClusterSize = cfg.ExpectedClusterSize
-		lockMgr.Secret = []byte(cfg.ClusterSecret)
-		if _, err := lockMgr.Start(cfg.ListenAddr); err != nil {
+		lockMgr.ExpectedClusterSize = cfg.Cluster.ExpectedClusterSize
+		lockMgr.Secret = []byte(cfg.Cluster.Secret)
+		if _, err := lockMgr.Start(cfg.Cluster.ListenAddr); err != nil {
 			slog.Error("Failed to start lock manager", slog.Any("error", err))
 
 			return fmt.Errorf("failed to start lock manager: %w", err)
 		}
 
-		disco = cluster.NewDiscovery(nodeID, cfg.AdvertiseAddr, backendList)
+		disco = cluster.NewDiscovery(nodeID, cfg.Cluster.AdvertiseAddr, backendList)
 		if err := disco.Start(ctx); err != nil {
 			slog.Error("Failed to start discovery", slog.Any("error", err))
 
@@ -127,7 +131,7 @@ func run(cfg *config.Config, nodeID string) error {
 		}
 		slog.Info("P2P Cluster discovery started",
 			slog.String("node_id", nodeID),
-			slog.String("advertise_addr", cfg.AdvertiseAddr),
+			slog.String("advertise_addr", cfg.Cluster.AdvertiseAddr),
 		)
 	}
 
@@ -135,11 +139,28 @@ func run(cfg *config.Config, nodeID string) error {
 	monitor := backend.NewHealthMonitor(backends)
 	monitor.Start(ctx, defaultMonitorInterval)
 
+	// Initialize and start HTTP API Server if configured
+	if cfg.API.Addr != "" {
+		apiSrv := api.NewServer(cfg.API.Addr, cfg.API.APIToken, cfg.API.MetricsToken)
+		if err := apiSrv.Start(); err != nil {
+			slog.Error("Failed to start HTTP API server", slog.Any("error", err))
+
+			return fmt.Errorf("failed to start HTTP API server: %w", err)
+		}
+		defer func() {
+			shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), apiShutdownTimeout)
+			defer shutdownCancel()
+			if err := apiSrv.Stop(shutdownCtx); err != nil {
+				slog.Error("Failed to gracefully stop HTTP API server", slog.Any("error", err))
+			}
+		}()
+	}
+
 	// Start background sync config
-	refreshInterval, err := time.ParseDuration(cfg.CacheRefreshInterval)
+	refreshInterval, err := time.ParseDuration(cfg.Cache.RefreshInterval)
 	if err != nil {
 		slog.Warn("Invalid cache_refresh_interval, defaulting to 5m",
-			slog.String("interval", cfg.CacheRefreshInterval),
+			slog.String("interval", cfg.Cache.RefreshInterval),
 			slog.Any("error", err),
 		)
 		refreshInterval = defaultCacheRefreshInterval
@@ -147,9 +168,9 @@ func run(cfg *config.Config, nodeID string) error {
 
 	// Warmup/Load Cache (Background & Disk-backed)
 	cache := vfs.NewCache()
-	cacheFile := filepath.Join(cfg.StateDir, "cache.json")
+	cacheFile := filepath.Join(cfg.Cache.StateDir, "cache.json")
 
-	loadedFromDisk, cacheFresh := loadCacheFromDisk(cfg.StateDir, cacheFile, cache, refreshInterval)
+	loadedFromDisk, cacheFresh := loadCacheFromDisk(cfg.Cache.StateDir, cacheFile, cache, refreshInterval)
 
 	go func() {
 		if cacheFresh {
@@ -228,8 +249,8 @@ func run(cfg *config.Config, nodeID string) error {
 	replFS := &rfuse.RepliFS{
 		Cache:             cache,
 		Backends:          backends,
-		ReplicationFactor: cfg.ReplicationFactor,
-		WriteQuorum:       cfg.WriteQuorum,
+		ReplicationFactor: cfg.Replication.Factor,
+		WriteQuorum:       cfg.Replication.WriteQuorum,
 		Selector:          selector,
 		LockManager:       lockMgr,
 		Discovery:         disco,
@@ -239,24 +260,24 @@ func run(cfg *config.Config, nodeID string) error {
 	}
 
 	// Initialize and start Repair Manager
-	repairInterval, err := time.ParseDuration(cfg.RepairInterval)
-	if err != nil && cfg.RepairInterval != "" {
+	repairInterval, err := time.ParseDuration(cfg.Repair.Interval)
+	if err != nil && cfg.Repair.Interval != "" {
 		slog.Warn("Invalid repair_interval, defaulting to 1h",
-			slog.String("interval", cfg.RepairInterval),
+			slog.String("interval", cfg.Repair.Interval),
 			slog.Any("error", err),
 		)
 		repairInterval = 1 * time.Hour
-	} else if cfg.RepairInterval == "" {
+	} else if cfg.Repair.Interval == "" {
 		repairInterval = 1 * time.Hour
 	}
-	repairGrace, err := time.ParseDuration(cfg.RepairGrace)
-	if err != nil && cfg.RepairGrace != "" {
+	repairGrace, err := time.ParseDuration(cfg.Repair.Grace)
+	if err != nil && cfg.Repair.Grace != "" {
 		slog.Warn("Invalid repair_grace, defaulting to 15m",
-			slog.String("grace", cfg.RepairGrace),
+			slog.String("grace", cfg.Repair.Grace),
 			slog.Any("error", err),
 		)
 		repairGrace = defaultRepairGrace
-	} else if cfg.RepairGrace == "" {
+	} else if cfg.Repair.Grace == "" {
 		repairGrace = defaultRepairGrace
 	}
 	// A grace shorter than the scrub interval has no effect: the scrub only
@@ -271,13 +292,13 @@ func run(cfg *config.Config, nodeID string) error {
 		)
 		repairGrace = repairInterval
 	}
-	repairManager := rfuse.NewRepairManager(replFS, repairInterval, repairGrace, cfg.RepairConcurrency)
+	repairManager := rfuse.NewRepairManager(replFS, repairInterval, repairGrace, cfg.Repair.Concurrency)
 	repairManager.Start(ctx)
 	if repairInterval > 0 {
 		slog.Info("Background repair manager started",
 			slog.Duration("interval", repairInterval),
 			slog.Duration("grace", repairGrace),
-			slog.Int("concurrency", cfg.RepairConcurrency),
+			slog.Int("concurrency", cfg.Repair.Concurrency),
 		)
 	}
 
@@ -325,10 +346,6 @@ func run(cfg *config.Config, nodeID string) error {
 	return nil
 }
 
-// loadCacheFromDisk creates the state directory and loads a persisted metadata
-// cache if present. loaded reports whether a cache file was read; fresh reports
-// whether it was reconciled within refreshInterval (letting the caller skip the
-// initial background scan). A missing file or any failure yields false, false.
 func loadCacheFromDisk(stateDir, cacheFile string, cache *vfs.Cache, refreshInterval time.Duration) (bool, bool) {
 	if err := os.MkdirAll(stateDir, 0750); err != nil {
 		slog.Error("Failed to create state directory", slog.String("state_dir", stateDir), slog.Any("error", err))

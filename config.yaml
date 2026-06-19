@@ -1,45 +1,48 @@
 # The local path where the RepliStore filesystem will be mounted.
 mount_point: "/tmp/replistore/mount"
 
-# The local directory where state files (like the serialized cache) are stored.
-state_dir: "/tmp/replistore/state"
+# Replication settings
+replication:
+  # The number of backend replicas to write for each file.
+  factor: 2
+  # The number of successful backend writes required to acknowledge a write.
+  # Defaults to replication.factor if not specified.
+  write_quorum: 1
 
-# The number of backend replicas to write for each file.
-replication_factor: 2
+# The maximum write/IO duration budget
+max_io_duration: "1s"
 
-# The number of successful backend writes required to acknowledge a write.
-# Defaults to replication_factor if not specified.
-write_quorum: 1
+# Metadata cache settings
+cache:
+  # How often to scan backends to sync the in-memory metadata cache.
+  refresh_interval: "5m"
+  # The local directory where state files (like the serialized cache) are stored.
+  state_dir: "/tmp/replistore/state"
 
-# How often to scan backends to sync the in-memory metadata cache.
-cache_refresh_interval: "5m"
-
-# How often to search for and re-replicate degraded files.
-repair_interval: "1h"
-
-# How long a file must stay under/over-replicated before repair acts on it,
-# so a brief backend reboot does not cause replication churn. Should be
-# >= repair_interval (a shorter grace is raised to it). 0 acts at once.
-repair_grace: "1h"
-
-# The maximum number of concurrent repair operations.
-repair_concurrency: 2
+# Background repair settings
+repair:
+  # How often to search for and re-replicate degraded files.
+  interval: "1h"
+  # How long a file must stay under/over-replicated before repair acts on it,
+  # so a brief backend reboot does not cause replication churn. Should be
+  # >= repair_interval (a shorter grace is raised to it). 0 acts at once.
+  grace: "1h"
+  # The maximum number of concurrent repair operations.
+  concurrency: 2
 
 # Optional: P2P clustering configuration for distributed locking.
-# When listen_addr is set, the other three fields become mandatory.
-# listen_addr: ":5050"                  # UDP port for the lock server
-# advertise_addr: "192.168.1.50:5050"   # host:port peers use to reach this node
-# cluster_secret: "change-me-16chars+"  # shared HMAC secret, same on all nodes (min 16 chars)
-# expected_cluster_size: 2              # total nodes in the cluster (quorum = n/2+1)
+# When listen_addr is set, the other fields become mandatory.
+# cluster:
+#   listen_addr: ":5050"                  # UDP port for the lock server
+#   advertise_addr: "192.168.1.50:5050"   # host:port peers use to reach this node
+#   secret: "change-me-16chars+"          # shared HMAC secret, same on all nodes (min 16 chars)
+#   expected_cluster_size: 2              # total nodes in the cluster (quorum = n/2+1)
 
-# Optional: Backend selector configuration.
-# type can be:
-#   - "random" (default): randomly distributes files.
-#   - "first": always selects the first healthy backend.
-#   - "smart": speed-based read tie-breaking and space-based write load balancing.
-# selector:
-#   type: "smart"
-#   write_affinity: ["cold-storage"]    # tags of backends preferred for backup replication
+# HTTP Control & Observability API Configuration
+# api:
+#   addr: ":8080"
+#   api_token: "api-secret-token"
+#   metrics_token: "metrics-secret-token"
 
 backends:
   - name: "nas-01"

@@ -13,7 +13,7 @@ all: lint test build
 build:
 	@echo "Building binary..."
 	@mkdir -p $(BUILD_DIR)
-	go build -ldflags "-X main.Version=$(VERSION)" -o $(BUILD_DIR)/$(BINARY_NAME) ./cmd/replistore/...
+	go build -ldflags "-X main.Version=$(VERSION)" -o $(BUILD_DIR)/$(BINARY_NAME) ./cmd
 
 test:
 	@echo "Running tests..."

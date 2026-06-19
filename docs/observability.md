@@ -70,15 +70,16 @@ This document outlines the architectural plan to modernize error handling, loggi
 ### Proposed Design
 1. **REST/HTTP Control API**:
    - Implement an HTTP/REST server in `internal/api/server.go` exposing the endpoints defined in `docs/api.md`:
-     - `GET /health` - Local service availability.
-     - `GET /backends` - SMB/local backend status, latency, space constraints.
-     - `GET /cluster/peers` - Discovered cluster peers and heartbeats.
-     - `GET /cluster/locks` - Active distributed lock leases.
-     - `GET /cache/stats` - Cached node statistics and indexing status.
-     - `GET /repair/status` - Degraded/diverged files count and active operations.
-   - Protect endpoints with a static bearer token configured in `config.yaml` (`api_token`).
+     - `GET /api/health` - Local service availability.
+     - `GET /api/backends` - SMB/local backend status, latency, space constraints.
+     - `GET /api/cluster/peers` - Discovered cluster peers and heartbeats.
+     - `GET /api/cluster/locks` - Active distributed lock leases.
+     - `GET /api/cache/stats` - Cached node statistics and indexing status.
+     - `GET /api/repair/status` - Degraded/diverged files count and active operations.
+   - Protect control endpoints with a static bearer token configured in `config.yaml` (`api_token`).
    - Use `samber/slog-http` middleware on the HTTP server to log requests structurally.
-2. **Prometheus Metrics (`/metrics`)**:
+2. **Prometheus Metrics (`/streamz` endpoints)**:
+   - Protect metrics endpoints with a separate static bearer token configured in `config.yaml` (`metrics_token`).
    - Expose system metrics for scrape collection:
      - **FS Latency**: `replistore_fs_operation_duration_seconds` (histogram by operation: read, write, lookup, etc.)
      - **Cache Hits**: `replistore_cache_hits_total`, `replistore_cache_misses_total`
