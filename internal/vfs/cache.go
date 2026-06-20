@@ -1168,6 +1168,22 @@ func (c *Cache) CountWithinGrace(rf int, grace time.Duration, now time.Time) (in
 	return degraded, overReplicated
 }
 
+// GetLogicalUsedSpace returns the total logical size of all files in the cache.
+func (c *Cache) GetLogicalUsedSpace() int64 {
+	var total int64
+	c.walk(c.Root, func(n *Node) {
+		n.Mu.RLock()
+		if !n.Meta.IsDir {
+			if n.Meta.Size > 0 {
+				total += n.Meta.Size
+			}
+		}
+		n.Mu.RUnlock()
+	})
+
+	return total
+}
+
 func (c *Cache) walk(node *Node, fn func(*Node)) {
 	fn(node)
 	node.Mu.RLock()

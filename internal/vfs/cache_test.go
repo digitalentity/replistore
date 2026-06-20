@@ -709,3 +709,18 @@ func TestCache_Warmup_SuccessMarksFullyIndexed(t *testing.T) {
 	assert.True(t, cache.Root.FullyIndexed, "Cache should be marked fully indexed if scanning succeeds")
 	b1.AssertExpectations(t)
 }
+
+func TestCache_GetLogicalUsedSpace(t *testing.T) {
+	cache := vfs.NewCache()
+
+	// Initially empty
+	assert.Equal(t, int64(0), cache.GetLogicalUsedSpace())
+
+	// Add files and directories
+	cache.Upsert("file1.txt", vfs.Metadata{Name: "file1.txt", Size: 100, IsDir: false}, "b1")
+	cache.Upsert("dir1/file2.txt", vfs.Metadata{Name: "file2.txt", Size: 250, IsDir: false}, "b1")
+	cache.Upsert("dir1/subdir", vfs.Metadata{Name: "subdir", IsDir: true}, "b1")
+
+	// Total should be 100 + 250 = 350
+	assert.Equal(t, int64(350), cache.GetLogicalUsedSpace())
+}

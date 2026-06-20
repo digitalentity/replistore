@@ -43,6 +43,10 @@ func (s *Server) writeJSON(w http.ResponseWriter, status int, data any) {
 	}
 }
 
+func (s *Server) writeError(w http.ResponseWriter, status int, msg string) {
+	s.writeJSON(w, status, map[string]string{"error": msg})
+}
+
 // Server implements the HTTP API server.
 type Server struct {
 	addr         string
@@ -79,6 +83,7 @@ func (s *Server) Start() error {
 	mux.Handle("GET /api/backends", s.apiAuthHandler(http.HandlerFunc(s.handleBackends)))
 	mux.Handle("GET /api/cluster/peers", s.apiAuthHandler(http.HandlerFunc(s.handleClusterPeers)))
 	mux.Handle("GET /api/cluster/locks", s.apiAuthHandler(http.HandlerFunc(s.handleClusterLocks)))
+	mux.Handle("GET /api/cluster/stats", s.apiAuthHandler(http.HandlerFunc(s.handleClusterStats)))
 	mux.Handle("GET /api/cache/stats", s.apiAuthHandler(http.HandlerFunc(s.handleCacheStats)))
 	mux.Handle("POST /api/cache/refresh", s.apiAuthHandler(http.HandlerFunc(s.handleCacheRefresh)))
 	mux.Handle("GET /api/repair/status", s.apiAuthHandler(http.HandlerFunc(s.handleRepairStatus)))
@@ -134,7 +139,7 @@ func (s *Server) apiAuthHandler(next http.Handler) http.Handler {
 		if s.apiToken != "" {
 			authHeader := r.Header.Get("Authorization")
 			if !strings.HasPrefix(authHeader, "Bearer ") || strings.TrimPrefix(authHeader, "Bearer ") != s.apiToken {
-				http.Error(w, "Unauthorized", http.StatusUnauthorized)
+				s.writeError(w, http.StatusUnauthorized, "Unauthorized")
 
 				return
 			}
@@ -148,7 +153,7 @@ func (s *Server) metricsAuthHandler(next http.Handler) http.Handler {
 		if s.metricsToken != "" {
 			authHeader := r.Header.Get("Authorization")
 			if !strings.HasPrefix(authHeader, "Bearer ") || strings.TrimPrefix(authHeader, "Bearer ") != s.metricsToken {
-				http.Error(w, "Unauthorized", http.StatusUnauthorized)
+				s.writeError(w, http.StatusUnauthorized, "Unauthorized")
 
 				return
 			}
@@ -279,6 +284,51 @@ func (s *Server) handleClusterLocks(w http.ResponseWriter, r *http.Request) {
 	s.writeJSON(w, http.StatusOK, locks)
 }
 
+func (s *Server) handleClusterStats(w http.ResponseWriter, r *http.Request) {
+	var rawTotal uint64
+	var rawFree uint64
+
+	for _, b := range s.replFS.Backends {
+		total, err := b.GetTotalSpace()
+		if err == nil {
+			rawTotal += total
+		}
+		free, err := b.GetFreeSpace()
+		if err == nil {
+			rawFree += free
+		}
+	}
+
+	rawUsed := rawTotal - rawFree
+
+	rf := s.replFS.ReplicationFactor
+	if rf <= 0 {
+		rf = 1
+	}
+
+	amortizedTotal := rawTotal / uint64(rf)
+	amortizedFree := rawFree / uint64(rf)
+
+	logicalUsed := max(0, s.replFS.Cache.GetLogicalUsedSpace())
+	amortizedUsed := uint64(logicalUsed)
+
+	res := map[string]any{
+		"raw": map[string]uint64{
+			"total_space_bytes": rawTotal,
+			"used_space_bytes":  rawUsed,
+			"free_space_bytes":  rawFree,
+		},
+		"amortized": map[string]uint64{
+			"total_space_bytes": amortizedTotal,
+			"used_space_bytes":  amortizedUsed,
+			"free_space_bytes":  amortizedFree,
+		},
+		"replication_factor": uint64(rf),
+	}
+
+	s.writeJSON(w, http.StatusOK, res)
+}
+
 func (s *Server) handleCacheStats(w http.ResponseWriter, r *http.Request) {
 	totalNodes, fullyIndexedDirs := s.replFS.Cache.GetStats()
 	res := map[string]any{
@@ -296,7 +346,7 @@ func (s *Server) handleCacheRefresh(w http.ResponseWriter, r *http.Request) {
 		Path string `json:"path"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && err != io.EOF {
-		http.Error(w, "Bad Request", http.StatusBadRequest)
+		s.writeError(w, http.StatusBadRequest, "Bad Request")
 
 		return
 	}
@@ -354,7 +404,7 @@ func (s *Server) handleMeta(w http.ResponseWriter, r *http.Request) {
 
 	node, ok := s.replFS.Cache.Get(cleanPath)
 	if !ok {
-		http.Error(w, "Not Found", http.StatusNotFound)
+		s.writeError(w, http.StatusNotFound, "Not Found")
 
 		return
 	}
@@ -435,14 +485,14 @@ func (s *Server) handleData(w http.ResponseWriter, r *http.Request) {
 	case http.MethodDelete:
 		s.handleDataDelete(w, r, cleanPath)
 	default:
-		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+		s.writeError(w, http.StatusMethodNotAllowed, "Method Not Allowed")
 	}
 }
 
 func (s *Server) handleDataGet(w http.ResponseWriter, r *http.Request, cleanPath string) {
 	node, ok := s.replFS.Cache.Get(cleanPath)
 	if !ok {
-		http.Error(w, "Not Found", http.StatusNotFound)
+		s.writeError(w, http.StatusNotFound, "Not Found")
 
 		return
 	}
@@ -453,14 +503,14 @@ func (s *Server) handleDataGet(w http.ResponseWriter, r *http.Request, cleanPath
 	node.Mu.RUnlock()
 
 	if isDir {
-		http.Error(w, "Cannot read raw bytes of a directory", http.StatusBadRequest)
+		s.writeError(w, http.StatusBadRequest, "Cannot read raw bytes of a directory")
 
 		return
 	}
 
 	bName := s.replFS.Selector.SelectForRead(meta)
 	if bName == "" {
-		http.Error(w, "No healthy backends available for read", http.StatusServiceUnavailable)
+		s.writeError(w, http.StatusServiceUnavailable, "No healthy backends available for read")
 
 		return
 	}
@@ -469,7 +519,7 @@ func (s *Server) handleDataGet(w http.ResponseWriter, r *http.Request, cleanPath
 	sf, err := b.OpenFile(r.Context(), cleanPath, os.O_RDONLY, 0)
 	if err != nil {
 		slog.Error("Failed to open file on backend", slog.String("backend", bName), slog.String("path", cleanPath), slog.Any("error", err))
-		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		s.writeError(w, http.StatusInternalServerError, "Internal Server Error")
 
 		return
 	}
@@ -484,7 +534,7 @@ func (s *Server) handleDataGet(w http.ResponseWriter, r *http.Request, cleanPath
 
 func (s *Server) handleDataPut(w http.ResponseWriter, r *http.Request, cleanPath string) {
 	if cleanPath == "" {
-		http.Error(w, "Empty file path", http.StatusBadRequest)
+		s.writeError(w, http.StatusBadRequest, "Empty file path")
 
 		return
 	}
@@ -499,7 +549,7 @@ func (s *Server) handleDataPut(w http.ResponseWriter, r *http.Request, cleanPath
 		isDir := node.Meta.IsDir
 		if isDir {
 			node.Mu.RUnlock()
-			http.Error(w, "Path is an existing directory", http.StatusBadRequest)
+			s.writeError(w, http.StatusBadRequest, "Path is an existing directory")
 
 			return
 		}
@@ -515,14 +565,14 @@ func (s *Server) handleDataPut(w http.ResponseWriter, r *http.Request, cleanPath
 	}
 
 	if len(writeBackends) == 0 {
-		http.Error(w, "No backends available for write", http.StatusServiceUnavailable)
+		s.writeError(w, http.StatusServiceUnavailable, "No backends available for write")
 
 		return
 	}
 
 	tmpFile, err := os.CreateTemp(".", "replistore-upload-")
 	if err != nil {
-		http.Error(w, "Failed to create temp file", http.StatusInternalServerError)
+		s.writeError(w, http.StatusInternalServerError, "Failed to create temp file")
 
 		return
 	}
@@ -533,7 +583,7 @@ func (s *Server) handleDataPut(w http.ResponseWriter, r *http.Request, cleanPath
 
 	size, err := io.Copy(tmpFile, r.Body)
 	if err != nil {
-		http.Error(w, "Failed to read upload body", http.StatusInternalServerError)
+		s.writeError(w, http.StatusInternalServerError, "Failed to read upload body")
 
 		return
 	}
@@ -588,7 +638,7 @@ func (s *Server) handleDataPut(w http.ResponseWriter, r *http.Request, cleanPath
 		for _, bName := range successfulBackends {
 			_ = s.replFS.Backends[bName].Remove(r.Context(), cleanPath)
 		}
-		http.Error(w, "Write quorum not met", http.StatusServiceUnavailable)
+		s.writeError(w, http.StatusServiceUnavailable, "Write quorum not met")
 
 		return
 	}
@@ -632,14 +682,14 @@ func (s *Server) handleDataPut(w http.ResponseWriter, r *http.Request, cleanPath
 func (s *Server) handleDataDelete(w http.ResponseWriter, r *http.Request, cleanPath string) {
 	w.Header().Set("Content-Type", "application/json")
 	if cleanPath == "" {
-		http.Error(w, "Empty path", http.StatusBadRequest)
+		s.writeError(w, http.StatusBadRequest, "Empty path")
 
 		return
 	}
 
 	node, ok := s.replFS.Cache.Get(cleanPath)
 	if !ok {
-		http.Error(w, "Not Found", http.StatusNotFound)
+		s.writeError(w, http.StatusNotFound, "Not Found")
 
 		return
 	}
@@ -657,7 +707,7 @@ func (s *Server) handleDataDelete(w http.ResponseWriter, r *http.Request, cleanP
 		hasChildren := len(node.Children) > 0
 		node.Mu.RUnlock()
 		if hasChildren {
-			http.Error(w, "Directory not empty", http.StatusBadRequest)
+			s.writeError(w, http.StatusBadRequest, "Directory not empty")
 
 			return
 		}
@@ -668,7 +718,7 @@ func (s *Server) handleDataDelete(w http.ResponseWriter, r *http.Request, cleanP
 	tomb := vfs.Sidecar{DataGen: tombGen, Writer: s.replFS.NodeID, Deleted: true}
 	successes := s.replFS.WriteTombstones(r.Context(), cleanPath, tomb, s.replFS.AllBackendNames())
 	if successes < s.replFS.WriteQuorum {
-		http.Error(w, "Could not reach tombstone write quorum", http.StatusServiceUnavailable)
+		s.writeError(w, http.StatusServiceUnavailable, "Could not reach tombstone write quorum")
 
 		return
 	}
