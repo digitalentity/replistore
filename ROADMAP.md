@@ -7,68 +7,52 @@ This document tracks proposed improvements that are not yet implemented, plus kn
 ### 1.1. Hedged Reads
 Read failover is reactive today: the open-time and read-time loops try replicas in sequence after an error (`HealthMonitor` results already keep known-dead backends out of the initial pick). The remaining improvement is parallel "hedged" reads: if a backend is slow (exceeds a latency threshold), issue a concurrent read to another replica and take the first successful response.
 
-## 2. Metadata & Performance
+## 2. Data Integrity & Correctness
 
-### 2.1. Smart Backend Selection
-`RandomSelector` does not consider backend state beyond binary health.
-- **Smart:** Query backend free space and prioritize shares with more capacity for new file creations.
-- **Latency-Aware:** Track the response time of each backend and prioritize the fastest one for read operations.
-
-## 3. Data Integrity & Correctness
-
-### 3.1. Read-Path Checksum Verification
+### 2.1. Read-Path Checksum Verification
 Half of end-to-end checksumming is done: repair records `sha256` content sums in the per-file sidecars while copying, and flags same-generation replicas with divergent sums. What remains is the read path: verify the stored checksum on read and, on a mismatch, transparently fail over to another replica and log a corruption event. (Writers blank the sum on every generation bump — random-access FUSE writes make continuous hashing infeasible — so verification is only possible for replicas whose sum has been filled in by repair.)
 
-### 3.2. Local Data Tiering (Read-Through Cache)
+### 2.2. Local Data Tiering (Read-Through Cache)
 Every `Read` involves a network round-trip to an SMB share. A local disk-based cache for frequently accessed small files or file blocks would significantly improve performance for "hot" data while keeping the SMB shares as the authoritative source.
 
-## 4. FUSE Protocol & Compatibility
+## 3. FUSE Protocol & Compatibility
 
-### 4.1. Full `Setattr` (Chmod/Chown/Utimes)
+### 3.1. Full `Setattr` (Chmod/Chown/Utimes)
 `Setattr` currently handles size changes only (truncate, fanned out to all replicas with quorum accounting and a generation bump). Mode, ownership, and timestamp changes are still not forwarded to the backends.
 
-### 4.2. Symlink and Readlink
+### 3.2. Symlink and Readlink
 Symbolic links are not supported. Implement `Symlink` and `Readlink` to allow creating and following links across the unified filesystem.
 
-## 5. Connectivity & Reliability
+## 4. Connectivity & Reliability
 
-### 5.1. `O_APPEND` Support
+### 4.1. `O_APPEND` Support
 `O_APPEND` opens are currently rejected with `ENOTSUP`, because passing the flag through would let each backend append at its own EOF and guarantee replica divergence. Proper support means tracking the append offset in the `FileHandle` (single source of truth) and issuing positioned writes to all replicas.
 
-## 6. Multi-Client & Distributed Coordination
+## 5. Multi-Client & Distributed Coordination
 
-### 6.1. Change-Based Cache Invalidation (SMB Notify)
+### 5.1. Change-Based Cache Invalidation (SMB Notify)
 Metadata staleness between instances; full scans are expensive and slow. Utilize the SMB `CHANGE_NOTIFY` feature to subscribe to directory changes on the backends, allowing instances to perform surgical, near-real-time cache updates instead of relying solely on periodic full scans.
 
-### 6.2. Shared Metadata Store
+### 5.2. Shared Metadata Store
 Independent in-memory caches lead to divergent views of the filesystem between sync cycles. Support an optional shared metadata backend (e.g., etcd or Redis) so all RepliStore instances see an identical, atomic view of the unified namespace in real time.
 
-## 7. Reliability & Data Recovery
+## 6. Reliability & Data Recovery
 
-### 7.1. Repair: Read Once, Write Many
+### 6.1. Repair: Read Once, Write Many
 The repair copy loop reads the source file once *per target* and writes targets sequentially. Optimize by reading each chunk from the source once and writing it to all target backends in parallel. (The other half of the original proposal — creating the destination parent directory with `MkdirAll` before copying — is done: file/dir creation and rename implicitly create parent directories on target backends.)
 
-### 7.2. Backend Selection during `Create`
+### 6.2. Backend Selection during `Create`
 `Dir.Create` uses all healthy backends as candidates for `SelectForWrite` without preferring backends that already contain the parent directory. Since parents are now created implicitly with `MkdirAll`, this is an optimization (avoiding extra directory creation), not a correctness issue.
 
 
-## 8. Operational & Observability
+## 7. Operational & Observability
 
-### 8.1. Observability, Logging, and Error Handling Upgrade
-Implement the comprehensive observability upgrade. See details in [docs/observability.md](docs/observability.md). This includes:
-- **Migration to standard `log/slog`** with `samber/slog-multi` for handler composition and structured fields.
-- **Context-bound Correlation/Request IDs** across FUSE, VFS, and SMB backend operations.
-- **Improved error wrapping** and POSIX translation mapping at the FUSE layer (`syscall.Errno`).
-- **Request logging middleware** using `samber/slog-http` on the REST API server.
-
-### 8.2. Metrics Export (Prometheus)
+### 7.1. Metrics Export (Prometheus)
 Export metrics for operation latency (read/write/metadata), cache hit/miss ratios, backend health and latency, and replication health (number of degraded files, replica divergence events — repair already keeps an internal divergence counter intended to feed this).
 
-### 8.3. Secure Secret Management
+### 7.2. Secure Secret Management
 Integrate with external secret providers (e.g., HashiCorp Vault) or system keyrings instead of relying on environment variables or plain-text configuration for SMB passwords and the `cluster_secret`.
 
-### 8.4. REST/HTTP Control & Observability API
-Implement an HTTP server exposing the REST API for system state monitoring (node health, backend latency, cluster peers, cache statistics, active lock leases) and direct data operations (raw file download/upload with automatic directory provisioning and static token authorization). See [docs/api.md](docs/api.md) for endpoints specification.
 
 ## Known Gaps (from code review)
 
@@ -87,6 +71,9 @@ The test suite is mock-based throughout; a real-cluster smoke test of the sideca
 
 Major items delivered during the 2026-06 remediation, newest first:
 
+- REST/HTTP Control & Observability API (8.4): HTTP server exposing REST endpoints for monitoring system state and metadata/data access, with static token authorization (see `docs/api.md`).
+- Observability and Structured Logging (8.1): Migrated to standard `log/slog` with `samber/slog-multi` composition, context-bound Snowflake correlation IDs, request logging middleware, and translation error wrapping.
+- Smart Backend Selection (2.1): `SmartSelector` queries and prioritizes backends by capacity (free space sorted/cached) and performance (speed metrics).
 - Metadata rearchitecture: sidecars and deletion tombstones unified into one document per path (a tombstone is a document with `Deleted` set), keyed by the SHA-256 of the path, sharded two levels (`.replistore/meta/<h0>/<h1>/<hash>.json`), with the data path stored inside the document. Replaces the path-mirrored `meta/<path>.json` + separate `tombstones/<path>.json` trees. Directory-metadata rehashing/re-keying on rename and directory tombstones are fully implemented (C6-dirs).
 - (Remediation) — 7.3: replica pruning for over-replicated files implemented in RepairManager.
 - Refactored local backend package: isolated local backend into its own package (`internal/backend/local`).
