@@ -310,6 +310,9 @@ func (c *Cache) StartSync(ctx context.Context, backends []backend.Backend, inter
 //	   still exists on the zombie backend, so Reconcile's per-backend sweep
 //	   (which only removes paths that vanished from a backend) never fires.
 func (c *Cache) syncAll(ctx context.Context, backends []backend.Backend) {
+	c.logger(ctx).Info("Starting background metadata cache sync")
+	start := time.Now()
+
 	tombstones := GatherTombstones(ctx, backends)
 	perBackend := c.walkBackends(ctx, backends)
 	resolved, dead := resolveGlobalState(ctx, perBackend, backendsByName(backends), tombstones)
@@ -325,6 +328,8 @@ func (c *Cache) syncAll(ctx context.Context, backends []backend.Backend) {
 	c.Mu.Lock()
 	c.LastReconciled = time.Now()
 	c.Mu.Unlock()
+
+	c.logger(ctx).Info("Background metadata cache sync completed", slog.Duration("duration", time.Since(start)))
 }
 
 // evict unlinks the node at path from its parent. Used when sync determines a
@@ -444,7 +449,7 @@ func (c *Cache) walkBackends(ctx context.Context, backends []backend.Backend) ma
 		state := perBackend[b.GetName()] // each goroutine writes only its own map
 		g.Go(func() error {
 			walkStart := time.Now()
-			c.logger(gCtx).Debug("Background syncing backend", slog.String("backend", b.GetName()))
+			c.logger(gCtx).Info("Background syncing backend", slog.String("backend", b.GetName()))
 			seenPaths := make(map[string]bool)
 			err := b.Walk(gCtx, "", func(path string, info backend.FileInfo) error {
 				if IsReservedPath(path) {
@@ -475,6 +480,7 @@ func (c *Cache) walkBackends(ctx context.Context, backends []backend.Backend) ma
 				return nil // Don't fail other backends
 			}
 			c.Reconcile(b.GetName(), seenPaths, walkStart)
+			c.logger(gCtx).Info("Background sync completed for backend", slog.String("backend", b.GetName()), slog.Duration("duration", time.Since(walkStart)))
 
 			return nil
 		})
