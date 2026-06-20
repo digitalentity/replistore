@@ -69,7 +69,15 @@ type RepliFS struct {
 	handles handleRegistry
 }
 
+type fuseContextKey string
+
+const fuseLoggerKey fuseContextKey = "fuse_logger"
+
 func (f *RepliFS) logger(ctx context.Context) *slog.Logger {
+	if l, ok := ctx.Value(fuseLoggerKey).(*slog.Logger); ok {
+		return l
+	}
+
 	return observability.Logger(ctx).With(slog.String("component", "fuse"), slog.String("node_id", f.NodeID))
 }
 
@@ -90,11 +98,30 @@ func trace(ctx context.Context) context.Context {
 // header, so logs name the actual initiator instead of only an opaque
 // per-operation correlation_id.
 func withRequestor(ctx context.Context, hdr *fuse.Header) context.Context {
+	if hdr == nil {
+		return ctx
+	}
+
 	return observability.WithRequestor(ctx, observability.Requestor{
 		PID: hdr.Pid,
 		UID: hdr.Uid,
 		GID: hdr.Gid,
 	})
+}
+
+// initCtx initializes the request context with a correlation ID trace and, if available,
+// requestor information (PID, UID, GID) and caches a FUSE-specific logger in the context.
+func initCtx(ctx context.Context, f *RepliFS, hdr *fuse.Header) context.Context {
+	ctx = trace(ctx)
+	if hdr != nil {
+		ctx = withRequestor(ctx, hdr)
+	}
+	if f != nil {
+		logger := observability.Logger(ctx).With(slog.String("component", "fuse"), slog.String("node_id", f.NodeID))
+		ctx = context.WithValue(ctx, fuseLoggerKey, logger)
+	}
+
+	return ctx
 }
 
 //nolint:ireturn // fs.Node is an interface required by bazil.org/fuse/fs
@@ -321,7 +348,7 @@ func (d *Dir) Attr(ctx context.Context, a *fuse.Attr) (err error) {
 
 //nolint:ireturn,nonamedreturns
 func (d *Dir) Lookup(ctx context.Context, name string) (node fs.Node, err error) {
-	ctx = trace(ctx)
+	ctx = initCtx(ctx, d.fs, nil)
 	start := time.Now()
 	defer func() {
 		observability.RecordFSOp("lookup", start)
@@ -447,7 +474,7 @@ func (d *Dir) mkdirOnBackend(ctx context.Context, name string, b backend.Backend
 
 //nolint:nonamedreturns
 func (d *Dir) ReadDirAll(ctx context.Context) (entries []fuse.Dirent, err error) {
-	ctx = trace(ctx)
+	ctx = initCtx(ctx, d.fs, nil)
 	start := time.Now()
 	defer func() {
 		observability.RecordFSOp("read_dir_all", start)
@@ -500,7 +527,7 @@ func (d *Dir) ReadDirAll(ctx context.Context) (entries []fuse.Dirent, err error)
 
 //nolint:ireturn,nonamedreturns
 func (d *Dir) Create(ctx context.Context, req *fuse.CreateRequest, resp *fuse.CreateResponse) (node fs.Node, handle fs.Handle, err error) {
-	ctx = trace(ctx)
+	ctx = initCtx(ctx, d.fs, req.Hdr())
 	start := time.Now()
 	defer func() {
 		observability.RecordFSOp("create", start)
@@ -702,7 +729,7 @@ func (d *Dir) removeCreated(ctx context.Context, path string, backends []string)
 
 //nolint:ireturn,nonamedreturns
 func (d *Dir) Mkdir(ctx context.Context, req *fuse.MkdirRequest) (node fs.Node, err error) {
-	ctx = trace(ctx)
+	ctx = initCtx(ctx, d.fs, req.Hdr())
 	start := time.Now()
 	defer func() {
 		observability.RecordFSOp("mkdir", start)
@@ -809,7 +836,7 @@ func (d *Dir) Mkdir(ctx context.Context, req *fuse.MkdirRequest) (node fs.Node, 
 }
 
 func (d *Dir) Remove(ctx context.Context, req *fuse.RemoveRequest) (err error) {
-	ctx = trace(ctx)
+	ctx = initCtx(ctx, d.fs, req.Hdr())
 	start := time.Now()
 	defer func() {
 		observability.RecordFSOp("remove", start)
@@ -1051,7 +1078,7 @@ func (d *Dir) collectDescendants(ctx context.Context, oldPath string, backends [
 }
 
 func (d *Dir) Rename(ctx context.Context, req *fuse.RenameRequest, newDir fs.Node) (err error) {
-	ctx = trace(ctx)
+	ctx = initCtx(ctx, d.fs, req.Hdr())
 	start := time.Now()
 	defer func() {
 		observability.RecordFSOp("rename", start)
@@ -1426,7 +1453,7 @@ func (f *File) Attr(ctx context.Context, a *fuse.Attr) (err error) {
 // write handle is open — e.g. fsync on a read-only fd — fall back to opening
 // each replica read-only and syncing it; the data is already server-side.
 func (f *File) Fsync(ctx context.Context, req *fuse.FsyncRequest) (err error) {
-	ctx = withRequestor(trace(ctx), req.Hdr())
+	ctx = initCtx(ctx, f.fs, req.Hdr())
 	start := time.Now()
 	defer func() {
 		observability.RecordFSOp("fsync", start)
@@ -1510,7 +1537,7 @@ func (f *File) Fsync(ctx context.Context, req *fuse.FsyncRequest) (err error) {
 // so we report success without touching the backends rather than break tools
 // like cp -p or tar that chmod/chown after writing.
 func (f *File) Setattr(ctx context.Context, req *fuse.SetattrRequest, resp *fuse.SetattrResponse) (err error) {
-	ctx = trace(ctx)
+	ctx = initCtx(ctx, f.fs, req.Hdr())
 	start := time.Now()
 	defer func() {
 		observability.RecordFSOp("setattr", start)
@@ -1625,7 +1652,7 @@ func (f *File) Setattr(ctx context.Context, req *fuse.SetattrRequest, resp *fuse
 
 //nolint:ireturn,nonamedreturns
 func (f *File) Open(ctx context.Context, req *fuse.OpenRequest, resp *fuse.OpenResponse) (handle fs.Handle, err error) {
-	ctx = trace(ctx)
+	ctx = initCtx(ctx, f.fs, req.Hdr())
 	start := time.Now()
 	defer func() {
 		observability.RecordFSOp("open", start)
@@ -1926,7 +1953,11 @@ type FileHandle struct {
 }
 
 func (h *FileHandle) Read(ctx context.Context, req *fuse.ReadRequest, resp *fuse.ReadResponse) (err error) {
-	ctx = trace(ctx)
+	var fs *RepliFS
+	if h.file != nil {
+		fs = h.file.fs
+	}
+	ctx = initCtx(ctx, fs, req.Hdr())
 	start := time.Now()
 	defer func() {
 		observability.RecordFSOp("read", start)
@@ -2018,7 +2049,11 @@ func (h *FileHandle) openFallbackBackend(ctx context.Context, tried map[string]b
 }
 
 func (h *FileHandle) Write(ctx context.Context, req *fuse.WriteRequest, resp *fuse.WriteResponse) (err error) {
-	ctx = trace(ctx)
+	var fs *RepliFS
+	if h.file != nil {
+		fs = h.file.fs
+	}
+	ctx = initCtx(ctx, fs, req.Hdr())
 	start := time.Now()
 	defer func() {
 		observability.RecordFSOp("write", start)
@@ -2133,7 +2168,11 @@ func (h *FileHandle) cleanupFailedBackends(failures []string) {
 }
 
 func (h *FileHandle) Flush(ctx context.Context, req *fuse.FlushRequest) (err error) {
-	ctx = withRequestor(trace(ctx), req.Hdr())
+	var fs *RepliFS
+	if h.file != nil {
+		fs = h.file.fs
+	}
+	ctx = initCtx(ctx, fs, req.Hdr())
 	start := time.Now()
 	defer func() {
 		observability.RecordFSOp("flush", start)
@@ -2218,7 +2257,15 @@ func (h *FileHandle) syncBackends(ctx context.Context) error {
 }
 
 func (h *FileHandle) Release(ctx context.Context, req *fuse.ReleaseRequest) (err error) {
-	ctx = trace(ctx)
+	var fs *RepliFS
+	if h.file != nil {
+		fs = h.file.fs
+	}
+	var hdr *fuse.Header
+	if req != nil {
+		hdr = req.Hdr()
+	}
+	ctx = initCtx(ctx, fs, hdr)
 	start := time.Now()
 	defer func() {
 		observability.RecordFSOp("release", start)

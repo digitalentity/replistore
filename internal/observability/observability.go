@@ -27,6 +27,13 @@ const traceKey contextKey = "trace"
 
 const requestorKey contextKey = "requestor"
 
+const contextLoggerKey contextKey = "context_logger"
+
+type contextLogger struct {
+	once   sync.Once
+	logger *slog.Logger
+}
+
 // defaultTraceCap bounds the events one trace retains. A single request records
 // well under this; the cap only guards against a pathological loop. When full
 // the oldest events are dropped (the failure tail is the interesting part).
@@ -151,8 +158,11 @@ func GenerateCorrelationID() string {
 // (see Trace.FlushOnError) and otherwise discarded with the context.
 func WithCorrelationID(ctx context.Context, id string) context.Context {
 	ctx = context.WithValue(ctx, correlationIDKey, id)
+	ctx = context.WithValue(ctx, traceKey, newTrace(id))
 
-	return context.WithValue(ctx, traceKey, newTrace(id))
+	cl := &contextLogger{}
+
+	return context.WithValue(ctx, contextLoggerKey, cl)
 }
 
 // CorrelationID retrieves the correlation ID from the context.
@@ -193,6 +203,7 @@ func (t *Trace) add(msg string, attrs []slog.Attr) {
 	defer t.mu.Unlock()
 	// Ring behaviour: once full, drop the oldest so the failure tail survives.
 	if len(t.events) >= defaultTraceCap {
+		t.events[0] = traceEvent{} // Clear reference to allow GC of attributes
 		t.events = t.events[1:]
 		t.dropped++
 	}
@@ -279,10 +290,22 @@ func RequestorFrom(ctx context.Context) (Requestor, bool) {
 // Logger returns a contextual logger pre-populated with the correlation_id and
 // the requesting process identity (pid/uid/gid) if present.
 func Logger(ctx context.Context) *slog.Logger {
-	logger := slog.Default()
 	if ctx == nil {
-		return logger
+		return slog.Default()
 	}
+	cl, ok := ctx.Value(contextLoggerKey).(*contextLogger)
+	if !ok {
+		return buildLogger(ctx)
+	}
+	cl.once.Do(func() {
+		cl.logger = buildLogger(ctx)
+	})
+
+	return cl.logger
+}
+
+func buildLogger(ctx context.Context) *slog.Logger {
+	logger := slog.Default()
 	if id := CorrelationID(ctx); id != "" {
 		logger = logger.With(slog.String("correlation_id", id))
 	}

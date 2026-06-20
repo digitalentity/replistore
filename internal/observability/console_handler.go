@@ -70,28 +70,27 @@ func (h *consoleHandler) Handle(ctx context.Context, r slog.Record) error {
 	// 3. Message
 	sb.WriteString(r.Message)
 
-	// 4. Fields (pre-formatted attributes + record attributes)
-	var allAttrs []slog.Attr
-	allAttrs = append(allAttrs, h.attrs...)
-	r.Attrs(func(a slog.Attr) bool {
-		allAttrs = append(allAttrs, a)
-
-		return true
-	})
-
 	// Prepend groups if any
 	groupPrefix := ""
 	if len(h.groups) > 0 {
 		groupPrefix = strings.Join(h.groups, ".") + "."
 	}
 
-	for _, a := range allAttrs {
-		formatted := h.formatAttr(groupPrefix, a)
-		if formatted != "" {
+	// 4. Fields (pre-formatted attributes + record attributes)
+	for _, a := range h.attrs {
+		if formatted := h.formatAttr(groupPrefix, a); formatted != "" {
 			sb.WriteString(" ")
 			sb.WriteString(formatted)
 		}
 	}
+	r.Attrs(func(a slog.Attr) bool {
+		if formatted := h.formatAttr(groupPrefix, a); formatted != "" {
+			sb.WriteString(" ")
+			sb.WriteString(formatted)
+		}
+
+		return true
+	})
 
 	sb.WriteString("\n")
 
