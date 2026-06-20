@@ -75,6 +75,35 @@ func NewMountCmd(version string) *cobra.Command {
 	return cmd
 }
 
+// buildMountOptions translates the comma-separated mount options string from
+// config into FUSE mount options, warning on (and skipping) unknown ones.
+func buildMountOptions(options string) []fuse.MountOption {
+	mountOpts := []fuse.MountOption{
+		fuse.FSName("replistore"),
+		fuse.Subtype("replistore"),
+	}
+	if options == "" {
+		return mountOpts
+	}
+	for part := range strings.SplitSeq(options, ",") {
+		opt := strings.TrimSpace(part)
+		switch opt {
+		case "allow_other":
+			mountOpts = append(mountOpts, fuse.AllowOther())
+		case "default_permissions":
+			mountOpts = append(mountOpts, fuse.DefaultPermissions())
+		case "ro", "readonly":
+			mountOpts = append(mountOpts, fuse.ReadOnly())
+		case "nonempty":
+			mountOpts = append(mountOpts, fuse.AllowNonEmptyMount())
+		default:
+			slog.Warn("Unknown mount option, ignoring", slog.String("option", opt))
+		}
+	}
+
+	return mountOpts
+}
+
 func run(cfg *config.Config, nodeID string, version string, configPath string) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -158,28 +187,7 @@ func run(cfg *config.Config, nodeID string, version string, configPath string) e
 	}
 
 	// Mount FUSE
-	mountOpts := []fuse.MountOption{
-		fuse.FSName("replistore"),
-		fuse.Subtype("replistore"),
-	}
-
-	if cfg.Mount.Options != "" {
-		for part := range strings.SplitSeq(cfg.Mount.Options, ",") {
-			opt := strings.TrimSpace(part)
-			switch opt {
-			case "allow_other":
-				mountOpts = append(mountOpts, fuse.AllowOther())
-			case "default_permissions":
-				mountOpts = append(mountOpts, fuse.DefaultPermissions())
-			case "ro", "readonly":
-				mountOpts = append(mountOpts, fuse.ReadOnly())
-			case "nonempty":
-				mountOpts = append(mountOpts, fuse.AllowNonEmptyMount())
-			default:
-				slog.Warn("Unknown mount option, ignoring", slog.String("option", opt))
-			}
-		}
-	}
+	mountOpts := buildMountOptions(cfg.Mount.Options)
 
 	c, err := fuse.Mount(
 		cfg.Mount.Path,
@@ -201,6 +209,15 @@ func run(cfg *config.Config, nodeID string, version string, configPath string) e
 		writeLeaseBuffer = defaultWriteLeaseBuffer
 	}
 
+	attrValid, err := time.ParseDuration(cfg.Mount.AttrValid)
+	if err != nil {
+		slog.Warn("Invalid attr_valid, defaulting to 1s",
+			slog.String("duration", cfg.Mount.AttrValid),
+			slog.Any("error", err),
+		)
+		attrValid = time.Second
+	}
+
 	selector := initSelector(cfg, backends, monitor)
 
 	srv := fs.New(c, nil)
@@ -216,6 +233,9 @@ func run(cfg *config.Config, nodeID string, version string, configPath string) e
 		WriteLeaseBuffer:  writeLeaseBuffer,
 		CacheTTL:          refreshInterval,
 		HealthMonitor:     monitor,
+		AttrValid:         attrValid,
+		UID:               cfg.Mount.UID,
+		GID:               cfg.Mount.GID,
 	}
 
 	// Initialize and start Repair Manager

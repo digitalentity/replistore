@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
@@ -165,10 +166,14 @@ func (m *RepairManager) performScrub(ctx context.Context) {
 	g, gCtx := errgroup.WithContext(ctx)
 	g.SetLimit(m.concurrency)
 
+	var failures atomic.Int64
 	for _, node := range degraded {
 		g.Go(func() error {
 			if err := m.repairNode(gCtx, node); err != nil {
-				m.logger(gCtx).Error("Failed to repair", slog.String("path", node.Meta.Path), slog.Any("error", err))
+				observability.Event(gCtx, "repair failed", slog.String("path", node.Meta.Path), slog.Any("error", err))
+				failures.Add(1)
+			} else {
+				observability.Event(gCtx, "repaired", slog.String("path", node.Meta.Path))
 			}
 
 			return nil // Don't fail the whole scrub on single file error
@@ -178,7 +183,10 @@ func (m *RepairManager) performScrub(ctx context.Context) {
 	for _, node := range overReplicated {
 		g.Go(func() error {
 			if err := m.pruneNode(gCtx, node); err != nil {
-				m.logger(gCtx).Error("Failed to prune", slog.String("path", node.Meta.Path), slog.Any("error", err))
+				observability.Event(gCtx, "prune failed", slog.String("path", node.Meta.Path), slog.Any("error", err))
+				failures.Add(1)
+			} else {
+				observability.Event(gCtx, "pruned", slog.String("path", node.Meta.Path))
 			}
 
 			return nil
@@ -186,7 +194,12 @@ func (m *RepairManager) performScrub(ctx context.Context) {
 	}
 
 	_ = g.Wait()
-	m.logger(ctx).Info("Background repair scrub completed")
+	// Per-node errors stay quiet during the run; if any file failed, dump the
+	// whole scrub's breadcrumb trail in one place for diagnosis.
+	if n := failures.Load(); n > 0 {
+		observability.TraceFrom(ctx).Flush(ctx, m.logger(ctx), slog.LevelError, fmt.Sprintf("%d repair/prune failure(s) during scrub", n))
+	}
+	m.logger(ctx).Info("Background repair scrub completed", slog.Int64("failures", failures.Load()))
 }
 
 // enforceTombstones makes recorded deletions stick (REVIEW.md C6): for every

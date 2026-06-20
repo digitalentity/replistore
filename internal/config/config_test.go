@@ -51,6 +51,34 @@ mount:
 	cfg, err := config.LoadConfig(tmpFile.Name())
 	require.NoError(t, err)
 	assert.Equal(t, 2, cfg.Replication.Factor) // Default
+	assert.Equal(t, "1s", cfg.Mount.AttrValid) // Default
+	assert.Nil(t, cfg.Mount.UID)
+	assert.Nil(t, cfg.Mount.GID)
+}
+
+func TestLoadConfig_MountAttributes(t *testing.T) {
+	content := `
+mount:
+  path: "/tmp/test"
+  attr_valid: "5s"
+  uid: 1001
+  gid: 1002
+`
+	tmpFile, err := os.CreateTemp(t.TempDir(), "config.yaml")
+	require.NoError(t, err)
+	defer os.Remove(tmpFile.Name())
+
+	_, err = tmpFile.WriteString(content)
+	require.NoError(t, err)
+	require.NoError(t, tmpFile.Close())
+
+	cfg, err := config.LoadConfig(tmpFile.Name())
+	require.NoError(t, err)
+	assert.Equal(t, "5s", cfg.Mount.AttrValid)
+	require.NotNil(t, cfg.Mount.UID)
+	assert.Equal(t, uint32(1001), *cfg.Mount.UID)
+	require.NotNil(t, cfg.Mount.GID)
+	assert.Equal(t, uint32(1002), *cfg.Mount.GID)
 }
 
 func TestLoadConfig_ExpectedClusterSize(t *testing.T) {

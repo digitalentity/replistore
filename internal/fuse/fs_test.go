@@ -123,6 +123,46 @@ func TestFS_ReadDirAll(t *testing.T) {
 	assert.Len(t, dirents, 2)
 }
 
+// TestSyncBackends_AbortedVsFailed verifies syncBackends separates a canceled
+// request (writer exited or mount shutting down) from a genuine backend
+// failure: the former is reported as an abort, the latter as a quorum failure.
+func TestSyncBackends_AbortedVsFailed(t *testing.T) {
+	newHandle := func(syncErr error) *FileHandle {
+		cache := vfs.NewCache()
+		cache.Upsert("clip.mkv", vfs.Metadata{Name: "clip.mkv"}, "b1")
+		node, _ := cache.Get("clip.mkv")
+		mf := &bmock.MockFile{}
+		mf.On("Sync", mock.Anything).Return(syncErr)
+		fs := &RepliFS{Cache: cache, WriteQuorum: 1, NodeID: "node-test"}
+
+		return &FileHandle{
+			file:     &File{fs: fs, node: node},
+			backends: map[string]backend.File{"b1": mf},
+		}
+	}
+
+	t.Run("canceled request reports an abort", func(t *testing.T) {
+		h := newHandle(context.Canceled)
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+
+		err := h.syncBackends(ctx)
+		require.Error(t, err)
+		require.ErrorIs(t, err, context.Canceled)
+		assert.Contains(t, err.Error(), "aborted before write quorum")
+	})
+
+	t.Run("backend error reports a quorum failure", func(t *testing.T) {
+		boom := errors.New("disk gone")
+		h := newHandle(boom)
+
+		err := h.syncBackends(context.Background())
+		require.Error(t, err)
+		require.ErrorIs(t, err, boom)
+		assert.Contains(t, err.Error(), "write quorum")
+	})
+}
+
 func TestDir_Create(t *testing.T) {
 	b1 := &bmock.MockBackend{NameVal: "b1"}
 	mockFile := &bmock.MockFile{}
@@ -1821,4 +1861,46 @@ func TestLookup_FullyIndexedENOENT(t *testing.T) {
 
 	// Verify no calls were made to b1
 	b1.AssertExpectations(t)
+}
+
+func TestFS_AttributesConfig(t *testing.T) {
+	cache := vfs.NewCache()
+	cache.Upsert("test.txt", vfs.Metadata{Name: "test.txt", Size: 100}, "b1")
+
+	uid := uint32(1001)
+	gid := uint32(1002)
+
+	fs := &RepliFS{
+		Cache:     cache,
+		Backends:  map[string]backend.Backend{},
+		Selector:  vfs.NewRandomSelector(nil),
+		AttrValid: 5 * time.Second,
+		UID:       &uid,
+		GID:       &gid,
+	}
+
+	root, err := fs.Root()
+	require.NoError(t, err)
+
+	// Test Dir Attr
+	dir := root.(*Dir)
+	var dirAttr fuse.Attr
+	err = dir.Attr(context.Background(), &dirAttr)
+	require.NoError(t, err)
+	assert.Equal(t, 5*time.Second, dirAttr.Valid)
+	assert.Equal(t, uint32(2), dirAttr.Nlink)
+	assert.Equal(t, uid, dirAttr.Uid)
+	assert.Equal(t, gid, dirAttr.Gid)
+
+	// Test File Attr
+	node, err := dir.Lookup(context.Background(), "test.txt")
+	require.NoError(t, err)
+	file := node.(*File)
+	var fileAttr fuse.Attr
+	err = file.Attr(context.Background(), &fileAttr)
+	require.NoError(t, err)
+	assert.Equal(t, 5*time.Second, fileAttr.Valid)
+	assert.Equal(t, uint32(1), fileAttr.Nlink)
+	assert.Equal(t, uid, fileAttr.Uid)
+	assert.Equal(t, gid, fileAttr.Gid)
 }

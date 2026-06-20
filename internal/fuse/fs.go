@@ -49,6 +49,10 @@ type RepliFS struct {
 	WriteLeaseBuffer time.Duration
 	CacheTTL         time.Duration
 
+	AttrValid time.Duration
+	UID       *uint32
+	GID       *uint32
+
 	// pathLocks serializes same-path mutations within this process. The
 	// distributed lock manager (when enabled) only arbitrates between nodes
 	// and rejects a second local acquisition instead of queueing it; when
@@ -80,6 +84,17 @@ func trace(ctx context.Context) context.Context {
 	id := observability.GenerateCorrelationID()
 
 	return observability.WithCorrelationID(ctx, id)
+}
+
+// withRequestor tags ctx with the issuing process identity from a FUSE request
+// header, so logs name the actual initiator instead of only an opaque
+// per-operation correlation_id.
+func withRequestor(ctx context.Context, hdr *fuse.Header) context.Context {
+	return observability.WithRequestor(ctx, observability.Requestor{
+		PID: hdr.Pid,
+		UID: hdr.Uid,
+		GID: hdr.Gid,
+	})
 }
 
 //nolint:ireturn // fs.Node is an interface required by bazil.org/fuse/fs
@@ -261,6 +276,37 @@ type Dir struct {
 	node *vfs.Node
 }
 
+// Link counts reported through Attr: directories carry the conventional 2
+// (self + "."), regular files a single link.
+const (
+	dirNlink  = 2
+	fileNlink = 1
+)
+
+// fillAttr populates a from node (taken under the node's read lock), applying
+// the configured attribute validity window and uid/gid overrides. nlink is
+// dirNlink for directories and fileNlink for regular files.
+func (f *RepliFS) fillAttr(a *fuse.Attr, node *vfs.Node, nlink uint32) {
+	node.Mu.RLock()
+	defer node.Mu.RUnlock()
+
+	a.Mode = node.Meta.Mode
+	if node.Meta.Size < 0 {
+		a.Size = 0
+	} else {
+		a.Size = uint64(node.Meta.Size) //nolint:gosec // checked non-negative
+	}
+	a.Mtime = node.Meta.ModTime
+	a.Valid = f.AttrValid
+	a.Nlink = nlink
+	if f.UID != nil {
+		a.Uid = *f.UID
+	}
+	if f.GID != nil {
+		a.Gid = *f.GID
+	}
+}
+
 func (d *Dir) Attr(ctx context.Context, a *fuse.Attr) (err error) {
 	start := time.Now()
 	defer func() {
@@ -268,16 +314,7 @@ func (d *Dir) Attr(ctx context.Context, a *fuse.Attr) (err error) {
 		err = TranslateError(err)
 	}()
 
-	d.node.Mu.RLock()
-	defer d.node.Mu.RUnlock()
-
-	a.Mode = d.node.Meta.Mode
-	if d.node.Meta.Size < 0 {
-		a.Size = 0
-	} else {
-		a.Size = uint64(d.node.Meta.Size) //nolint:gosec // checked non-negative
-	}
-	a.Mtime = d.node.Meta.ModTime
+	d.fs.fillAttr(a, d.node, dirNlink)
 
 	return nil
 }
@@ -376,7 +413,7 @@ func (d *Dir) fetchChild(ctx context.Context, childPath string, cached *vfs.Node
 func (d *Dir) mkdirOnBackend(ctx context.Context, name string, b backend.Backend, path, parentPath string, mode os.FileMode) (bool, bool) {
 	if parentPath != "" {
 		if err := b.MkdirAll(ctx, parentPath, 0755); err != nil {
-			d.fs.pathLogger(ctx, path).Warn(fmt.Sprintf("Failed to MkdirAll parent %s on backend %s: %v", parentPath, name, err))
+			observability.Event(ctx, "mkdirall parent failed", slog.String("parent", parentPath), slog.String("backend", name), slog.Any("error", err))
 		}
 	}
 
@@ -386,7 +423,7 @@ func (d *Dir) mkdirOnBackend(ctx context.Context, name string, b backend.Backend
 	}
 
 	if !os.IsExist(err) && !errors.Is(err, os.ErrExist) {
-		d.fs.pathLogger(ctx, path).Warn(fmt.Sprintf("Failed to create directory on %s: %v", name, err))
+		observability.Event(ctx, "mkdir failed on backend", slog.String("backend", name), slog.Any("error", err))
 
 		return false, false
 	}
@@ -395,12 +432,12 @@ func (d *Dir) mkdirOnBackend(ctx context.Context, name string, b backend.Backend
 	// cluster node). Verify it really is a directory.
 	info, statErr := b.Stat(ctx, path)
 	if statErr != nil {
-		d.fs.pathLogger(ctx, path).Warn(fmt.Sprintf("Failed to stat existing path on %s: %v", name, statErr))
+		observability.Event(ctx, "stat existing path failed on backend", slog.String("backend", name), slog.Any("error", statErr))
 
 		return false, false
 	}
 	if !info.IsDir {
-		d.fs.pathLogger(ctx, path).Warn(fmt.Sprintf("Path already exists on %s but is not a directory", name))
+		observability.Event(ctx, "path exists but is not a directory on backend", slog.String("backend", name))
 
 		return false, false
 	}
@@ -467,6 +504,7 @@ func (d *Dir) Create(ctx context.Context, req *fuse.CreateRequest, resp *fuse.Cr
 	start := time.Now()
 	defer func() {
 		observability.RecordFSOp("create", start)
+		observability.TraceFrom(ctx).FlushOnError(ctx, observability.Logger(ctx), slog.LevelWarn, err)
 		err = TranslateError(err)
 	}()
 
@@ -527,6 +565,7 @@ func (d *Dir) Create(ctx context.Context, req *fuse.CreateRequest, resp *fuse.Cr
 	}
 
 	// Perform I/O outside of VFS lock to prevent deadlock
+	observability.Event(ctx, "create started", slog.String("path", path), slog.Int("backends", len(selectedBackends)), slog.Int("quorum", d.fs.WriteQuorum))
 	var mu sync.Mutex
 	var successfulBackends []string
 	var existsCount int
@@ -537,7 +576,7 @@ func (d *Dir) Create(ctx context.Context, req *fuse.CreateRequest, resp *fuse.Cr
 			b := d.fs.Backends[bName]
 			if parentPath != "" {
 				if err := b.MkdirAll(gCtx, parentPath, 0755); err != nil {
-					d.fs.pathLogger(ctx, path).Warn(fmt.Sprintf("Failed to MkdirAll parent %s on backend %s: %v", parentPath, bName, err))
+					observability.Event(ctx, "mkdirall parent failed", slog.String("parent", parentPath), slog.String("backend", bName), slog.Any("error", err))
 				}
 			}
 			sf, err := b.OpenFile(gCtx, path, os.O_CREATE|os.O_EXCL|os.O_RDWR, req.Mode)
@@ -545,16 +584,18 @@ func (d *Dir) Create(ctx context.Context, req *fuse.CreateRequest, resp *fuse.Cr
 				if os.IsExist(err) || errors.Is(err, os.ErrExist) {
 					// The file already exists on this backend (e.g. created by
 					// another cluster node and not yet in our cache).
+					observability.Event(ctx, "create conflict on backend (already exists)", slog.String("backend", bName))
 					mu.Lock()
 					existsCount++
 					mu.Unlock()
 
 					return nil
 				}
-				d.fs.pathLogger(ctx, path).Warn(fmt.Sprintf("Failed to create file on backend %s: %v", bName, err))
+				observability.Event(ctx, "create failed on backend", slog.String("backend", bName), slog.Any("error", err))
 
 				return nil // Don't fail the whole operation yet
 			}
+			observability.Event(ctx, "create ok on backend", slog.String("backend", bName))
 			mu.Lock()
 			h.backends[bName] = sf
 			successfulBackends = append(successfulBackends, bName)
@@ -665,6 +706,7 @@ func (d *Dir) Mkdir(ctx context.Context, req *fuse.MkdirRequest) (node fs.Node, 
 	start := time.Now()
 	defer func() {
 		observability.RecordFSOp("mkdir", start)
+		observability.TraceFrom(ctx).FlushOnError(ctx, observability.Logger(ctx), slog.LevelWarn, err)
 		err = TranslateError(err)
 	}()
 
@@ -705,7 +747,7 @@ func (d *Dir) Mkdir(ctx context.Context, req *fuse.MkdirRequest) (node fs.Node, 
 	var satisfiedOn []string // backends where the directory is present (counted toward quorum)
 	g, gCtx := errgroup.WithContext(ctx)
 
-	d.fs.pathLogger(ctx, path).Info(fmt.Sprintf("Creating directory on all backends (quorum: %d)", d.fs.WriteQuorum))
+	observability.Event(ctx, "mkdir started", slog.String("path", path), slog.Int("backends", len(d.fs.Backends)), slog.Int("quorum", d.fs.WriteQuorum))
 	for name, b := range d.fs.Backends {
 		g.Go(func() error {
 			created, satisfied := d.mkdirOnBackend(gCtx, name, b, path, parentPath, req.Mode)
@@ -771,6 +813,7 @@ func (d *Dir) Remove(ctx context.Context, req *fuse.RemoveRequest) (err error) {
 	start := time.Now()
 	defer func() {
 		observability.RecordFSOp("remove", start)
+		observability.TraceFrom(ctx).FlushOnError(ctx, observability.Logger(ctx), slog.LevelWarn, err)
 		err = TranslateError(err)
 	}()
 
@@ -835,7 +878,7 @@ func (d *Dir) Remove(ctx context.Context, req *fuse.RemoveRequest) (err error) {
 	// is refused and no data is touched.
 	tombGen := gen + 1
 	tomb := vfs.Sidecar{DataGen: tombGen, Writer: d.fs.NodeID, Deleted: true}
-	d.fs.pathLogger(ctx, path).Info(fmt.Sprintf("Removing path: writing tombstone gen %d to all backends (quorum: %d)", tombGen, d.fs.WriteQuorum))
+	observability.Event(ctx, "remove started: writing tombstone to all backends", slog.String("path", path), slog.Int64("tomb_gen", tombGen), slog.Int("quorum", d.fs.WriteQuorum))
 	if successes := d.fs.writeTombstones(ctx, path, tomb, d.fs.allBackendNames()); successes < d.fs.WriteQuorum {
 		d.fs.pathLogger(ctx, path).Error(fmt.Sprintf("Failed to remove: tombstone write quorum not met (%d/%d)", successes, d.fs.WriteQuorum))
 
@@ -856,7 +899,7 @@ func (d *Dir) Remove(ctx context.Context, req *fuse.RemoveRequest) (err error) {
 			if err == nil || os.IsNotExist(err) || errors.Is(err, os.ErrNotExist) {
 				successes++
 			} else {
-				d.fs.pathLogger(ctx, path).Error(fmt.Sprintf("Failed to remove from %s: %v", bName, err))
+				observability.Event(ctx, "remove failed on backend", slog.String("backend", bName), slog.Any("error", err))
 			}
 
 			return nil
@@ -1012,6 +1055,7 @@ func (d *Dir) Rename(ctx context.Context, req *fuse.RenameRequest, newDir fs.Nod
 	start := time.Now()
 	defer func() {
 		observability.RecordFSOp("rename", start)
+		observability.TraceFrom(ctx).FlushOnError(ctx, observability.Logger(ctx), slog.LevelWarn, err)
 		err = TranslateError(err)
 	}()
 
@@ -1207,6 +1251,7 @@ func (d *Dir) Rename(ctx context.Context, req *fuse.RenameRequest, newDir fs.Nod
 }
 
 func (d *Dir) executeBackendRename(ctx context.Context, oldPath, newPath, targetParentPath string, backends []string, isDir bool) ([]string, []string, error) {
+	observability.Event(ctx, "backend rename started", slog.String("old", oldPath), slog.String("new", newPath), slog.Int("backends", len(backends)), slog.Int("quorum", d.fs.WriteQuorum))
 	var successful []string
 	var failures []string
 	var mu sync.Mutex
@@ -1219,7 +1264,7 @@ func (d *Dir) executeBackendRename(ctx context.Context, oldPath, newPath, target
 
 			// Ensure destination parent path exists on this backend
 			if err := b.MkdirAll(gCtx, targetParentPath, 0755); err != nil {
-				d.fs.pathLogger(ctx, oldPath).Warn(fmt.Sprintf("Failed to ensure parent path %s on backend %s: %v", targetParentPath, bName, err))
+				observability.Event(ctx, "ensure parent path failed on backend", slog.String("parent", targetParentPath), slog.String("backend", bName), slog.Any("error", err))
 				// Continue anyway, maybe it exists
 			}
 
@@ -1228,14 +1273,15 @@ func (d *Dir) executeBackendRename(ctx context.Context, oldPath, newPath, target
 			defer mu.Unlock()
 			switch {
 			case err == nil:
+				observability.Event(ctx, "rename ok on backend", slog.String("backend", bName))
 				successful = append(successful, bName)
 			case isDir && (os.IsNotExist(err) || errors.Is(err, os.ErrNotExist)):
 				// The source dir simply doesn't exist on this backend: that is
 				// neither a success nor a failure for quorum purposes, and
 				// there is no orphan to clean up.
-				d.fs.pathLogger(ctx, oldPath).Debug(fmt.Sprintf("Skipping rename on %s: source does not exist", bName))
+				observability.Event(ctx, "rename skipped on backend (source absent)", slog.String("backend", bName))
 			default:
-				d.fs.pathLogger(ctx, oldPath).Warn(fmt.Sprintf("Failed to rename to %s on %s: %v", newPath, bName, err))
+				observability.Event(ctx, "rename failed on backend", slog.String("backend", bName), slog.Any("error", err))
 				failures = append(failures, bName)
 				lastErr = err
 			}
@@ -1369,16 +1415,7 @@ func (f *File) Attr(ctx context.Context, a *fuse.Attr) (err error) {
 		err = TranslateError(err)
 	}()
 
-	f.node.Mu.RLock()
-	defer f.node.Mu.RUnlock()
-
-	a.Mode = f.node.Meta.Mode
-	if f.node.Meta.Size < 0 {
-		a.Size = 0
-	} else {
-		a.Size = uint64(f.node.Meta.Size) //nolint:gosec // checked non-negative
-	}
-	a.Mtime = f.node.Meta.ModTime
+	f.fs.fillAttr(a, f.node, fileNlink)
 
 	return nil
 }
@@ -1389,10 +1426,11 @@ func (f *File) Attr(ctx context.Context, a *fuse.Attr) (err error) {
 // write handle is open — e.g. fsync on a read-only fd — fall back to opening
 // each replica read-only and syncing it; the data is already server-side.
 func (f *File) Fsync(ctx context.Context, req *fuse.FsyncRequest) (err error) {
-	ctx = trace(ctx)
+	ctx = withRequestor(trace(ctx), req.Hdr())
 	start := time.Now()
 	defer func() {
 		observability.RecordFSOp("fsync", start)
+		observability.TraceFrom(ctx).FlushOnError(ctx, observability.Logger(ctx), slog.LevelWarn, err)
 		err = TranslateError(err)
 	}()
 	if hs := f.fs.handles.forNode(f.node); len(hs) > 0 {
@@ -1476,6 +1514,7 @@ func (f *File) Setattr(ctx context.Context, req *fuse.SetattrRequest, resp *fuse
 	start := time.Now()
 	defer func() {
 		observability.RecordFSOp("setattr", start)
+		observability.TraceFrom(ctx).FlushOnError(ctx, observability.Logger(ctx), slog.LevelWarn, err)
 		err = TranslateError(err)
 	}()
 	if !req.Valid.Size() {
@@ -1508,6 +1547,7 @@ func (f *File) Setattr(ctx context.Context, req *fuse.SetattrRequest, resp *fuse
 		return fuse.Errno(syscall.EFBIG)
 	}
 	size := int64(req.Size) //nolint:gosec // checked bound by MaxInt64
+	observability.Event(ctx, "truncate started", slog.String("path", path), slog.Int64("size", size), slog.Int("backends", len(backends)), slog.Int("quorum", f.fs.WriteQuorum))
 
 	var mu sync.Mutex
 	var successes int
@@ -1519,6 +1559,7 @@ func (f *File) Setattr(ctx context.Context, req *fuse.SetattrRequest, resp *fuse
 		g.Go(func() error {
 			b, ok := f.fs.Backends[bName]
 			if !ok {
+				observability.Event(ctx, "truncate skipped: backend not found", slog.String("backend", bName))
 				mu.Lock()
 				failures = append(failures, bName)
 				lastErr = fmt.Errorf("backend %s not found", bName)
@@ -1530,7 +1571,7 @@ func (f *File) Setattr(ctx context.Context, req *fuse.SetattrRequest, resp *fuse
 			mu.Lock()
 			defer mu.Unlock()
 			if err != nil {
-				f.fs.pathLogger(ctx, path).Warn(fmt.Sprintf("Truncate failed on backend %s: %v", bName, err))
+				observability.Event(ctx, "truncate failed on backend", slog.String("backend", bName), slog.Any("error", err))
 				failures = append(failures, bName)
 				lastErr = err
 			} else {
@@ -1981,6 +2022,7 @@ func (h *FileHandle) Write(ctx context.Context, req *fuse.WriteRequest, resp *fu
 	start := time.Now()
 	defer func() {
 		observability.RecordFSOp("write", start)
+		observability.TraceFrom(ctx).FlushOnError(ctx, observability.Logger(ctx), slog.LevelWarn, err)
 		err = TranslateError(err)
 	}()
 	if h.lock != nil && !h.lock.IsValidWithBuffer(h.file.fs.WriteLeaseBuffer) {
@@ -1992,6 +2034,7 @@ func (h *FileHandle) Write(ctx context.Context, req *fuse.WriteRequest, resp *fu
 	maps.Copy(backends, h.backends)
 	h.mu.Unlock()
 
+	observability.Event(ctx, "write started", slog.String("path", h.file.node.Meta.Path), slog.Int("backends", len(backends)), slog.Int("bytes", len(req.Data)), slog.Int64("offset", req.Offset), slog.Int("quorum", h.file.fs.WriteQuorum))
 	var mu sync.Mutex
 	var successes int
 	var failures []string
@@ -2004,7 +2047,7 @@ func (h *FileHandle) Write(ctx context.Context, req *fuse.WriteRequest, resp *fu
 			mu.Lock()
 			defer mu.Unlock()
 			if err != nil {
-				h.file.fs.pathLogger(ctx, h.file.node.Meta.Path).Warn(fmt.Sprintf("Write failed on backend %s: %v", name, err))
+				observability.Event(ctx, "write failed on backend", slog.String("backend", name), slog.Any("error", err))
 				failures = append(failures, name)
 				lastErr = err
 			} else {
@@ -2090,10 +2133,12 @@ func (h *FileHandle) cleanupFailedBackends(failures []string) {
 }
 
 func (h *FileHandle) Flush(ctx context.Context, req *fuse.FlushRequest) (err error) {
-	ctx = trace(ctx)
+	ctx = withRequestor(trace(ctx), req.Hdr())
 	start := time.Now()
 	defer func() {
 		observability.RecordFSOp("flush", start)
+		// Dump the request's breadcrumbs only if the flush failed.
+		observability.TraceFrom(ctx).FlushOnError(ctx, observability.Logger(ctx), slog.LevelWarn, err)
 		err = TranslateError(err)
 	}()
 
@@ -2113,6 +2158,7 @@ func (h *FileHandle) syncBackends(ctx context.Context) error {
 	if len(backends) == 0 {
 		return nil
 	}
+	observability.Event(ctx, "sync started", slog.String("path", h.file.node.Meta.Path), slog.Int("backends", len(backends)), slog.Int("quorum", h.file.fs.WriteQuorum))
 
 	var mu sync.Mutex
 	var successes int
@@ -2126,10 +2172,20 @@ func (h *FileHandle) syncBackends(ctx context.Context) error {
 			mu.Lock()
 			defer mu.Unlock()
 			if err != nil {
-				h.file.fs.pathLogger(ctx, h.file.node.Meta.Path).Warn(fmt.Sprintf("Sync failed on backend %s: %v", name, err))
+				// A canceled context means the FUSE request was aborted (writer
+				// killed/interrupted or the mount is shutting down), not that the
+				// backend itself misbehaved; record it as such rather than blaming
+				// the backend. The breadcrumb surfaces only if the op ultimately
+				// fails (see Flush/Fsync trace dump).
+				if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+					observability.Event(ctx, "sync aborted on backend (request canceled)", slog.String("backend", name), slog.Any("error", err))
+				} else {
+					observability.Event(ctx, "sync failed on backend", slog.String("backend", name), slog.Any("error", err))
+				}
 				failures = append(failures, name)
 				lastErr = err
 			} else {
+				observability.Event(ctx, "sync ok on backend", slog.String("backend", name))
 				successes++
 			}
 
@@ -2139,11 +2195,21 @@ func (h *FileHandle) syncBackends(ctx context.Context) error {
 	_ = g.Wait()
 
 	if successes < h.file.fs.WriteQuorum {
+		// Separate an aborted flush (client closed the file or the mount is going
+		// away) from a genuine durability failure: the former is expected churn
+		// and should not read as a data-loss error.
+		if cerr := ctx.Err(); cerr != nil {
+			h.file.fs.pathLogger(ctx, h.file.node.Meta.Path).Warn(fmt.Sprintf("Sync aborted before write quorum (%d/%d): request canceled (%v); writer exited or mount shutting down, data not flushed", successes, h.file.fs.WriteQuorum, cerr))
+
+			return fmt.Errorf("sync aborted before write quorum: %d/%d (%w)", successes, h.file.fs.WriteQuorum, cerr)
+		}
+
 		h.file.fs.pathLogger(ctx, h.file.node.Meta.Path).Error(fmt.Sprintf("Failed to sync: write quorum not met (%d/%d, last error: %v)", successes, h.file.fs.WriteQuorum, lastErr))
 
 		return fmt.Errorf("could not reach write quorum during sync: %d/%d (last error: %w)", successes, h.file.fs.WriteQuorum, lastErr)
 	}
 
+	observability.Event(ctx, "sync quorum met", slog.Int("successes", successes), slog.Int("quorum", h.file.fs.WriteQuorum))
 	if len(failures) > 0 {
 		h.cleanupFailedBackends(failures)
 	}

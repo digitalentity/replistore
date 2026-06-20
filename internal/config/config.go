@@ -121,8 +121,11 @@ type ReplicationConfig struct {
 }
 
 type MountConfig struct {
-	Path    string `mapstructure:"path"    validate:"required" yaml:"path"`
-	Options string `mapstructure:"options" yaml:"options"`
+	Path      string  `mapstructure:"path"       validate:"required"           yaml:"path"`
+	Options   string  `mapstructure:"options"    yaml:"options"`
+	AttrValid string  `mapstructure:"attr_valid" validate:"omitempty,duration" yaml:"attr_valid"`
+	UID       *uint32 `mapstructure:"uid"        yaml:"uid"`
+	GID       *uint32 `mapstructure:"gid"        yaml:"gid"`
 }
 
 type Config struct {
@@ -160,6 +163,7 @@ func LoadConfig(path string) (*Config, error) {
 	v.SetDefault("repair.grace", "4h")
 	v.SetDefault("write_lease_buffer", "2s")
 	v.SetDefault("cache.state_dir", "/var/lib/replistore")
+	v.SetDefault("mount.attr_valid", "1s")
 
 	if err := v.ReadConfig(bytes.NewBufferString(expandedData)); err != nil {
 		return nil, err

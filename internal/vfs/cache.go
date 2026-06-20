@@ -451,7 +451,7 @@ func (c *Cache) walkBackends(ctx context.Context, backends []backend.Backend) ma
 		state := perBackend[b.GetName()] // each goroutine writes only its own map
 		g.Go(func() error {
 			walkStart := time.Now()
-			c.logger(gCtx).Info("Background syncing backend", slog.String("backend", b.GetName()))
+			c.logger(gCtx).Debug("Background syncing backend", slog.String("backend", b.GetName()))
 			seenPaths := make(map[string]bool)
 			err := b.Walk(gCtx, "", func(path string, info backend.FileInfo) error {
 				if IsReservedPath(path) {
@@ -482,7 +482,7 @@ func (c *Cache) walkBackends(ctx context.Context, backends []backend.Backend) ma
 				return nil // Don't fail other backends
 			}
 			c.Reconcile(b.GetName(), seenPaths, walkStart)
-			c.logger(gCtx).Info("Background sync completed for backend", slog.String("backend", b.GetName()), slog.Duration("duration", time.Since(walkStart)))
+			c.logger(gCtx).Debug("Background sync completed for backend", slog.String("backend", b.GetName()), slog.Duration("duration", time.Since(walkStart)))
 
 			return nil
 		})
