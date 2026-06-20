@@ -85,6 +85,45 @@ Description: ${DESCRIPTION}
 Depends: fuse3
 EOF
 
+# Create postinst
+cat <<'EOF' > "${STAGING_DIR}/DEBIAN/postinst"
+#!/bin/sh
+set -e
+
+if [ "$1" = "configure" ]; then
+    if [ -d /run/systemd/system ]; then
+        systemctl --system daemon-reload >/dev/null || true
+    fi
+fi
+EOF
+chmod 755 "${STAGING_DIR}/DEBIAN/postinst"
+
+# Create prerm
+cat <<'EOF' > "${STAGING_DIR}/DEBIAN/prerm"
+#!/bin/sh
+set -e
+
+if [ "$1" = "remove" ] || [ "$1" = "deconfigure" ]; then
+    if [ -d /run/systemd/system ] && systemctl is-active --quiet replistore; then
+        systemctl stop replistore >/dev/null || true
+    fi
+fi
+EOF
+chmod 755 "${STAGING_DIR}/DEBIAN/prerm"
+
+# Create postrm
+cat <<'EOF' > "${STAGING_DIR}/DEBIAN/postrm"
+#!/bin/sh
+set -e
+
+if [ "$1" = "remove" ] || [ "$1" = "purge" ]; then
+    if [ -d /run/systemd/system ]; then
+        systemctl --system daemon-reload >/dev/null || true
+    fi
+fi
+EOF
+chmod 755 "${STAGING_DIR}/DEBIAN/postrm"
+
 dpkg-deb --build "${STAGING_DIR}" "${BUILD_DIR}/${PACKAGE_NAME}_${DEB_VERSION}_${ARCH}.deb"
 rm -rf "${STAGING_DIR}"
 
