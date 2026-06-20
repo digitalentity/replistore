@@ -260,7 +260,7 @@ func (c *Cache) Upsert(path string, meta Metadata, backendName string) {
 			next = &Node{
 				Meta:         newMeta,
 				Children:     make(map[string]*Node),
-				FullyIndexed: false,
+				FullyIndexed: !newMeta.IsDir,
 				LastUpdated:  time.Now(),
 			}
 			curr.Children[part] = next
@@ -622,7 +622,7 @@ func (c *Cache) UpsertMulti(path string, meta Metadata, backends []string) {
 			next = &Node{
 				Meta:         newMeta,
 				Children:     make(map[string]*Node),
-				FullyIndexed: false,
+				FullyIndexed: !newMeta.IsDir,
 				LastUpdated:  time.Now(),
 			}
 			curr.Children[part] = next
@@ -1050,9 +1050,7 @@ func (c *Cache) Warmup(ctx context.Context, backends []backend.Backend) {
 
 func (c *Cache) markAllIndexed(node *Node) {
 	node.Mu.Lock()
-	if node.Meta.IsDir {
-		node.FullyIndexed = true
-	}
+	node.FullyIndexed = true
 	for _, child := range node.Children {
 		c.markAllIndexed(child)
 	}

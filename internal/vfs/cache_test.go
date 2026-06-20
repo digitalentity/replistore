@@ -61,7 +61,7 @@ func TestCache_FetchEntry(t *testing.T) {
 	assert.NotNil(t, node)
 	assert.Equal(t, int64(200), node.Meta.Size)
 	assert.ElementsMatch(t, []string{"b2", "b3"}, node.Meta.Backends)
-	assert.False(t, node.FullyIndexed)
+	assert.True(t, node.FullyIndexed)
 
 	// Verify it's in cache
 	cachedNode, ok := cache.Get(path)
