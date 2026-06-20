@@ -589,6 +589,7 @@ func (d *Dir) Create(ctx context.Context, req *fuse.CreateRequest, resp *fuse.Cr
 	h := &FileHandle{
 		backends: make(map[string]backend.File),
 		lock:     lock,
+		readOnly: false,
 	}
 
 	// Perform I/O outside of VFS lock to prevent deadlock
@@ -1677,6 +1678,7 @@ func (f *File) Open(ctx context.Context, req *fuse.OpenRequest, resp *fuse.OpenR
 
 	h := &FileHandle{
 		backends: make(map[string]backend.File),
+		readOnly: req.Flags.IsReadOnly(),
 	}
 
 	// Locking for writes
@@ -1950,6 +1952,7 @@ type FileHandle struct {
 	mu       sync.Mutex
 	backends map[string]backend.File
 	lock     *vfs.DistributedLock
+	readOnly bool
 }
 
 func (h *FileHandle) Read(ctx context.Context, req *fuse.ReadRequest, resp *fuse.ReadResponse) (err error) {
@@ -2095,6 +2098,10 @@ func (h *FileHandle) Write(ctx context.Context, req *fuse.WriteRequest, resp *fu
 	_ = g.Wait()
 
 	if successes < h.file.fs.WriteQuorum {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+
 		if len(failures) > 0 {
 			h.cleanupFailedBackends(failures)
 		}
@@ -2168,6 +2175,10 @@ func (h *FileHandle) cleanupFailedBackends(failures []string) {
 }
 
 func (h *FileHandle) Flush(ctx context.Context, req *fuse.FlushRequest) (err error) {
+	if h.readOnly {
+		return nil
+	}
+
 	var fs *RepliFS
 	if h.file != nil {
 		fs = h.file.fs
