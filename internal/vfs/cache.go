@@ -1140,6 +1140,34 @@ func (c *Cache) FindOverReplicated(rf int, grace time.Duration, now time.Time) [
 	return overReplicated
 }
 
+// CountWithinGrace returns how many file nodes are currently under- or
+// over-replicated but whose grace window has not yet elapsed, i.e. files that
+// FindDegraded / FindOverReplicated have armed but are intentionally
+// suppressing from repair. Call it after those two so the grace clocks are
+// current. It is read-only and does not mutate node state.
+func (c *Cache) CountWithinGrace(rf int, grace time.Duration, now time.Time) (int, int) {
+	var degraded, overReplicated int
+	c.walk(c.Root, func(n *Node) {
+		n.Mu.Lock()
+		defer n.Mu.Unlock()
+		if n.Meta.IsDir {
+			return
+		}
+		switch {
+		case len(n.Meta.Backends) > 0 && len(n.Meta.Backends) < rf:
+			if !n.DegradedSince.IsZero() && now.Sub(n.DegradedSince) < grace {
+				degraded++
+			}
+		case len(n.Meta.Backends) > rf:
+			if !n.OverReplicatedSince.IsZero() && now.Sub(n.OverReplicatedSince) < grace {
+				overReplicated++
+			}
+		}
+	})
+
+	return degraded, overReplicated
+}
+
 func (c *Cache) walk(node *Node, fn func(*Node)) {
 	fn(node)
 	node.Mu.RLock()

@@ -422,6 +422,33 @@ func TestCache_FindOverReplicated_GraceWindow(t *testing.T) {
 	assert.Equal(t, "o.txt", got[0].Meta.Name)
 }
 
+// TestCache_CountWithinGrace verifies the count of files armed but still inside
+// the grace window, after the Find* calls have set the clocks.
+func TestCache_CountWithinGrace(t *testing.T) {
+	cache := vfs.NewCache()
+	cache.Upsert("d.txt", vfs.Metadata{Name: "d.txt"}, "b1") // 1 of 3 -> degraded
+	for _, b := range []string{"b1", "b2", "b3", "b4"} {
+		cache.Upsert("o.txt", vfs.Metadata{Name: "o.txt"}, b) // 4 of 3 -> over-replicated
+	}
+
+	base := time.Now()
+	grace := 15 * time.Minute
+
+	// Arm the clocks; nothing is past grace yet.
+	require.Empty(t, cache.FindDegraded(3, grace, base))
+	require.Empty(t, cache.FindOverReplicated(3, grace, base))
+
+	// Both files are counted while inside the grace window.
+	degraded, overReplicated := cache.CountWithinGrace(3, grace, base.Add(time.Minute))
+	assert.Equal(t, 1, degraded)
+	assert.Equal(t, 1, overReplicated)
+
+	// Past grace they are no longer "within grace"; Find* would report them.
+	degraded, overReplicated = cache.CountWithinGrace(3, grace, base.Add(grace))
+	assert.Zero(t, degraded)
+	assert.Zero(t, overReplicated)
+}
+
 func TestCache_UpsertDirUnionsBackends(t *testing.T) {
 	cache := vfs.NewCache()
 	now := time.Now()

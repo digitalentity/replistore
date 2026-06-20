@@ -142,7 +142,15 @@ func (m *RepairManager) performScrub(ctx context.Context) {
 	overReplicated := m.fs.Cache.FindOverReplicated(m.fs.ReplicationFactor, m.grace, now)
 
 	if len(degraded) == 0 && len(overReplicated) == 0 {
-		m.logger(ctx).Info("No degraded or over-replicated files found")
+		pendingDegraded, pendingOver := m.fs.Cache.CountWithinGrace(m.fs.ReplicationFactor, m.grace, now)
+		if pendingDegraded > 0 || pendingOver > 0 {
+			m.logger(ctx).Info("No files past repair grace window; some awaiting grace before repair",
+				slog.Int("degraded_within_grace", pendingDegraded),
+				slog.Int("over_replicated_within_grace", pendingOver),
+				slog.Duration("grace", m.grace))
+		} else {
+			m.logger(ctx).Info("No degraded or over-replicated files found")
+		}
 
 		return
 	}
