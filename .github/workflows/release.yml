@@ -1,0 +1,42 @@
+name: Release
+
+on:
+  workflow_dispatch: # Disabled push-to-tag trigger for now
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build and Release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: '1.26.x'
+          cache: true
+
+      - name: Run tests
+        run: make test
+
+      - name: Build Debian package
+        run: make deb
+
+      - name: Publish Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            build/replistore
+            build/*.deb
+          draft: false
+          prerelease: false
+          generate_release_notes: true
