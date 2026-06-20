@@ -104,6 +104,7 @@ func buildMountOptions(options string) []fuse.MountOption {
 	return mountOpts
 }
 
+//nolint:gocyclo // main runner wires up the components
 func run(cfg *config.Config, nodeID string, version string, configPath string) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
