@@ -63,7 +63,7 @@ func NewMountCmd(version string) *cobra.Command {
 				os.Exit(1)
 			}
 
-			if err := run(cfg, nodeID, version); err != nil {
+			if err := run(cfg, nodeID, version, configPath); err != nil {
 				slog.Error("RepliStore failed", slog.Any("error", err))
 				os.Exit(1)
 			}
@@ -75,7 +75,7 @@ func NewMountCmd(version string) *cobra.Command {
 	return cmd
 }
 
-func run(cfg *config.Config, nodeID string, version string) error {
+func run(cfg *config.Config, nodeID string, version string, configPath string) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -101,23 +101,6 @@ func run(cfg *config.Config, nodeID string, version string) error {
 	// Initialize Health Monitor
 	monitor := backend.NewHealthMonitor(backends)
 	monitor.Start(ctx, defaultMonitorInterval)
-
-	// Initialize and start HTTP API Server if configured
-	if cfg.API.Addr != "" {
-		apiSrv := api.NewServer(cfg.API.Addr, cfg.API.APIToken, cfg.API.MetricsToken)
-		if err := apiSrv.Start(); err != nil {
-			slog.Error("Failed to start HTTP API server", slog.Any("error", err))
-
-			return fmt.Errorf("failed to start HTTP API server: %w", err)
-		}
-		defer func() {
-			shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), apiShutdownTimeout)
-			defer shutdownCancel()
-			if err := apiSrv.Stop(shutdownCtx); err != nil {
-				slog.Error("Failed to gracefully stop HTTP API server", slog.Any("error", err))
-			}
-		}()
-	}
 
 	// Start background sync config
 	refreshInterval, err := time.ParseDuration(cfg.Cache.RefreshInterval)
@@ -232,10 +215,28 @@ func run(cfg *config.Config, nodeID string, version string) error {
 		NodeID:            nodeID,
 		WriteLeaseBuffer:  writeLeaseBuffer,
 		CacheTTL:          refreshInterval,
+		HealthMonitor:     monitor,
 	}
 
 	// Initialize and start Repair Manager
-	_ = initRepairManager(ctx, cfg, replFS)
+	repairMgr := initRepairManager(ctx, cfg, replFS)
+
+	// Initialize and start HTTP API Server if configured
+	if cfg.API.Addr != "" {
+		apiSrv := api.NewServer(cfg.API.Addr, cfg.API.APIToken, cfg.API.MetricsToken, replFS, repairMgr, configPath, version)
+		if err := apiSrv.Start(); err != nil {
+			slog.Error("Failed to start HTTP API server", slog.Any("error", err))
+
+			return fmt.Errorf("failed to start HTTP API server: %w", err)
+		}
+		defer func() {
+			shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), apiShutdownTimeout)
+			defer shutdownCancel()
+			if err := apiSrv.Stop(shutdownCtx); err != nil {
+				slog.Error("Failed to gracefully stop HTTP API server", slog.Any("error", err))
+			}
+		}()
+	}
 
 	// Handle signals for graceful unmount
 	sigChan := make(chan os.Signal, 1)

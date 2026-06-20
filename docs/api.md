@@ -241,19 +241,6 @@ Deletes the file or directory by writing a tombstone.
 
 ## 6. Configuration & Control
 
-Administrative controls to dynamically reload configuration without unmounting FUSE.
-
-### `POST /api/config/reload`
-Triggers a reload of `config.yaml` to dynamically adjust replication factor, write quorum, or backend definitions.
-- **Response:**
-  ```json
-  {
-    "status": "config_reloaded",
-    "active_replication_factor": 2,
-    "active_write_quorum": 1
-  }
-  ```
-
 ### `POST /api/shutdown`
 Triggers a clean, graceful shutdown of the node (releases locks, updates peer registry, unmounts FUSE, and closes SMB connections).
 - **Response:**

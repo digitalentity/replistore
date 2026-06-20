@@ -130,6 +130,34 @@ func (m *LockManager) Stop() {
 	}
 }
 
+type LockInfo struct {
+	Path                  string  `json:"path"`
+	LockID                string  `json:"lock_id"`
+	OwnerNodeID           string  `json:"owner_node_id"`
+	LeaseExpiresInSeconds float64 `json:"lease_expires_in_seconds"`
+}
+
+func (m *LockManager) GetActiveLocks() []LockInfo {
+	var res []LockInfo
+	now := time.Now()
+	m.grants.Range(func(key, value any) bool {
+		path := key.(string)
+		grant := value.(Grant)
+		if grant.ExpiresAt.After(now) {
+			res = append(res, LockInfo{
+				Path:                  path,
+				LockID:                grant.LockID,
+				OwnerNodeID:           grant.NodeID,
+				LeaseExpiresInSeconds: grant.ExpiresAt.Sub(now).Seconds(),
+			})
+		}
+
+		return true
+	})
+
+	return res
+}
+
 // janitorLoop periodically removes long-expired grants so the grants map
 // does not grow without bound on long-running nodes.
 func (m *LockManager) janitorLoop() {

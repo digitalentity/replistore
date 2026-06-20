@@ -79,6 +79,19 @@ func (b *LocalBackend) GetFreeSpace() (uint64, error) {
 	return stat.Bavail * uint64(stat.Bsize), nil //nolint:gosec // checked non-negative
 }
 
+func (b *LocalBackend) GetTotalSpace() (uint64, error) {
+	var stat syscall.Statfs_t
+	if err := syscall.Statfs(b.Path, &stat); err != nil {
+		return 0, err
+	}
+
+	if stat.Bsize < 0 {
+		return 0, fmt.Errorf("local backend: negative block size %d", stat.Bsize)
+	}
+
+	return stat.Blocks * uint64(stat.Bsize), nil //nolint:gosec // checked non-negative
+}
+
 func (b *LocalBackend) GetName() string {
 	return b.Name
 }

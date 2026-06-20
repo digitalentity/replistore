@@ -30,6 +30,7 @@ type Backend interface {
 	GetSpeed() int
 	GetTags() []string
 	GetFreeSpace() (uint64, error)
+	GetTotalSpace() (uint64, error)
 	Connect(ctx context.Context) error
 	Ping(ctx context.Context) error
 	ReadDir(ctx context.Context, path string) ([]FileInfo, error)

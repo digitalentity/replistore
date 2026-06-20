@@ -39,6 +39,7 @@ type RepliFS struct {
 	Selector          vfs.BackendSelector
 	LockManager       *cluster.LockManager
 	Discovery         *cluster.Discovery
+	HealthMonitor     *backend.HealthMonitor
 
 	// NodeID identifies this node as the writer in version sidecars
 	// (diagnostics only). Set from main; an empty string is fine when
@@ -2179,4 +2180,20 @@ func (h *FileHandle) Release(ctx context.Context, req *fuse.ReleaseRequest) (err
 	}
 
 	return nil
+}
+
+func (f *RepliFS) WriteSidecars(ctx context.Context, path string, sc vfs.Sidecar, backendNames []string) {
+	f.writeSidecars(ctx, path, sc, backendNames)
+}
+
+func (f *RepliFS) WriteTombstones(ctx context.Context, path string, sc vfs.Sidecar, backendNames []string) int {
+	return f.writeTombstones(ctx, path, sc, backendNames)
+}
+
+func (f *RepliFS) MaxTombstoneGen(ctx context.Context, path string) int64 {
+	return f.maxTombstoneGen(ctx, path)
+}
+
+func (f *RepliFS) AllBackendNames() []string {
+	return f.allBackendNames()
 }

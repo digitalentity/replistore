@@ -139,6 +139,37 @@ func (d *Discovery) GetPeer(id string) (Peer, bool) {
 	return p, ok
 }
 
+type PeerStatus struct {
+	NodeID             string `json:"node_id"`
+	AdvertiseAddr      string `json:"advertise_addr"`
+	LastSeenSecondsAgo int64  `json:"last_seen_seconds_ago"`
+	Seq                int64  `json:"seq"`
+}
+
+func (d *Discovery) GetPeersStatus() []PeerStatus {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	res := make([]PeerStatus, 0, len(d.Peers))
+	for id, p := range d.Peers {
+		var seq int64
+		lastSeen := p.LastSeen
+		if state, ok := d.states[id]; ok {
+			seq = state.lastSeq
+			lastSeen = state.lastChanged
+		}
+		secondsAgo := max(int64(time.Since(lastSeen).Seconds()), 0)
+		res = append(res, PeerStatus{
+			NodeID:             p.ID,
+			AdvertiseAddr:      p.Address,
+			LastSeenSecondsAgo: secondsAgo,
+			Seq:                seq,
+		})
+	}
+
+	return res
+}
+
 func (d *Discovery) entryPath(nodeID string) string {
 	return path.Join(peersDir, nodeID+".json")
 }

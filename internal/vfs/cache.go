@@ -67,6 +67,8 @@ type Node struct {
 type Cache struct {
 	Root           *Node
 	LastReconciled time.Time
+	Hits           atomic.Uint64
+	Misses         atomic.Uint64
 	Mu             sync.RWMutex
 }
 
@@ -991,12 +993,43 @@ func (c *Cache) Get(path string) (*Node, bool) {
 		next, ok := curr.Children[part]
 		curr.Mu.RUnlock()
 		if !ok {
+			c.Misses.Add(1)
+
 			return nil, false
 		}
 		curr = next
 	}
 
+	c.Hits.Add(1)
+
 	return curr, true
+}
+
+func (c *Cache) GetStats() (int, int) {
+	var totalNodes int
+	var fullyIndexedDirs int
+	var walk func(node *Node)
+	walk = func(node *Node) {
+		node.Mu.RLock()
+		totalNodes++
+		isDir := node.Meta.IsDir
+		fullyIndexed := node.FullyIndexed
+		children := make([]*Node, 0, len(node.Children))
+		for _, child := range node.Children {
+			children = append(children, child)
+		}
+		node.Mu.RUnlock()
+
+		if isDir && fullyIndexed {
+			fullyIndexedDirs++
+		}
+		for _, child := range children {
+			walk(child)
+		}
+	}
+	walk(c.Root)
+
+	return totalNodes, fullyIndexedDirs
 }
 
 func (c *Cache) Warmup(ctx context.Context, backends []backend.Backend) {
