@@ -1822,4 +1822,3 @@ func TestLookup_FullyIndexedENOENT(t *testing.T) {
 	// Verify no calls were made to b1
 	b1.AssertExpectations(t)
 }
-

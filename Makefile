@@ -1,6 +1,6 @@
 # Makefile for RepliStore
 
-.PHONY: all build test clean deb release lint fmt
+.PHONY: all build test clean deb release lint fmt install-hook
 
 BINARY_NAME=replistore
 BUILD_DIR=build
@@ -8,9 +8,15 @@ VERSION ?= $(shell ./scripts/get_version.sh)
 export VERSION
 ARCH=amd64
 
-all: lint test build
+all: install-hook lint test build
 
-build:
+install-hook:
+	@if [ -d .git ] && [ ! -L .git/hooks/pre-commit ] && [ ! -f .git/hooks/pre-commit ]; then \
+		echo "Installing git pre-commit hook (symlink)..."; \
+		ln -sf ../../scripts/git-pre-commit.sh .git/hooks/pre-commit; \
+	fi
+
+build: install-hook
 	@echo "Building binary..."
 	@mkdir -p $(BUILD_DIR)
 	go build -ldflags "-X main.Version=$(VERSION)" -o $(BUILD_DIR)/$(BINARY_NAME) ./cmd

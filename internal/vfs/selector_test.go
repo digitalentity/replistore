@@ -156,4 +156,3 @@ func TestSmartSelector_SelectForWrite_GetFreeSpaceCalledOnce(t *testing.T) {
 	b1.AssertExpectations(t)
 	b2.AssertExpectations(t)
 }
-
