@@ -134,3 +134,26 @@ func TestSmartSelector_SelectForWrite_NoAffinity(t *testing.T) {
 	res := selector.SelectForWrite(2, allBackends)
 	assert.Equal(t, []string{"b2", "b1"}, res)
 }
+
+func TestSmartSelector_SelectForWrite_GetFreeSpaceCalledOnce(t *testing.T) {
+	b1 := &bmock.MockBackend{NameVal: "b1", SpeedVal: 10, TagsVal: []string{"hot"}}
+	b2 := &bmock.MockBackend{NameVal: "b2", SpeedVal: 5, TagsVal: []string{"hot"}}
+
+	backends := map[string]backend.Backend{
+		"b1": b1,
+		"b2": b2,
+	}
+
+	b1.On("GetFreeSpace").Return(uint64(100), nil).Once()
+	b2.On("GetFreeSpace").Return(uint64(150), nil).Once()
+
+	selector := vfs.NewSmartSelector(backends, nil, nil)
+	allBackends := []string{"b1", "b2"}
+
+	res := selector.SelectForWrite(1, allBackends)
+	assert.Equal(t, []string{"b2"}, res)
+
+	b1.AssertExpectations(t)
+	b2.AssertExpectations(t)
+}
+

@@ -293,6 +293,8 @@ func (d *Dir) Lookup(ctx context.Context, name string) (node fs.Node, err error)
 	d.node.Mu.RLock()
 	child, ok := d.node.Children[name]
 	path := d.node.Meta.Path
+	parentFullyIndexed := d.node.FullyIndexed
+	parentStale := d.fs.CacheTTL > 0 && time.Since(d.node.LastUpdated) > d.fs.CacheTTL
 	d.node.Mu.RUnlock()
 
 	childPath := name
@@ -301,6 +303,11 @@ func (d *Dir) Lookup(ctx context.Context, name string) (node fs.Node, err error)
 	}
 	if vfs.IsReservedPath(childPath) {
 		// Cluster-internal state is invisible through the mount.
+		return nil, syscall.ENOENT
+	}
+
+	if !ok && parentFullyIndexed && !parentStale {
+		// Parent directory is fully indexed and up-to-date. If the child is not in the cache, it definitely does not exist.
 		return nil, syscall.ENOENT
 	}
 
@@ -748,8 +755,10 @@ func (d *Dir) Mkdir(ctx context.Context, req *fuse.MkdirRequest) (node fs.Node, 
 		DataGen:  newGen,
 	}
 	child := &vfs.Node{
-		Meta:     meta,
-		Children: make(map[string]*vfs.Node),
+		Meta:         meta,
+		Children:     make(map[string]*vfs.Node),
+		FullyIndexed: true,
+		LastUpdated:  time.Now(),
 	}
 	d.node.Children[req.Name] = child
 

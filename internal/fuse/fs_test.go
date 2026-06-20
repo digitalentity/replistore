@@ -1793,3 +1793,33 @@ func TestFile_OpenHandles(t *testing.T) {
 
 	b1.AssertExpectations(t)
 }
+
+func TestLookup_FullyIndexedENOENT(t *testing.T) {
+	b1 := &bmock.MockBackend{NameVal: "b1"}
+
+	cache := vfs.NewCache()
+	// Set FullyIndexed to true on root dir, and LastUpdated to now (not stale)
+	cache.Root.FullyIndexed = true
+	cache.Root.LastUpdated = time.Now()
+
+	fs := &RepliFS{
+		Cache:    cache,
+		Backends: map[string]backend.Backend{"b1": b1},
+		Selector: vfs.NewRandomSelector(nil),
+		CacheTTL: 5 * time.Minute,
+	}
+
+	root, _ := fs.Root()
+	dir := root.(*Dir)
+
+	// Lookup a non-existent child. Since parent is FullyIndexed and not stale,
+	// it should immediately return ENOENT without calling the backend.
+	node, err := dir.Lookup(context.Background(), "nonexistent.txt")
+	require.Error(t, err)
+	assert.Equal(t, syscall.ENOENT, err)
+	assert.Nil(t, node)
+
+	// Verify no calls were made to b1
+	b1.AssertExpectations(t)
+}
+

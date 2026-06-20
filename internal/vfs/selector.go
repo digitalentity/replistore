@@ -217,13 +217,19 @@ func (s *SmartSelector) SelectForWrite(count int, allBackends []string) []string
 		}
 	}
 
+	// Cache free space values to avoid multiple remote backend calls during sorting
+	freeSpace := make(map[string]uint64, len(healthy))
+	for _, name := range healthy {
+		freeSpace[name] = s.getFreeSpace(name)
+	}
+
 	selectedMap := make(map[string]bool)
 	var selected []string
 
 	if len(bCold) > 0 {
 		sort.Slice(bCold, func(i, j int) bool {
-			spaceI := s.getFreeSpace(bCold[i])
-			spaceJ := s.getFreeSpace(bCold[j])
+			spaceI := freeSpace[bCold[i]]
+			spaceJ := freeSpace[bCold[j]]
 			if spaceI != spaceJ {
 				return spaceI > spaceJ
 			}
@@ -248,8 +254,8 @@ func (s *SmartSelector) SelectForWrite(count int, allBackends []string) []string
 	}
 
 	sort.Slice(remaining, func(i, j int) bool {
-		spaceI := s.getFreeSpace(remaining[i])
-		spaceJ := s.getFreeSpace(remaining[j])
+		spaceI := freeSpace[remaining[i]]
+		spaceJ := freeSpace[remaining[j]]
 		if spaceI != spaceJ {
 			return spaceI > spaceJ
 		}
