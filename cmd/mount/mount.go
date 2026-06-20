@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -174,10 +175,32 @@ func run(cfg *config.Config, nodeID string, version string) error {
 	}
 
 	// Mount FUSE
-	c, err := fuse.Mount(
-		cfg.MountPoint,
+	mountOpts := []fuse.MountOption{
 		fuse.FSName("replistore"),
 		fuse.Subtype("replistore"),
+	}
+
+	if cfg.Mount.Options != "" {
+		for part := range strings.SplitSeq(cfg.Mount.Options, ",") {
+			opt := strings.TrimSpace(part)
+			switch opt {
+			case "allow_other":
+				mountOpts = append(mountOpts, fuse.AllowOther())
+			case "default_permissions":
+				mountOpts = append(mountOpts, fuse.DefaultPermissions())
+			case "ro", "readonly":
+				mountOpts = append(mountOpts, fuse.ReadOnly())
+			case "nonempty":
+				mountOpts = append(mountOpts, fuse.AllowNonEmptyMount())
+			default:
+				slog.Warn("Unknown mount option, ignoring", slog.String("option", opt))
+			}
+		}
+	}
+
+	c, err := fuse.Mount(
+		cfg.Mount.Path,
+		mountOpts...,
 	)
 	if err != nil {
 		slog.Error("FUSE mount failed", slog.Any("error", err))
@@ -235,8 +258,8 @@ func run(cfg *config.Config, nodeID string, version string) error {
 			slog.Info("Metadata cache saved successfully")
 		}
 
-		if err := fuse.Unmount(cfg.MountPoint); err != nil {
-			slog.Warn("Failed to unmount", slog.String("mount_point", cfg.MountPoint), slog.Any("error", err))
+		if err := fuse.Unmount(cfg.Mount.Path); err != nil {
+			slog.Warn("Failed to unmount", slog.String("mount_point", cfg.Mount.Path), slog.Any("error", err))
 		}
 		_ = c.Close()
 		for name, b := range backends {
@@ -247,7 +270,7 @@ func run(cfg *config.Config, nodeID string, version string) error {
 		os.Exit(0)
 	}()
 
-	slog.Info("Mounted filesystem", slog.String("mount_point", cfg.MountPoint))
+	slog.Info("Mounted filesystem", slog.String("mount_point", cfg.Mount.Path))
 	if err := srv.Serve(replFS); err != nil {
 		return fmt.Errorf("FUSE server stopped with error: %w", err)
 	}

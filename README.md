@@ -71,7 +71,8 @@ RepliStore consists of four primary layers:
 Create a `config.yaml` file (see example below):
 
 ```yaml
-mount_point: "/mnt/replistore"
+mount:
+  path: "/mnt/replistore"
 replication_factor: 2
 write_quorum: 1          # backends that must ack a write (defaults to replication_factor)
 cache_refresh_interval: "5m"

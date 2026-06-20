@@ -1,5 +1,9 @@
-# The local path where the RepliStore filesystem will be mounted.
-mount_point: "/mnt/replistore"
+# Mount configuration settings.
+mount:
+  # The local path where the RepliStore filesystem will be mounted.
+  path: "/mnt/replistore"
+  # Optional comma-separated FUSE mount options, e.g., allow_other
+  options: "allow_other"
 
 # Replication settings
 replication:

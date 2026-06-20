@@ -120,8 +120,13 @@ type ReplicationConfig struct {
 	WriteQuorum int `mapstructure:"write_quorum" yaml:"write_quorum"`
 }
 
+type MountConfig struct {
+	Path    string `mapstructure:"path"    validate:"required" yaml:"path"`
+	Options string `mapstructure:"options" yaml:"options"`
+}
+
 type Config struct {
-	MountPoint       string            `mapstructure:"mount_point"        yaml:"mount_point"`
+	Mount            MountConfig       `mapstructure:"mount"              yaml:"mount"`
 	Replication      ReplicationConfig `mapstructure:"replication"        yaml:"replication"`
 	WriteLeaseBuffer string            `mapstructure:"write_lease_buffer" validate:"omitempty,duration" yaml:"write_lease_buffer"`
 	Cache            CacheConfig       `mapstructure:"cache"              yaml:"cache"`

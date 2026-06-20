@@ -5,8 +5,12 @@ RepliStore uses a YAML-based configuration file. Environment variables are expan
 ## Configuration File Structure (`config.yaml`)
 
 ```yaml
-# The local path where RepliStore will be mounted.
-mount_point: "/mnt/replistore"
+# Mount configuration settings.
+mount:
+  # The local path where RepliStore will be mounted.
+  path: "/mnt/replistore"
+  # Optional comma-separated FUSE mount options, e.g., allow_other.
+  options: "allow_other"
 
 # Number of copies for each file.
 replication:
@@ -80,8 +84,10 @@ backends:
 
 ## Field Descriptions
 
-### `mount_point` (string)
-The absolute path on your local system where the RepliStore virtual filesystem will be available.
+### `mount` (object)
+Mount configuration settings.
+- `path` (string, required): The absolute path on your local system where the RepliStore virtual filesystem will be available.
+- `options` (string, optional): A comma-separated list of FUSE mount options. Supported options: `allow_other`, `default_permissions`, `ro`/`readonly`, `nonempty`.
 
 ### `replication` (object)
 Replication and write quorum settings.

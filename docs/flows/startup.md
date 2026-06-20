@@ -4,7 +4,7 @@ When RepliStore starts, it goes through a "warmup" phase to build its internal m
 
 ## Process Overview
 
-1.  **Configuration Loading:** Loads the `config.yaml` file to get the list of backends, mount point, and state directory (`state_dir`).
+1.  **Configuration Loading:** Loads the `config.yaml` file to get the list of backends, mount configuration (path and options), and state directory (`state_dir`).
 2.  **Backend Connection:** Attempts to `Connect()` to all configured SMB shares.
 3.  **Local Cache Loading:**
     - If a valid `cache.json` file exists in the configured `state_dir`, it is loaded directly into the in-memory `vfs.Cache` to enable immediate filesystem serving.
@@ -14,7 +14,7 @@ When RepliStore starts, it goes through a "warmup" phase to build its internal m
     - If the cache is stale or does not exist, a background scan walk is started across all connected backends to validate and reconcile the cache.
     - Once the scan completes successfully, `last_reconciled` is updated to the current time, and the cache is saved back to `cache.json`.
 5.  **FUSE Mounting:**
-    - The FUSE filesystem is mounted immediately at the specified `mount_point` (serving requests instantly using the loaded cache, or progressively as the scan populates it).
+    - The FUSE filesystem is mounted immediately at the specified mount path (serving requests instantly using the loaded cache, or progressively as the scan populates it).
 6.  **Background Sync and Periodic Saving:**
     - A background sync loop periodically runs based on `cache_refresh_interval` to reconcile cache with external changes, updating `last_reconciled` upon completion.
     - A background save loop periodically serializes the cache to `cache.json` every 30 seconds.

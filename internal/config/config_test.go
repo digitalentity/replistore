@@ -11,7 +11,8 @@ import (
 
 func TestLoadConfig(t *testing.T) {
 	content := `
-mount_point: "/tmp/test"
+mount:
+  path: "/tmp/test"
 replication:
   factor: 2
 backends:
@@ -28,7 +29,7 @@ backends:
 
 	cfg, err := config.LoadConfig(tmpFile.Name())
 	require.NoError(t, err)
-	assert.Equal(t, "/tmp/test", cfg.MountPoint)
+	assert.Equal(t, "/tmp/test", cfg.Mount.Path)
 	assert.Equal(t, 2, cfg.Replication.Factor)
 	assert.Len(t, cfg.Backends, 1)
 	assert.Equal(t, "b1", cfg.Backends[0].Name)
@@ -36,7 +37,8 @@ backends:
 
 func TestLoadConfig_Defaults(t *testing.T) {
 	content := `
-mount_point: "/tmp/test"
+mount:
+  path: "/tmp/test"
 `
 	tmpFile, err := os.CreateTemp(t.TempDir(), "config.yaml")
 	require.NoError(t, err)
@@ -67,7 +69,8 @@ func TestLoadConfig_ExpectedClusterSize(t *testing.T) {
 
 	t.Run("listen_addr set without expected_cluster_size returns error", func(t *testing.T) {
 		path := writeConfig(t, `
-mount_point: "/tmp/test"
+mount:
+  path: "/tmp/test"
 cluster:
   listen_addr: "0.0.0.0:7000"
 `)
@@ -78,7 +81,8 @@ cluster:
 
 	t.Run("listen_addr set with expected_cluster_size of 2 is ok", func(t *testing.T) {
 		path := writeConfig(t, `
-mount_point: "/tmp/test"
+mount:
+  path: "/tmp/test"
 cluster:
   listen_addr: "0.0.0.0:7000"
   advertise_addr: "192.168.1.50:7000"
@@ -92,7 +96,8 @@ cluster:
 
 	t.Run("no listen_addr defaults expected_cluster_size to 1", func(t *testing.T) {
 		path := writeConfig(t, `
-mount_point: "/tmp/test"
+mount:
+  path: "/tmp/test"
 `)
 		cfg, err := config.LoadConfig(path)
 		require.NoError(t, err)
@@ -116,7 +121,8 @@ func TestLoadConfig_AdvertiseAddr(t *testing.T) {
 
 	t.Run("listen_addr set without advertise_addr returns error", func(t *testing.T) {
 		path := writeConfig(t, `
-mount_point: "/tmp/test"
+mount:
+  path: "/tmp/test"
 cluster:
   listen_addr: "0.0.0.0:7000"
   expected_cluster_size: 2
@@ -128,7 +134,8 @@ cluster:
 
 	t.Run("advertise_addr without port returns error", func(t *testing.T) {
 		path := writeConfig(t, `
-mount_point: "/tmp/test"
+mount:
+  path: "/tmp/test"
 cluster:
   listen_addr: "0.0.0.0:7000"
   advertise_addr: "192.168.1.50"
@@ -141,7 +148,8 @@ cluster:
 
 	t.Run("advertise_addr with empty host returns error", func(t *testing.T) {
 		path := writeConfig(t, `
-mount_point: "/tmp/test"
+mount:
+  path: "/tmp/test"
 cluster:
   listen_addr: "0.0.0.0:7000"
   advertise_addr: ":7000"
@@ -154,7 +162,8 @@ cluster:
 
 	t.Run("valid advertise_addr is ok", func(t *testing.T) {
 		path := writeConfig(t, `
-mount_point: "/tmp/test"
+mount:
+  path: "/tmp/test"
 cluster:
   listen_addr: "0.0.0.0:7000"
   advertise_addr: "192.168.1.50:7000"
@@ -168,7 +177,8 @@ cluster:
 
 	t.Run("no listen_addr does not require advertise_addr", func(t *testing.T) {
 		path := writeConfig(t, `
-mount_point: "/tmp/test"
+mount:
+  path: "/tmp/test"
 `)
 		_, err := config.LoadConfig(path)
 		assert.NoError(t, err)
@@ -191,7 +201,8 @@ func TestLoadConfig_ClusterSecret(t *testing.T) {
 
 	t.Run("listen_addr set without cluster_secret returns error", func(t *testing.T) {
 		path := writeConfig(t, `
-mount_point: "/tmp/test"
+mount:
+  path: "/tmp/test"
 cluster:
   listen_addr: "0.0.0.0:7000"
   advertise_addr: "192.168.1.50:7000"
@@ -204,7 +215,8 @@ cluster:
 
 	t.Run("cluster_secret shorter than 16 characters returns error", func(t *testing.T) {
 		path := writeConfig(t, `
-mount_point: "/tmp/test"
+mount:
+  path: "/tmp/test"
 cluster:
   listen_addr: "0.0.0.0:7000"
   advertise_addr: "192.168.1.50:7000"
@@ -218,7 +230,8 @@ cluster:
 
 	t.Run("valid cluster_secret is ok", func(t *testing.T) {
 		path := writeConfig(t, `
-mount_point: "/tmp/test"
+mount:
+  path: "/tmp/test"
 cluster:
   listen_addr: "0.0.0.0:7000"
   advertise_addr: "192.168.1.50:7000"
@@ -232,7 +245,8 @@ cluster:
 
 	t.Run("no listen_addr does not require cluster_secret", func(t *testing.T) {
 		path := writeConfig(t, `
-mount_point: "/tmp/test"
+mount:
+  path: "/tmp/test"
 `)
 		_, err := config.LoadConfig(path)
 		assert.NoError(t, err)
