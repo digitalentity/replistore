@@ -310,6 +310,10 @@ func initBackends(ctx context.Context, cfg *config.Config) (map[string]backend.B
 
 			continue
 		}
+		// Wrap the backend so every remote operation it performs is timed and
+		// exported as a Prometheus histogram (replistore_backend_op_duration_seconds).
+		// The wrapper is transparent: it satisfies the same Backend interface.
+		b = backend.NewMetered(b)
 		if err := b.Connect(ctx); err != nil {
 			slog.Error("Failed to connect to backend", slog.String("backend", bc.Name), slog.Any("error", err))
 

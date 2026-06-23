@@ -78,11 +78,53 @@ This document outlines the architectural plan to modernize error handling, loggi
      - `GET /api/repair/status` - Degraded/diverged files count and active operations.
    - Protect control endpoints with a static bearer token configured in `config.yaml` (`api_token`).
    - Use `samber/slog-http` middleware on the HTTP server to log requests structurally.
-2. **Prometheus Metrics (`/streamz` endpoints)**:
-   - Protect metrics endpoints with a separate static bearer token configured in `config.yaml` (`metrics_token`).
-   - Expose system metrics for scrape collection:
-     - **FS Latency**: `replistore_fs_operation_duration_seconds` (histogram by operation: read, write, lookup, etc.)
-     - **Cache Hits**: `replistore_cache_hits_total`, `replistore_cache_misses_total`
-     - **Backend Health**: `replistore_backend_healthy`, `replistore_backend_latency_seconds`
-     - **Cluster state**: `replistore_cluster_peers_count`, `replistore_active_locks_count`
-     - **Repair Health**: `replistore_degraded_files_count`, `replistore_divergent_files_count`, `replistore_repairs_total`
+2. **Prometheus Metrics (`/streamz` endpoint)**:
+   - Built on `prometheus/client_golang`. Served in the standard text exposition
+     format at `GET /streamz`, protected by the `metrics_token` bearer token from
+     `config.yaml`. Live gauges are read at scrape time, so they always reflect
+     the current instant.
+   - Exported series:
+     - **Instance**: `replistore_up`, `replistore_build_info{version}`, `replistore_uptime_seconds`.
+     - **FS latency** (histogram, label `op`): `replistore_fsop_duration_seconds{op}`
+       → `_bucket`, `_sum`, `_count`.
+     - **FS QPS / error rate** (counter, labels `op`, `error`): `replistore_fsop_ops_total`.
+       Kernel-facing throughput: `sum(rate(replistore_fsop_ops_total[1m])) by (op)`;
+       error rate: filter `error!="ok"`. `error` ∈ {ok, timeout, canceled, not_found,
+       permission, exists, eof, error}.
+     - **FS byte throughput** (counter, label `op`=read|write): `replistore_fsop_bytes_total`.
+       Kernel-facing bytes (logical, per request): `rate(replistore_fsop_bytes_total[1m])`.
+     - **Cache**: `replistore_cache_nodes`, `replistore_cache_directories_indexed`,
+       `replistore_cache_hits_total`, `replistore_cache_misses_total`.
+     - **Backend health** (labels `backend`, `type`=local|smb): `replistore_backend_up`
+       (always present: 1 healthy / 0 down), `replistore_backend_free_bytes`,
+       `replistore_backend_total_bytes` (space emitted only while healthy).
+     - **Backend ping latency** (histogram, labels `backend`, `type`, `result`=success|error):
+       `replistore_backend_ping_duration_seconds` → `_bucket`, `_sum`, `_count`.
+       Recorded on every health probe; filter `result="success"` for clean latency.
+     - **Per-backend operation latency** (histogram, labels `backend`, `type`,
+       `op`, `result`=success|error): `replistore_backend_op_duration_seconds` →
+       `_bucket`, `_sum`, `_count`. Times each individual backend round-trip, so a
+       slow replica is visible on its own rather than folded into the FUSE
+       aggregate. `op` ∈ {read, write, sync, open, readdir, stat, walk, mkdir,
+       mkdir_all, remove, rename, truncate, chtimes}. Recorded by a transparent
+       wrapper applied at backend construction. (Note: `read`/`write`/etc. here are
+       backend ops; `replistore_fsop_duration_seconds{op}` is the FUSE boundary.)
+     - **Per-backend QPS / error rate** (counter, labels `backend`, `type`, `op`,
+       `error`): `replistore_backend_ops_total`. QPS:
+       `sum(rate(replistore_backend_ops_total[1m])) by (backend, op)`; per-error-kind
+       rate: by `error` (same category set as FS QPS). The latency histogram keeps
+       only a coarse `result=success|error`; granular error kinds live on this
+       counter, where extra labels cost no histogram buckets.
+     - **Per-backend byte throughput** (counter, labels `backend`, `type`, `op`=read|write):
+       `replistore_backend_bytes_total`. Physical per-backend I/O: a fan-out write
+       counts once per replica, so this exceeds the logical FUSE byte count by the
+       replication factor. Per-backend bandwidth:
+       `rate(replistore_backend_bytes_total[1m])`.
+     - **Cluster**: `replistore_cluster_size_current`, `replistore_cluster_size_expected`,
+       `replistore_cluster_active_locks`, `replistore_replication_factor`,
+       `replistore_cluster_raw_{total,used,free}_bytes`,
+       `replistore_cluster_amortized_{total,used,free}_bytes`.
+     - **Repair** (always present, zeroed when no repair manager): `replistore_repair_scrub_active`,
+       `replistore_repair_last_scrub_duration_seconds`, `replistore_repair_degraded_files`,
+       `replistore_repair_divergent_files`, `replistore_repair_active_repairs`.
+     - **Runtime**: standard `go_*` and `process_*` collectors.

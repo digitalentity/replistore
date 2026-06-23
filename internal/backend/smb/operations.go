@@ -10,6 +10,11 @@ import (
 	"go.kvsh.ch/smb2"
 )
 
+// spaceQueryTimeout bounds the Statfs round-trip behind GetFreeSpace and
+// GetTotalSpace. These methods carry no caller context (the Backend interface
+// omits one), so a hung share would otherwise block the metrics scrape forever.
+const spaceQueryTimeout = 5 * time.Second
+
 func toSMBPath(path string) string {
 	s := strings.ReplaceAll(path, "/", "\\")
 	if s == "" {
@@ -30,8 +35,10 @@ func toFileInfo(fi os.FileInfo) backend.FileInfo {
 }
 
 func (b *SMBBackend) GetFreeSpace() (uint64, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), spaceQueryTimeout)
+	defer cancel()
 	var free uint64
-	err := b.execute(context.Background(), func(share *smb2.Share) error {
+	err := b.execute(ctx, func(share *smb2.Share) error {
 		info, err := share.Statfs(".")
 		if err != nil {
 			return err
@@ -45,8 +52,10 @@ func (b *SMBBackend) GetFreeSpace() (uint64, error) {
 }
 
 func (b *SMBBackend) GetTotalSpace() (uint64, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), spaceQueryTimeout)
+	defer cancel()
 	var total uint64
-	err := b.execute(context.Background(), func(share *smb2.Share) error {
+	err := b.execute(ctx, func(share *smb2.Share) error {
 		info, err := share.Statfs(".")
 		if err != nil {
 			return err

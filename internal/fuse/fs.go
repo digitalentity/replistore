@@ -337,7 +337,7 @@ func (f *RepliFS) fillAttr(a *fuse.Attr, node *vfs.Node, nlink uint32) {
 func (d *Dir) Attr(ctx context.Context, a *fuse.Attr) (err error) {
 	start := time.Now()
 	defer func() {
-		observability.RecordFSOp("attr", start)
+		observability.RecordFSOp("attr", start, err)
 		err = TranslateError(err)
 	}()
 
@@ -351,7 +351,7 @@ func (d *Dir) Lookup(ctx context.Context, name string) (node fs.Node, err error)
 	ctx = initCtx(ctx, d.fs, nil)
 	start := time.Now()
 	defer func() {
-		observability.RecordFSOp("lookup", start)
+		observability.RecordFSOp("lookup", start, err)
 		err = TranslateError(err)
 	}()
 
@@ -477,7 +477,7 @@ func (d *Dir) ReadDirAll(ctx context.Context) (entries []fuse.Dirent, err error)
 	ctx = initCtx(ctx, d.fs, nil)
 	start := time.Now()
 	defer func() {
-		observability.RecordFSOp("read_dir_all", start)
+		observability.RecordFSOp("read_dir_all", start, err)
 		err = TranslateError(err)
 	}()
 
@@ -530,7 +530,7 @@ func (d *Dir) Create(ctx context.Context, req *fuse.CreateRequest, resp *fuse.Cr
 	ctx = initCtx(ctx, d.fs, req.Hdr())
 	start := time.Now()
 	defer func() {
-		observability.RecordFSOp("create", start)
+		observability.RecordFSOp("create", start, err)
 		observability.TraceFrom(ctx).FlushOnError(ctx, observability.Logger(ctx), slog.LevelWarn, err)
 		err = TranslateError(err)
 	}()
@@ -733,7 +733,7 @@ func (d *Dir) Mkdir(ctx context.Context, req *fuse.MkdirRequest) (node fs.Node, 
 	ctx = initCtx(ctx, d.fs, req.Hdr())
 	start := time.Now()
 	defer func() {
-		observability.RecordFSOp("mkdir", start)
+		observability.RecordFSOp("mkdir", start, err)
 		observability.TraceFrom(ctx).FlushOnError(ctx, observability.Logger(ctx), slog.LevelWarn, err)
 		err = TranslateError(err)
 	}()
@@ -840,7 +840,7 @@ func (d *Dir) Remove(ctx context.Context, req *fuse.RemoveRequest) (err error) {
 	ctx = initCtx(ctx, d.fs, req.Hdr())
 	start := time.Now()
 	defer func() {
-		observability.RecordFSOp("remove", start)
+		observability.RecordFSOp("remove", start, err)
 		observability.TraceFrom(ctx).FlushOnError(ctx, observability.Logger(ctx), slog.LevelWarn, err)
 		err = TranslateError(err)
 	}()
@@ -1082,7 +1082,7 @@ func (d *Dir) Rename(ctx context.Context, req *fuse.RenameRequest, newDir fs.Nod
 	ctx = initCtx(ctx, d.fs, req.Hdr())
 	start := time.Now()
 	defer func() {
-		observability.RecordFSOp("rename", start)
+		observability.RecordFSOp("rename", start, err)
 		observability.TraceFrom(ctx).FlushOnError(ctx, observability.Logger(ctx), slog.LevelWarn, err)
 		err = TranslateError(err)
 	}()
@@ -1439,7 +1439,7 @@ type File struct {
 func (f *File) Attr(ctx context.Context, a *fuse.Attr) (err error) {
 	start := time.Now()
 	defer func() {
-		observability.RecordFSOp("attr", start)
+		observability.RecordFSOp("attr", start, err)
 		err = TranslateError(err)
 	}()
 
@@ -1457,7 +1457,7 @@ func (f *File) Fsync(ctx context.Context, req *fuse.FsyncRequest) (err error) {
 	ctx = initCtx(ctx, f.fs, req.Hdr())
 	start := time.Now()
 	defer func() {
-		observability.RecordFSOp("fsync", start)
+		observability.RecordFSOp("fsync", start, err)
 		observability.TraceFrom(ctx).FlushOnError(ctx, observability.Logger(ctx), slog.LevelWarn, err)
 		err = TranslateError(err)
 	}()
@@ -1541,7 +1541,7 @@ func (f *File) Setattr(ctx context.Context, req *fuse.SetattrRequest, resp *fuse
 	ctx = initCtx(ctx, f.fs, req.Hdr())
 	start := time.Now()
 	defer func() {
-		observability.RecordFSOp("setattr", start)
+		observability.RecordFSOp("setattr", start, err)
 		observability.TraceFrom(ctx).FlushOnError(ctx, observability.Logger(ctx), slog.LevelWarn, err)
 		err = TranslateError(err)
 	}()
@@ -1656,7 +1656,7 @@ func (f *File) Open(ctx context.Context, req *fuse.OpenRequest, resp *fuse.OpenR
 	ctx = initCtx(ctx, f.fs, req.Hdr())
 	start := time.Now()
 	defer func() {
-		observability.RecordFSOp("open", start)
+		observability.RecordFSOp("open", start, err)
 		err = TranslateError(err)
 	}()
 	// O_APPEND is not supported: each backend would append at its own
@@ -1963,7 +1963,8 @@ func (h *FileHandle) Read(ctx context.Context, req *fuse.ReadRequest, resp *fuse
 	ctx = initCtx(ctx, fs, req.Hdr())
 	start := time.Now()
 	defer func() {
-		observability.RecordFSOp("read", start)
+		observability.RecordFSOp("read", start, err)
+		observability.RecordFSBytes("read", len(resp.Data))
 		err = TranslateError(err)
 	}()
 	buf := make([]byte, req.Size)
@@ -2059,7 +2060,8 @@ func (h *FileHandle) Write(ctx context.Context, req *fuse.WriteRequest, resp *fu
 	ctx = initCtx(ctx, fs, req.Hdr())
 	start := time.Now()
 	defer func() {
-		observability.RecordFSOp("write", start)
+		observability.RecordFSOp("write", start, err)
+		observability.RecordFSBytes("write", resp.Size)
 		observability.TraceFrom(ctx).FlushOnError(ctx, observability.Logger(ctx), slog.LevelWarn, err)
 		err = TranslateError(err)
 	}()
@@ -2186,7 +2188,7 @@ func (h *FileHandle) Flush(ctx context.Context, req *fuse.FlushRequest) (err err
 	ctx = initCtx(ctx, fs, req.Hdr())
 	start := time.Now()
 	defer func() {
-		observability.RecordFSOp("flush", start)
+		observability.RecordFSOp("flush", start, err)
 		// Dump the request's breadcrumbs only if the flush failed.
 		observability.TraceFrom(ctx).FlushOnError(ctx, observability.Logger(ctx), slog.LevelWarn, err)
 		err = TranslateError(err)
@@ -2279,7 +2281,7 @@ func (h *FileHandle) Release(ctx context.Context, req *fuse.ReleaseRequest) (err
 	ctx = initCtx(ctx, fs, hdr)
 	start := time.Now()
 	defer func() {
-		observability.RecordFSOp("release", start)
+		observability.RecordFSOp("release", start, err)
 		err = TranslateError(err)
 	}()
 	// Dir.Create's abort paths release the handle before h.file is set, and

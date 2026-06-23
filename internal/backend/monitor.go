@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/digitalentity/replistore/internal/observability"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -66,6 +67,7 @@ func (m *HealthMonitor) checkAll(ctx context.Context) {
 			start := time.Now()
 			err := b.Ping(pingCtx)
 			dur := time.Since(start)
+			observability.RecordBackendPing(name, b.GetType(), start, err)
 
 			m.mu.Lock()
 			if err != nil {

@@ -91,6 +91,10 @@ func (b *SMBBackend) GetName() string {
 	return b.Name
 }
 
+func (b *SMBBackend) GetType() string {
+	return "smb"
+}
+
 func (b *SMBBackend) Close() error {
 	b.mu.Lock()
 	defer b.mu.Unlock()

@@ -12,7 +12,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/bwmarrin/snowflake"
@@ -49,44 +48,6 @@ type Requestor struct {
 }
 
 var sfNode *snowflake.Node
-
-var (
-	fsOpsTotal      = make(map[string]*atomic.Uint64)
-	fsOpsDurationNs = make(map[string]*atomic.Uint64)
-)
-
-func init() {
-	ops := []string{"lookup", "read", "write", "create", "mkdir", "remove", "rename", "attr", "setattr", "fsync", "open", "release", "flush", "read_dir_all"}
-	for _, op := range ops {
-		fsOpsTotal[op] = &atomic.Uint64{}
-		fsOpsDurationNs[op] = &atomic.Uint64{}
-	}
-}
-
-func RecordFSOp(op string, start time.Time) {
-	if c, ok := fsOpsTotal[op]; ok {
-		c.Add(1)
-	}
-	if d, ok := fsOpsDurationNs[op]; ok {
-		ns := time.Since(start).Nanoseconds()
-		if ns >= 0 {
-			d.Add(uint64(ns))
-		}
-	}
-}
-
-func GetFSOpMetrics() (map[string]uint64, map[string]uint64) {
-	totals := make(map[string]uint64)
-	durations := make(map[string]uint64)
-	for op, c := range fsOpsTotal {
-		totals[op] = c.Load()
-	}
-	for op, d := range fsOpsDurationNs {
-		durations[op] = d.Load()
-	}
-
-	return totals, durations
-}
 
 // Init initializes the global logger and Snowflake ID generator.
 func Init(levelStr, formatStr, nodeID string) error {

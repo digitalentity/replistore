@@ -27,6 +27,8 @@ type File interface {
 
 type Backend interface {
 	GetName() string
+	// GetType returns the backend's registered type (e.g. "local", "smb").
+	GetType() string
 	GetSpeed() int
 	GetTags() []string
 	GetFreeSpace() (uint64, error)

@@ -7,7 +7,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"log/slog"
 	"net"
@@ -24,7 +23,11 @@ import (
 	"github.com/digitalentity/replistore/internal/backend/smb"
 	"github.com/digitalentity/replistore/internal/cluster"
 	"github.com/digitalentity/replistore/internal/fuse"
+	"github.com/digitalentity/replistore/internal/observability"
 	"github.com/digitalentity/replistore/internal/vfs"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/collectors"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -58,11 +61,12 @@ type Server struct {
 	version      string
 	startTime    time.Time
 	httpServer   *http.Server
+	registry     *prometheus.Registry
 }
 
 // NewServer creates a new API Server instance.
 func NewServer(addr, apiToken, metricsToken string, replFS *fuse.RepliFS, repairMgr *fuse.RepairManager, configPath string, version string) *Server {
-	return &Server{
+	s := &Server{
 		addr:         addr,
 		apiToken:     apiToken,
 		metricsToken: metricsToken,
@@ -72,6 +76,23 @@ func NewServer(addr, apiToken, metricsToken string, replFS *fuse.RepliFS, repair
 		version:      version,
 		startTime:    time.Now(),
 	}
+
+	reg := prometheus.NewRegistry()
+	reg.MustRegister(
+		collectors.NewGoCollector(),
+		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
+		observability.FSMetricsCollector(),
+		observability.FSOpsCounterCollector(),
+		observability.FSBytesCounterCollector(),
+		observability.BackendMetricsCollector(),
+		observability.BackendOpMetricsCollector(),
+		observability.BackendOpsCounterCollector(),
+		observability.BackendBytesCounterCollector(),
+		newReplFSCollector(s),
+	)
+	s.registry = reg
+
+	return s
 }
 
 // Start starts the HTTP server and registers all API routes.
@@ -208,10 +229,11 @@ func (s *Server) handleBackends(w http.ResponseWriter, r *http.Request) {
 	result := make([]map[string]any, 0, len(s.replFS.Backends))
 	for name, b := range s.replFS.Backends {
 		addr := ""
-		if smbB, ok := b.(*smb.SMBBackend); ok {
-			addr = smbB.Address
-		} else if localB, ok := b.(*local.LocalBackend); ok {
-			addr = localB.Path
+		switch concrete := backend.Unwrap(b).(type) {
+		case *smb.SMBBackend:
+			addr = concrete.Address
+		case *local.LocalBackend:
+			addr = concrete.Path
 		}
 
 		healthy := true
@@ -761,6 +783,5 @@ func (s *Server) handleShutdown(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "text/plain; version=0.0.4")
-	_, _ = fmt.Fprintf(w, "# HELP replistore_up Status of RepliStore instance\n# TYPE replistore_up gauge\nreplistore_up 1\n")
+	promhttp.HandlerFor(s.registry, promhttp.HandlerOpts{}).ServeHTTP(w, r)
 }
