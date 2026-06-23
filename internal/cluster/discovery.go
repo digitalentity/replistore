@@ -3,6 +3,9 @@ package cluster
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -37,10 +40,36 @@ type Peer struct {
 
 // peerEntry is the JSON document each node maintains at
 // .replistore/peers/<nodeID>.json on every backend.
+//
+// Sig is an HMAC-SHA256 over the (ID, Address, Seq) tuple keyed by the shared
+// cluster secret. The backends are storage, not a trust anchor: without this
+// signature anyone able to write to a single backend share could inject or
+// hijack peer entries and redirect this node's lock RPCs (see verifyEntry).
 type peerEntry struct {
 	ID      string `json:"id"`
 	Address string `json:"address"`
 	Seq     int64  `json:"seq"`
+	Sig     string `json:"sig,omitempty"`
+}
+
+// entryMAC computes the HMAC-SHA256 tag over a peer entry's identity fields.
+func entryMAC(secret []byte, id, address string, seq int64) string {
+	mac := hmac.New(sha256.New, secret)
+	fmt.Fprintf(mac, "%s\x00%s\x00%d", id, address, seq)
+
+	return base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
+}
+
+// verifyEntry reports whether e carries a valid signature for the configured
+// secret. When no secret is configured (non-clustered nodes and tests) entries
+// are accepted unsigned.
+func (d *Discovery) verifyEntry(e peerEntry) bool {
+	if len(d.secret) == 0 {
+		return true
+	}
+	want := entryMAC(d.secret, e.ID, e.Address, e.Seq)
+
+	return hmac.Equal([]byte(e.Sig), []byte(want))
 }
 
 // peerState tracks liveness of a peer on the reader's local clock.
@@ -57,6 +86,7 @@ type Discovery struct {
 	Peers         map[string]Peer
 	mu            sync.RWMutex
 
+	secret   []byte // shared cluster secret for authenticating peer entries
 	backends []backend.Backend
 	states   map[string]*peerState
 
@@ -65,11 +95,12 @@ type Discovery struct {
 	log      *slog.Logger
 }
 
-func NewDiscovery(nodeID, advertiseAddr string, backends []backend.Backend) *Discovery {
+func NewDiscovery(nodeID, advertiseAddr string, secret []byte, backends []backend.Backend) *Discovery {
 	return &Discovery{
 		NodeID:        nodeID,
 		AdvertiseAddr: advertiseAddr,
 		Peers:         make(map[string]Peer),
+		secret:        secret,
 		backends:      backends,
 		states:        make(map[string]*peerState),
 		stopCh:        make(chan struct{}),
@@ -178,11 +209,16 @@ func (d *Discovery) writeEntry(ctx context.Context, b backend.Backend) error {
 	opCtx, cancel := context.WithTimeout(ctx, backendOpTimeout)
 	defer cancel()
 
-	data, err := json.Marshal(peerEntry{
+	seq := time.Now().UnixNano()
+	entry := peerEntry{
 		ID:      d.NodeID,
 		Address: d.AdvertiseAddr,
-		Seq:     time.Now().UnixNano(),
-	})
+		Seq:     seq,
+	}
+	if len(d.secret) > 0 {
+		entry.Sig = entryMAC(d.secret, entry.ID, entry.Address, seq)
+	}
+	data, err := json.Marshal(entry)
 	if err != nil {
 		return err
 	}
@@ -341,6 +377,13 @@ func (d *Discovery) readBackendEntries(ctx context.Context, b backend.Backend) (
 			continue
 		}
 		if entry.ID == "" || entry.ID == d.NodeID {
+			continue
+		}
+		if !d.verifyEntry(entry) {
+			// Unsigned or forged entry: a writer to this backend tried to
+			// inject or hijack a peer. Drop it rather than trusting its address.
+			d.log.Warn("Dropping peer entry with invalid signature", slog.String("entry", fi.Name), slog.String("backend", b.GetName()), slog.String("peer_id", entry.ID))
+
 			continue
 		}
 		entries = append(entries, entry)

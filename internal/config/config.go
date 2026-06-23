@@ -212,6 +212,8 @@ func LoadConfig(path string) (*Config, error) {
 					return nil, errors.New("cluster_secret must be set when listen_addr is set: lock datagrams between nodes are authenticated with HMAC-SHA256 using this shared secret")
 				case "secret_min_len":
 					return nil, fmt.Errorf("cluster_secret must be at least 16 characters long (got %d)", len(cfg.Cluster.Secret))
+				case "api_token_required":
+					return nil, errors.New("api.api_token must be set when api.addr is set: the control API exposes file read/write/delete and node shutdown and must not listen without authentication")
 				default:
 					return nil, fieldErr
 				}
@@ -226,6 +228,13 @@ func LoadConfig(path string) (*Config, error) {
 
 func configStructValidation(sl validator.StructLevel) {
 	cfg := sl.Current().Interface().(Config)
+
+	// The control API exposes destructive endpoints (data PUT/DELETE, node
+	// shutdown); refuse to listen without a token rather than serving them
+	// unauthenticated.
+	if cfg.API.Addr != "" && cfg.API.APIToken == "" {
+		sl.ReportError(cfg.API.APIToken, "api_token", "API.APIToken", "api_token_required", "")
+	}
 
 	if cfg.Cluster.ListenAddr == "" {
 		return

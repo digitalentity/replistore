@@ -3,6 +3,7 @@ package smb
 import (
 	"context"
 	"os"
+	"path"
 	"strings"
 	"time"
 
@@ -15,8 +16,13 @@ import (
 // omits one), so a hung share would otherwise block the metrics scrape forever.
 const spaceQueryTimeout = 5 * time.Second
 
-func toSMBPath(path string) string {
-	s := strings.ReplaceAll(path, "/", "\\")
+func toSMBPath(p string) string {
+	// Anchor and clean so ".." segments cannot escape the share root, mirroring
+	// the local backend's resolve. SMB paths are share-relative, so the leading
+	// slash is dropped after cleaning and separators are converted to backslash.
+	cleaned := path.Clean("/" + strings.ReplaceAll(p, "\\", "/"))
+	cleaned = strings.TrimPrefix(cleaned, "/")
+	s := strings.ReplaceAll(cleaned, "/", "\\")
 	if s == "" {
 		return "."
 	}

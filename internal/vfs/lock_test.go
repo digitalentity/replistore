@@ -36,7 +36,7 @@ func TestDistributedLock_AcquireQuorum(t *testing.T) {
 	defer n3.Stop()
 
 	// Discovery mock for node1 (sees node2 and node3)
-	disco1 := cluster.NewDiscovery("node1", "", nil)
+	disco1 := cluster.NewDiscovery("node1", "", nil, nil)
 	disco1.Peers["node2"] = cluster.Peer{ID: "node2", Address: addr2, LastSeen: time.Now()}
 	disco1.Peers["node3"] = cluster.Peer{ID: "node3", Address: addr3, LastSeen: time.Now()}
 
@@ -66,7 +66,7 @@ func TestDistributedLock_AcquireQuorumFailure(t *testing.T) {
 	// timeout rather than a fast connection error.
 	addr2 := "127.0.0.1:65535"
 
-	disco1 := cluster.NewDiscovery("node1", "", nil)
+	disco1 := cluster.NewDiscovery("node1", "", nil, nil)
 	disco1.Peers["node2"] = cluster.Peer{ID: "node2", Address: addr2, LastSeen: time.Now()}
 
 	lock := vfs.NewDistributedLock("test/path", n1, disco1)
@@ -89,7 +89,7 @@ func TestDistributedLock_Renewal(t *testing.T) {
 	_, _ = n1.Start("127.0.0.1:0")
 	defer n1.Stop()
 
-	disco1 := cluster.NewDiscovery("node1", "", nil)
+	disco1 := cluster.NewDiscovery("node1", "", nil, nil)
 	// Just local node for simplicity in renewal test
 
 	lock := vfs.NewDistributedLock("renew/path", n1, disco1)
@@ -122,7 +122,7 @@ func TestDistributedLock_RenewalGracePeriod(t *testing.T) {
 	n2.LeaseTTL = 600 * time.Millisecond
 	addr2, _ := n2.Start("127.0.0.1:0")
 
-	disco1 := cluster.NewDiscovery("node1", "", nil)
+	disco1 := cluster.NewDiscovery("node1", "", nil, nil)
 	disco1.Peers["node2"] = cluster.Peer{ID: "node2", Address: addr2, LastSeen: time.Now()}
 
 	lock := vfs.NewDistributedLock("grace/path", n1, disco1)
@@ -155,7 +155,7 @@ func TestDistributedLock_SameNodeMutualExclusion(t *testing.T) {
 	_, _ = n1.Start("127.0.0.1:0")
 	defer n1.Stop()
 
-	disco1 := cluster.NewDiscovery("node1", "", nil)
+	disco1 := cluster.NewDiscovery("node1", "", nil, nil)
 
 	lock1 := vfs.NewDistributedLock("same/path", n1, disco1)
 	lock2 := vfs.NewDistributedLock("same/path", n1, disco1)
@@ -194,7 +194,7 @@ func TestDistributedLock_ExpectedClusterSizeQuorum(t *testing.T) {
 	defer n2.Stop()
 
 	// Discovery mock for node1 (only sees node2)
-	disco1 := cluster.NewDiscovery("node1", "", nil)
+	disco1 := cluster.NewDiscovery("node1", "", nil, nil)
 	disco1.Peers["node2"] = cluster.Peer{ID: "node2", Address: addr2, LastSeen: time.Now()}
 
 	lock := vfs.NewDistributedLock("test/expected_size", n1, disco1)
@@ -217,7 +217,7 @@ func TestDistributedLock_AcquireRetriesAfterContention(t *testing.T) {
 	_, _ = n1.Start("127.0.0.1:0")
 	defer n1.Stop()
 
-	disco1 := cluster.NewDiscovery("node1", "", nil)
+	disco1 := cluster.NewDiscovery("node1", "", nil, nil)
 
 	// Simulate a conflicting holder: a grant on the same path from another
 	// (node, lockid), expiring after LeaseTTL.
@@ -258,7 +258,7 @@ func TestDistributedLock_IsValidWithBuffer(t *testing.T) {
 	_, _ = n1.Start("127.0.0.1:0")
 	defer n1.Stop()
 
-	disco1 := cluster.NewDiscovery("node1", "", nil)
+	disco1 := cluster.NewDiscovery("node1", "", nil, nil)
 
 	lock := vfs.NewDistributedLock("buffer/path", n1, disco1)
 

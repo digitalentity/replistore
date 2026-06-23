@@ -280,3 +280,52 @@ mount:
 		assert.NoError(t, err)
 	})
 }
+
+func TestLoadConfig_APIToken(t *testing.T) {
+	writeConfig := func(t *testing.T, content string) string {
+		t.Helper()
+		tmpFile, err := os.CreateTemp(t.TempDir(), "config.yaml")
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = os.Remove(tmpFile.Name()) })
+
+		_, err = tmpFile.WriteString(content)
+		require.NoError(t, err)
+		require.NoError(t, tmpFile.Close())
+
+		return tmpFile.Name()
+	}
+
+	t.Run("api addr set without api_token returns error", func(t *testing.T) {
+		path := writeConfig(t, `
+mount:
+  path: "/tmp/test"
+api:
+  addr: ":8080"
+`)
+		_, err := config.LoadConfig(path)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "api.api_token must be set")
+	})
+
+	t.Run("api addr set with api_token is ok", func(t *testing.T) {
+		path := writeConfig(t, `
+mount:
+  path: "/tmp/test"
+api:
+  addr: ":8080"
+  api_token: "a-secret-token"
+`)
+		cfg, err := config.LoadConfig(path)
+		require.NoError(t, err)
+		assert.Equal(t, "a-secret-token", cfg.API.APIToken)
+	})
+
+	t.Run("no api addr does not require api_token", func(t *testing.T) {
+		path := writeConfig(t, `
+mount:
+  path: "/tmp/test"
+`)
+		_, err := config.LoadConfig(path)
+		assert.NoError(t, err)
+	})
+}

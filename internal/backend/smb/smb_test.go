@@ -15,6 +15,29 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestToSMBPath(t *testing.T) {
+	cases := []struct {
+		in   string
+		want string
+	}{
+		{"", "."},
+		{"/", "."},
+		{"foo/bar", "foo\\bar"},
+		{"/foo/bar", "foo\\bar"},
+		{"foo\\bar", "foo\\bar"},
+		// Traversal attempts must not escape the share root.
+		{"../etc/passwd", "etc\\passwd"},
+		{"foo/../../bar", "bar"},
+		{"/../../../../etc/shadow", "etc\\shadow"},
+		{"foo/./bar", "foo\\bar"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.in, func(t *testing.T) {
+			assert.Equal(t, tc.want, toSMBPath(tc.in))
+		})
+	}
+}
+
 func TestSMBBackend_AutoReconnect(t *testing.T) {
 	var lc net.ListenConfig
 	l, err := lc.Listen(context.Background(), "tcp", "127.0.0.1:0")

@@ -15,6 +15,57 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestBearerTokenMatch(t *testing.T) {
+	const want = "s3cret-token"
+	cases := []struct {
+		name   string
+		header string
+		match  bool
+	}{
+		{"exact match", "Bearer s3cret-token", true},
+		{"wrong token", "Bearer wrong-token", false},
+		{"missing prefix", "s3cret-token", false},
+		{"empty header", "", false},
+		{"prefix only", "Bearer ", false},
+		{"token is a prefix of want", "Bearer s3cret", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.match, bearerTokenMatch(tc.header, want))
+		})
+	}
+}
+
+func TestServer_APIAuthHandler(t *testing.T) {
+	ok := func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) }
+
+	t.Run("no token configured allows request", func(t *testing.T) {
+		s := &Server{}
+		h := s.apiAuthHandler(http.HandlerFunc(ok))
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, httptest.NewRequestWithContext(context.Background(), "GET", "/api/health", nil))
+		assert.Equal(t, http.StatusOK, w.Code)
+	})
+
+	t.Run("token configured rejects missing header", func(t *testing.T) {
+		s := &Server{apiToken: "tok"}
+		h := s.apiAuthHandler(http.HandlerFunc(ok))
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, httptest.NewRequestWithContext(context.Background(), "GET", "/api/health", nil))
+		assert.Equal(t, http.StatusUnauthorized, w.Code)
+	})
+
+	t.Run("token configured accepts matching header", func(t *testing.T) {
+		s := &Server{apiToken: "tok"}
+		h := s.apiAuthHandler(http.HandlerFunc(ok))
+		req := httptest.NewRequestWithContext(context.Background(), "GET", "/api/health", nil)
+		req.Header.Set("Authorization", "Bearer tok")
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, req)
+		assert.Equal(t, http.StatusOK, w.Code)
+	})
+}
+
 func TestServer_HandleClusterStats(t *testing.T) {
 	// Mock backends
 	b1 := &bmock.MockBackend{NameVal: "b1"}

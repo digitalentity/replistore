@@ -344,7 +344,7 @@ func initCluster(ctx context.Context, cfg *config.Config, nodeID string, backend
 			return nil, nil, fmt.Errorf("failed to start lock manager: %w", err)
 		}
 
-		disco = cluster.NewDiscovery(nodeID, cfg.Cluster.AdvertiseAddr, backendList)
+		disco = cluster.NewDiscovery(nodeID, cfg.Cluster.AdvertiseAddr, []byte(cfg.Cluster.Secret), backendList)
 		if err := disco.Start(ctx); err != nil {
 			slog.Error("Failed to start discovery", slog.Any("error", err))
 

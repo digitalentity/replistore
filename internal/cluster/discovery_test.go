@@ -64,7 +64,7 @@ func TestDiscovery_StartWritesEntryToAllBackends(t *testing.T) {
 		mocks = append(mocks, b)
 	}
 
-	d := NewDiscovery("node1", "10.0.0.1:5050", backends)
+	d := NewDiscovery("node1", "10.0.0.1:5050", nil, backends)
 	err := d.Start(ctx)
 	require.NoError(t, err)
 
@@ -87,7 +87,7 @@ func TestDiscovery_HeartbeatWriteFailureIsTolerated(t *testing.T) {
 	bad := &bmock.MockBackend{NameVal: "bad"}
 	bad.On("MkdirAll", mock.Anything, peersDir, os.FileMode(0755)).Return(assert.AnError)
 
-	d := NewDiscovery("node1", "10.0.0.1:5050", []backend.Backend{bad, good})
+	d := NewDiscovery("node1", "10.0.0.1:5050", nil, []backend.Backend{bad, good})
 	d.heartbeatOnce(context.Background())
 
 	good.AssertExpectations(t)
@@ -107,7 +107,7 @@ func TestDiscovery_PollMergesAcrossBackends(t *testing.T) {
 		peerEntry{ID: "node2", Address: "10.0.0.22:5050", Seq: 200},
 	)
 
-	d := NewDiscovery("node1", "10.0.0.1:5050", []backend.Backend{b1, b2})
+	d := NewDiscovery("node1", "10.0.0.1:5050", nil, []backend.Backend{b1, b2})
 	d.pollOnce(context.Background())
 
 	peers := d.GetPeers()
@@ -121,11 +121,89 @@ func TestDiscovery_PollMergesAcrossBackends(t *testing.T) {
 	assert.True(t, ok)
 }
 
+// serveEntry makes the backend list and serve a single peerEntry verbatim
+// (including its Sig field), so tests can present forged signatures.
+func serveEntry(t *testing.T, b *bmock.MockBackend, e peerEntry) {
+	t.Helper()
+	data, err := json.Marshal(e)
+	require.NoError(t, err)
+
+	f := &bmock.MockFile{}
+	f.On("ReadAt", mock.Anything, mock.Anything, int64(0)).Run(func(args mock.Arguments) {
+		copy(args.Get(1).([]byte), data)
+	}).Return(len(data), io.EOF)
+	f.On("Close").Return(nil)
+
+	b.On("ReadDir", mock.Anything, peersDir).Return([]backend.FileInfo{{Name: e.ID + ".json", Size: 64}}, nil)
+	b.On("OpenFile", mock.Anything, peersDir+"/"+e.ID+".json", os.O_RDONLY, os.FileMode(0)).Return(f, nil)
+}
+
+func TestDiscovery_AcceptsValidlySignedPeerEntry(t *testing.T) {
+	secret := []byte("test-cluster-secret-0123456789")
+	b := &bmock.MockBackend{NameVal: "b1"}
+	serveEntry(t, b, peerEntry{
+		ID:      "node2",
+		Address: "10.0.0.2:5050",
+		Seq:     100,
+		Sig:     entryMAC(secret, "node2", "10.0.0.2:5050", 100),
+	})
+
+	d := NewDiscovery("node1", "10.0.0.1:5050", secret, []backend.Backend{b})
+	d.pollOnce(context.Background())
+
+	_, ok := d.GetPeer("node2")
+	assert.True(t, ok)
+}
+
+func TestDiscovery_RejectsForgedPeerEntry(t *testing.T) {
+	secret := []byte("test-cluster-secret-0123456789")
+
+	t.Run("bad signature", func(t *testing.T) {
+		b := &bmock.MockBackend{NameVal: "b1"}
+		serveEntry(t, b, peerEntry{ID: "evil", Address: "10.6.6.6:5050", Seq: 100, Sig: "not-a-valid-mac"})
+
+		d := NewDiscovery("node1", "10.0.0.1:5050", secret, []backend.Backend{b})
+		d.pollOnce(context.Background())
+
+		_, ok := d.GetPeer("evil")
+		assert.False(t, ok)
+	})
+
+	t.Run("address tampered after signing", func(t *testing.T) {
+		b := &bmock.MockBackend{NameVal: "b1"}
+		// Signature valid for the real address; attacker swaps the address to
+		// redirect lock RPCs without re-signing.
+		serveEntry(t, b, peerEntry{
+			ID:      "node2",
+			Address: "10.6.6.6:5050",
+			Seq:     100,
+			Sig:     entryMAC(secret, "node2", "10.0.0.2:5050", 100),
+		})
+
+		d := NewDiscovery("node1", "10.0.0.1:5050", secret, []backend.Backend{b})
+		d.pollOnce(context.Background())
+
+		_, ok := d.GetPeer("node2")
+		assert.False(t, ok)
+	})
+
+	t.Run("unsigned entry rejected when secret configured", func(t *testing.T) {
+		b := &bmock.MockBackend{NameVal: "b1"}
+		serveEntry(t, b, peerEntry{ID: "node2", Address: "10.0.0.2:5050", Seq: 100})
+
+		d := NewDiscovery("node1", "10.0.0.1:5050", secret, []backend.Backend{b})
+		d.pollOnce(context.Background())
+
+		_, ok := d.GetPeer("node2")
+		assert.False(t, ok)
+	})
+}
+
 func TestDiscovery_PeerExpiresWhenSeqUnchanged(t *testing.T) {
 	b1 := &bmock.MockBackend{NameVal: "b1"}
 	expectEntryListing(t, b1, peerEntry{ID: "node2", Address: "10.0.0.2:5050", Seq: 100})
 
-	d := NewDiscovery("node1", "10.0.0.1:5050", []backend.Backend{b1})
+	d := NewDiscovery("node1", "10.0.0.1:5050", nil, []backend.Backend{b1})
 	d.pollOnce(context.Background())
 
 	_, ok := d.GetPeer("node2")
@@ -157,7 +235,7 @@ func TestDiscovery_PeerRemovedWhenEntryDeleted(t *testing.T) {
 	// Second poll: entry deleted from the backend.
 	b1.On("ReadDir", mock.Anything, peersDir).Return([]backend.FileInfo{}, nil)
 
-	d := NewDiscovery("node1", "10.0.0.1:5050", []backend.Backend{b1})
+	d := NewDiscovery("node1", "10.0.0.1:5050", nil, []backend.Backend{b1})
 
 	d.pollOnce(context.Background())
 	_, ok := d.GetPeer("node2")
@@ -172,7 +250,7 @@ func TestDiscovery_SkipsOwnEntry(t *testing.T) {
 	b1 := &bmock.MockBackend{NameVal: "b1"}
 	expectEntryListing(t, b1, peerEntry{ID: "node1", Address: "10.0.0.1:5050", Seq: 100})
 
-	d := NewDiscovery("node1", "10.0.0.1:5050", []backend.Backend{b1})
+	d := NewDiscovery("node1", "10.0.0.1:5050", nil, []backend.Backend{b1})
 	d.pollOnce(context.Background())
 
 	assert.Empty(t, d.GetPeers())
@@ -182,7 +260,7 @@ func TestDiscovery_StopIsIdempotentAndRemovesEntry(t *testing.T) {
 	b1 := &bmock.MockBackend{NameVal: "b1"}
 	b1.On("Remove", mock.Anything, peersDir+"/node1.json").Return(nil).Once()
 
-	d := NewDiscovery("node1", "10.0.0.1:5050", []backend.Backend{b1})
+	d := NewDiscovery("node1", "10.0.0.1:5050", nil, []backend.Backend{b1})
 	d.Stop()
 	d.Stop() // must not panic or remove twice
 
@@ -198,7 +276,7 @@ func TestDiscovery_AllBackendsUnreachableKeepsMembership(t *testing.T) {
 	// Second poll: the backend is unreachable.
 	b1.On("ReadDir", mock.Anything, peersDir).Return([]backend.FileInfo(nil), io.EOF)
 
-	d := NewDiscovery("node1", "10.0.0.1:5050", []backend.Backend{b1})
+	d := NewDiscovery("node1", "10.0.0.1:5050", nil, []backend.Backend{b1})
 
 	d.pollOnce(context.Background())
 	_, ok := d.GetPeer("node2")

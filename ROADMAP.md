@@ -47,10 +47,7 @@ The repair copy loop reads the source file once *per target* and writes targets 
 
 ## 7. Operational & Observability
 
-### 7.1. Metrics Export (Prometheus)
-Export metrics for operation latency (read/write/metadata), cache hit/miss ratios, backend health and latency, and replication health (number of degraded files, replica divergence events — repair already keeps an internal divergence counter intended to feed this).
-
-### 7.2. Secure Secret Management
+### 7.1. Secure Secret Management
 Integrate with external secret providers (e.g., HashiCorp Vault) or system keyrings instead of relying on environment variables or plain-text configuration for SMB passwords and the `cluster_secret`.
 
 
@@ -60,10 +57,7 @@ One-liners for the items still open in [REVIEW.md](REVIEW.md); see the finding b
 
 - **C8 residual:** no read-quorum/staleness semantics for lazy fetches — a single responding backend is treated as authoritative.
 - **M2:** negative lookups are never cached; path-probing workloads fan a `Stat` out to every backend per miss.
-- **M7:** backend reconnects ignore context deadlines; a down backend stalls health checks beyond their budget.
-- **H4 residual:** a single renewal round missing quorum declares the lock lost immediately, instead of retrying until the lease deadline passes.
-- **H7/H8 residuals:** repair doesn't serialize against in-flight writes on already-open handles; a read handle's `tried` set never resets.
-- **L-nits (L1/L3/L5/L6/L7):** hardcoded lock timeouts, ad-hoc path helpers, shutdown without backend `Close()` sweep, unset FUSE attr `Valid`/`Uid`/`Gid`, `markAllIndexed` ignoring per-backend scan errors.
+- **L1:** hardcoded lock timeouts (e.g., `acquireTimeout` in `lock.go`).
 
 The test suite is mock-based throughout; a real-cluster smoke test of the sidecar/tombstone machinery is advised before production use.
 
@@ -71,6 +65,12 @@ The test suite is mock-based throughout; a real-cluster smoke test of the sideca
 
 Major items delivered during the 2026-06 remediation, newest first:
 
+- (Remediation) — Metrics Export (Prometheus) (7.1): Export system & performance metrics via a `/streamz` endpoint (Prometheus text exposition format) built into the HTTP REST server.
+- (Remediation) — M7: backend reconnects honor context deadlines (TCP dial, negotiate, session mount).
+- (Remediation) — H4: lease renewal retries on failures and only expires after the lease deadline passes.
+- (Remediation) — H7: in-process per-path lock table and active-writer check in repair.
+- (Remediation) — H8: open-time failover and Read-level `tried` tracking for recovering backends.
+- (Remediation) — L3/L5/L6/L7: unified child-path helpers, clean shutdown closing all backends, correct FUSE attr validation/UID/GID metadata, and gated cached indexing success.
 - REST/HTTP Control & Observability API (8.4): HTTP server exposing REST endpoints for monitoring system state and metadata/data access, with static token authorization (see `docs/api.md`).
 - Observability and Structured Logging (8.1): Migrated to standard `log/slog` with `samber/slog-multi` composition, context-bound Snowflake correlation IDs, request logging middleware, and translation error wrapping.
 - Smart Backend Selection (2.1): `SmartSelector` queries and prioritizes backends by capacity (free space sorted/cached) and performance (speed metrics).

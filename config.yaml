@@ -42,9 +42,12 @@ repair:
 #   secret: "change-me-16chars+"          # shared HMAC secret, same on all nodes (min 16 chars)
 #   expected_cluster_size: 2              # total nodes in the cluster (quorum = n/2+1)
 
-# HTTP Control & Observability API Configuration
+# HTTP Control & Observability API Configuration.
+# When addr is set, api_token is REQUIRED: the control API exposes file
+# read/write/delete and node shutdown, and startup refuses to listen unauthenticated.
+# Prefer a loopback bind (127.0.0.1:8080) unless the API is intentionally remote.
 # api:
-#   addr: ":8080"
+#   addr: "127.0.0.1:8080"
 #   api_token: "api-secret-token"
 #   metrics_token: "metrics-secret-token"
 

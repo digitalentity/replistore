@@ -97,7 +97,27 @@ Lists active locks currently held by the cluster, showing the path and the ownin
   ]
   ```
 
+### `GET /api/cluster/stats`
+Returns aggregated raw and replication-amortized storage space statistics across all backends.
+- **Response:**
+  ```json
+  {
+    "raw": {
+      "total_space_bytes": 17592186044416,
+      "used_space_bytes": 8796093022208,
+      "free_space_bytes": 8796093022208
+    },
+    "amortized": {
+      "total_space_bytes": 8796093022208,
+      "used_space_bytes": 4398046511104,
+      "free_space_bytes": 4398046511104
+    },
+    "replication_factor": 2
+  }
+  ```
+
 ---
+
 
 ## 3. Metadata Cache Management
 
@@ -249,3 +269,12 @@ Triggers a clean, graceful shutdown of the node (releases locks, updates peer re
     "status": "shutting_down"
   }
   ```
+
+---
+
+## 7. Prometheus Metrics
+
+### `GET /streamz`
+Exposes system and performance metrics in the Prometheus text format. See `docs/observability.md` for the list of exported series.
+- **Response:**
+  Text response in the standard Prometheus exposition format.

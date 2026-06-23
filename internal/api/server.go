@@ -5,6 +5,7 @@ package api
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"io"
@@ -155,11 +156,23 @@ func (s *Server) Stop(ctx context.Context) error {
 	return nil
 }
 
+// bearerTokenMatch reports whether the request carries a "Bearer <token>"
+// Authorization header matching want. The token comparison is constant-time to
+// avoid leaking the token through response timing.
+func bearerTokenMatch(authHeader, want string) bool {
+	const prefix = "Bearer "
+	if !strings.HasPrefix(authHeader, prefix) {
+		return false
+	}
+	got := strings.TrimPrefix(authHeader, prefix)
+
+	return subtle.ConstantTimeCompare([]byte(got), []byte(want)) == 1
+}
+
 func (s *Server) apiAuthHandler(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if s.apiToken != "" {
-			authHeader := r.Header.Get("Authorization")
-			if !strings.HasPrefix(authHeader, "Bearer ") || strings.TrimPrefix(authHeader, "Bearer ") != s.apiToken {
+			if !bearerTokenMatch(r.Header.Get("Authorization"), s.apiToken) {
 				s.writeError(w, http.StatusUnauthorized, "Unauthorized")
 
 				return
@@ -172,8 +185,7 @@ func (s *Server) apiAuthHandler(next http.Handler) http.Handler {
 func (s *Server) metricsAuthHandler(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if s.metricsToken != "" {
-			authHeader := r.Header.Get("Authorization")
-			if !strings.HasPrefix(authHeader, "Bearer ") || strings.TrimPrefix(authHeader, "Bearer ") != s.metricsToken {
+			if !bearerTokenMatch(r.Header.Get("Authorization"), s.metricsToken) {
 				s.writeError(w, http.StatusUnauthorized, "Unauthorized")
 
 				return
@@ -592,7 +604,7 @@ func (s *Server) handleDataPut(w http.ResponseWriter, r *http.Request, cleanPath
 		return
 	}
 
-	tmpFile, err := os.CreateTemp(".", "replistore-upload-")
+	tmpFile, err := os.CreateTemp("", "replistore-upload-")
 	if err != nil {
 		s.writeError(w, http.StatusInternalServerError, "Failed to create temp file")
 
